@@ -14,6 +14,19 @@ import { VirtualDevicesSection } from '@/components/settings/VirtualDevicesSecti
 import { ResetSectionAction } from '@/components/settings/ResetSectionAction'
 import { StorageUsageRow } from '@/components/settings/StorageUsageRow'
 import { SectionNav, type SettingsSection } from '@/components/settings/SectionNav'
+import { SpeechPanel } from '@/components/settings/SpeechPanel'
+import type { JsonSchemaNode } from '@/components/schema-form/types'
+
+/** The two `ai` fields `SpeechPanel` edits itself (plan 318) — left out of the generic form so one value never has two editors on one screen. */
+const SPEECH_FIELDS = ['whisperCliPath', 'whisperModel']
+
+function withoutSpeechFields(schema: JsonSchemaNode): JsonSchemaNode {
+  const ai = schema.properties?.ai
+  if (!ai?.properties) return schema
+  const properties = Object.fromEntries(Object.entries(ai.properties).filter(([k]) => !SPEECH_FIELDS.includes(k)))
+  const required = ai.required?.filter((k) => !SPEECH_FIELDS.includes(k))
+  return { ...schema, properties: { ...schema.properties, ai: { ...ai, properties, ...(required ? { required } : {}) } } }
+}
 
 /**
  * The Settings page (design handoff, "Screen: Settings"; plan 219). Rebuilt
@@ -90,7 +103,8 @@ function SettingsScreen() {
       if (id === 'access') return <AccessSection />
       if (id === 'toolchain') return <ToolchainSection />
       if (id === 'virtualDevices') return <VirtualDevicesSection />
-      const scoped = narrowSchema(data.schema as never, keys)
+      const narrowed = narrowSchema(data.schema as never, keys)
+      const scoped = id === 'ai' ? withoutSpeechFields(narrowed) : narrowed
       return (
         <>
           {id === 'storage' && <StorageUsageRow />}
@@ -124,6 +138,24 @@ function SettingsScreen() {
                 setData((d) => (d ? { ...d, settings } : d))
                 setDraft(settings)
                 setServerErrors({})
+              }}
+            />
+          )}
+          {/*
+            Plan 318 — speech transcription lives under the AI form (`/settings?tab=ai`). It saves its own two fields
+            straight to the row, so the page's saved copy and the draft are updated here — otherwise the next Save of
+            the form above would write the old whisper values back.
+          */}
+          {id === 'ai' && (
+            <SpeechPanel
+              settings={data.settings}
+              onSaved={(settings) => {
+                setData((d) => (d ? { ...d, settings } : d))
+                setDraft((d: unknown) =>
+                  d && typeof d === 'object'
+                    ? { ...d, ai: { ...(d as FarmSettings).ai, whisperCliPath: settings.ai.whisperCliPath, whisperModel: settings.ai.whisperModel } }
+                    : settings,
+                )
               }}
             />
           )}

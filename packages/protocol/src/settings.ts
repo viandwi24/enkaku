@@ -216,6 +216,16 @@ const FarmNetworkSchema = z.object({
  * instead. The gate grep for that call, counted across this file, is
  * therefore 26 — a goal of plan 212, not a coincidence.
  */
+/**
+ * Plan 318 — the whisper.cpp models an operator can pick, smallest first.
+ * Multilingual only: an `.en` model cannot transcribe the Indonesian and
+ * mixed-language audio this farm's captions are for. Each name maps to the
+ * toolchain tool `whisper-model-<name>`.
+ */
+export const WHISPER_MODEL_NAMES = ['tiny', 'base', 'small', 'medium'] as const
+export const WhisperModelNameSchema = z.enum(WHISPER_MODEL_NAMES)
+export type WhisperModelName = z.infer<typeof WhisperModelNameSchema>
+
 export const FarmSettingsSchema = z.object({
   general: z
     .object({
@@ -613,8 +623,24 @@ export const FarmSettingsSchema = z.object({
         .default('')
         .describe("Which model `ai.generate` uses. Empty picks the connector's own default model.")
         .meta(ui({ title: 'Model' })),
+      /**
+       * Plan 318 — an operator's own whisper-cli, e.g. a Homebrew install.
+       * Empty falls through to `ENKAKU_WHISPER_CPP_PATH`, then the managed
+       * tool. A non-empty path that is not an executable file makes
+       * transcription unavailable by name, never a silent fallback.
+       */
+      whisperCliPath: z
+        .string()
+        .max(1024)
+        .default('')
+        .describe('Path to a whisper-cli binary on this machine. Empty uses ENKAKU_WHISPER_CPP_PATH or the one Enkaku installed.')
+        .meta(ui({ title: 'whisper-cli path' })),
+      whisperModel: WhisperModelNameSchema.default('small')
+        .describe('Which Whisper model transcription uses. Larger is more accurate and slower.')
+        .meta(ui({ title: 'Whisper model', labels: { tiny: 'Tiny', base: 'Base', small: 'Small', medium: 'Medium' } })),
     })
-    .default({ connectorId: null, model: '' })
+    // The full default, not `{}`: Zod 4 returns a `.default()` value as-is, so a partial one would skip the inner defaults.
+    .default({ connectorId: null, model: '', whisperCliPath: '', whisperModel: 'small' })
     .meta({ title: 'AI', 'x-enkaku': { group: 'Automation' } }),
 })
 export type FarmSettings = z.infer<typeof FarmSettingsSchema>

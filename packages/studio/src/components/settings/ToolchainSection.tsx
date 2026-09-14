@@ -273,6 +273,11 @@ export function ToolchainSection() {
                       </span>
                     )}
                   </p>
+                  {/* Plan 318 — whisper-cpp has a manifest entry before our workflow has pinned a build; say why Install is off. */}
+                  {tool.installed.length === 0 && !tool.available.some((v) => v.installable) && (
+                    <p className="mt-1 text-meta text-faint">No verified build is pinned for this host yet.</p>
+                  )}
+                  {tool.id.startsWith('whisper-') && <p className="mt-1 text-meta text-faint">Managed with more detail in Settings → AI.</p>}
                 </div>
                 {tool.swappable && (
                   <Button

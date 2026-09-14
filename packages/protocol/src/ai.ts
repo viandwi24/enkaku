@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { ConnectorKindSchema } from './agent'
+import { WhisperModelNameSchema } from './settings'
 
 /**
  * Plan 317 — the farm-side foundation for AI auto-captions. Two capability
@@ -52,13 +53,62 @@ export type AiGenerateOutput = z.infer<typeof AiGenerateOutputSchema>
 export const MediaTranscribeStatusInputSchema = z.object({})
 export type MediaTranscribeStatusInput = z.infer<typeof MediaTranscribeStatusInputSchema>
 
+/** Plan 318 — where the whisper-cli in use came from, in resolution order. `missing` means none of the three. */
+export const WhisperCliSourceSchema = z.enum(['setting', 'env', 'managed', 'missing'])
+export type WhisperCliSource = z.infer<typeof WhisperCliSourceSchema>
+
+export const WhisperModelEntrySchema = z.object({
+  /** The toolchain tool id, `whisper-model-<name>`. */
+  id: z.string(),
+  name: WhisperModelNameSchema,
+  sizeBytes: z.number().int().nonnegative(),
+  installed: z.boolean(),
+  /** The model `farm_settings.ai.whisperModel` selects. Exactly one entry is active. */
+  active: z.boolean(),
+})
+export type WhisperModelEntry = z.infer<typeof WhisperModelEntrySchema>
+
 export const MediaTranscribeStatusOutputSchema = z.object({
   available: z.boolean(),
   model: z.string().nullable(),
   /** Names the missing tool/model and the env override or the Tools page. Null when available. */
   reason: z.string().nullable(),
+  // Plan 318 — additive; the three fields above keep their exact plan 317 meaning.
+  cli: z.object({
+    path: z.string().nullable(),
+    source: WhisperCliSourceSchema,
+    /** Why the CLI is unusable, or null when it resolved. */
+    detail: z.string().nullable(),
+  }),
+  /** The selected model's tool id. */
+  modelId: z.string(),
+  models: z.array(WhisperModelEntrySchema),
+  /** A background install of the CLI or the selected model is running. */
+  provisioning: z.boolean(),
 })
 export type MediaTranscribeStatusOutput = z.infer<typeof MediaTranscribeStatusOutputSchema>
+
+// ---------------------------------------------------------------------------
+// `media.transcribe.check` (plan 318) — the doctor for local transcription.
+// ---------------------------------------------------------------------------
+
+export const MediaTranscribeCheckInputSchema = z.object({})
+export type MediaTranscribeCheckInput = z.infer<typeof MediaTranscribeCheckInputSchema>
+
+export const TranscribeCheckStepSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: z.enum(['ok', 'fail', 'skip']),
+  detail: z.string(),
+})
+export type TranscribeCheckStep = z.infer<typeof TranscribeCheckStepSchema>
+
+export const MediaTranscribeCheckOutputSchema = z.object({
+  /** True only when no step failed. A skipped step never counts as a pass on its own: it is skipped because an earlier one failed. */
+  ok: z.boolean(),
+  steps: z.array(TranscribeCheckStepSchema),
+})
+export type MediaTranscribeCheckOutput = z.infer<typeof MediaTranscribeCheckOutputSchema>
 
 export const MediaTranscribeInputSchema = z.object({
   artifactId: z.string().min(1),

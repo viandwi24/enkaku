@@ -44,6 +44,9 @@ describe('the real capability registry (plan 63 §4.3, acceptance #1-3)', () => 
       'job.get',
       'job.list',
       'job.cancel',
+      'media.transcribe.status',
+      'media.transcribe',
+      'media.transcribe.check',
     ]) {
       expect(ids.has(id)).toBe(true)
     }

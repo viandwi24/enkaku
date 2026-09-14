@@ -155,7 +155,7 @@
     {
       "id": "whisper-cpp",
       "displayName": "whisper.cpp (whisper-cli, built by our own release workflow)",
-      "swappable": false,
+      "swappable": true,
       "format": "zip",
       "versions": [
         {
@@ -193,9 +193,66 @@
       ]
     },
     {
+      "id": "whisper-model-tiny",
+      "displayName": "Whisper model — tiny, q5_1 (multilingual)",
+      "swappable": true,
+      "format": "raw",
+      "versions": [
+        {
+          "version": "1",
+          "releasedAt": "2026-09-14",
+          "platforms": {
+            "*": {
+              "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin",
+              "sha256": "818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7",
+              "sizeBytes": 32152673
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "whisper-model-base",
+      "displayName": "Whisper model — base, q5_1 (multilingual)",
+      "swappable": true,
+      "format": "raw",
+      "versions": [
+        {
+          "version": "1",
+          "releasedAt": "2026-09-14",
+          "platforms": {
+            "*": {
+              "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin",
+              "sha256": "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898",
+              "sizeBytes": 59707625
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "whisper-model-medium",
+      "displayName": "Whisper model — medium, q5_0 (multilingual)",
+      "swappable": true,
+      "format": "raw",
+      "versions": [
+        {
+          "version": "1",
+          "releasedAt": "2026-09-14",
+          "platforms": {
+            "*": {
+              "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin",
+              "sha256": "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f",
+              "sizeBytes": 539212467
+            }
+          }
+        }
+      ]
+    },
+    {
       "id": "whisper-model-small",
-      "displayName": "whisper ggml model — small, q5_1 (multilingual)",
-      "swappable": false,
+      "displayName": "Whisper model — small, q5_1 (multilingual)",
+      "swappable": true,
       "format": "raw",
       "versions": [
         {

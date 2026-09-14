@@ -65,13 +65,16 @@ describe('FarmSettingsSchema — the 27-field model (plan 212, plus `capture.tim
    *
    * Nineteen, not seventeen: `ai.connectorId`/`ai.model` (plan 317) added a
    * tenth section, `ai`, for the farm-wide default `ai.generate` uses.
+   *
+   * Twenty-one, not nineteen: `ai.whisperCliPath`/`ai.whisperModel` (plan 318)
+   * — the owner asked to point at his own whisper-cli and to pick the model.
    */
-  test('every field of the nineteen visible settings carries a description', () => {
+  test('every field of the twenty-one visible settings carries a description', () => {
     type JsonNode = { properties?: Record<string, JsonNode>; description?: string }
     const json = z.toJSONSchema(FarmSettingsSchema) as unknown as { properties: Record<string, JsonNode> }
     const visibleSectionKeys = ['general', 'hostDaemon', 'networkScan', 'jobRunner', 'capture', 'storage', 'devices', 'privacy', 'ai']
     const fields = visibleSectionKeys.flatMap((key) => Object.values(json.properties[key]?.properties ?? {}))
-    expect(fields.length).toBe(19)
+    expect(fields.length).toBe(21)
     for (const field of fields) {
       expect(field.description, JSON.stringify(field)).toBeTruthy()
     }

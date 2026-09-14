@@ -38,6 +38,7 @@ const ERROR_STATUS: Record<string, number> = {
   E_PLATFORM_UNSUPPORTED: 409,
   E_DOWNLOAD_FAILED: 502,
   E_DOWNLOAD_STALLED: 502,
+  E_DEACTIVATE_REFUSED: 403,
 }
 
 /**
@@ -154,6 +155,17 @@ export function createToolsRoutes(
     if (!body.success) return c.json({ error: { code: 'E_BAD_REQUEST', message: 'a body of { version } is required' } }, 400)
     await manager.activate(c.req.param('id'), body.data.version)
     deps.audit?.record({ userId: actorId(c), action: 'tool.activate', target: c.req.param('id'), meta: { version: body.data.version } })
+    return c.json({ ok: true })
+  })
+
+  /**
+   * Plan 318 — clear the active pointer of a swappable tool so its last
+   * version can be deleted (a Whisper model has exactly one version). The
+   * manager refuses adb and every version-locked tool.
+   */
+  app.post('/:id/deactivate', requirePermission('tool.manage'), async (c) => {
+    await manager.deactivate(c.req.param('id'))
+    deps.audit?.record({ userId: actorId(c), action: 'tool.deactivate', target: c.req.param('id') })
     return c.json({ ok: true })
   })
 

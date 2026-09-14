@@ -28,6 +28,50 @@ export async function checkAdbBinary(path: string): Promise<HealthResult> {
   }
 }
 
+/** Lines whisper.cpp's ggml backends print before anything the CLI itself says (`load_backend: ...`, `ggml_metal_...`, `whisper_init...`). */
+const WHISPER_NOISE = /^(load_backend|ggml_|whisper_|register_backend|system_info)/
+
+/**
+ * Plan 318 — whisper-cli: spawn `<path> --help` (10-second timeout), expect
+ * exit 0 and output that mentions `usage` or `whisper`. The help text goes to
+ * STDERR, after a screenful of backend initialisation on a Metal build
+ * (measured on Homebrew's whisper-cpp, 2026-09-14: the `usage:` line is line
+ * 46), so both streams are read and the detail is the `usage:` line when
+ * there is one, else the first line that is not backend noise.
+ */
+export async function checkWhisperCli(path: string, timeoutMs = 10_000): Promise<HealthResult> {
+  try {
+    const proc = Bun.spawn([path, '--help'], { stdout: 'pipe', stderr: 'pipe' })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // Raced, not awaited in full: killing the process does not close pipes a CHILD it spawned still holds, so waiting
+    // for the output to finish after a timeout could outlast the timeout by as long as that child lives.
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => {
+        proc.kill()
+        resolve('timeout')
+      }, timeoutMs)
+    })
+    const finished = Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
+    const outcome = await Promise.race([finished, timedOut])
+    clearTimeout(timer)
+    if (outcome === 'timeout') return { ok: false, checkedAt: nowSec(), detail: `timed out after ${Math.max(1, Math.round(timeoutMs / 1000))} s` }
+    const [stdout, stderr, exit] = outcome
+    const output = `${stdout}\n${stderr}`
+    const lines = output
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0)
+    const usage = lines.find((l) => /^usage/i.test(l))
+    const meaningful = usage ?? lines.find((l) => !WHISPER_NOISE.test(l)) ?? ''
+    if (exit === 0 && /usage|whisper/i.test(output)) {
+      return { ok: true, checkedAt: nowSec(), detail: meaningful || 'whisper-cli runs' }
+    }
+    return { ok: false, checkedAt: nowSec(), detail: `exit ${exit}: ${(meaningful || output.trim()).slice(0, 200)}` }
+  } catch (err) {
+    return { ok: false, checkedAt: nowSec(), detail: String(err) }
+  }
+}
+
 /**
  * A `zip` tool's entrypoint was EXTRACTED, so its hash is not the archive's.
  *
@@ -71,11 +115,12 @@ export async function checkFileHash(path: string, expectedSha256: string | null)
     if (!expectedSha256) {
       return { ok: true, checkedAt: nowSec(), detail: 'file present (no hash on record)' }
     }
+    // Streamed: a Whisper medium model is 540 MB, and reading it whole to hash it doubled the core's memory for the length of a check.
     const hasher = new Bun.CryptoHasher('sha256')
-    hasher.update(await file.arrayBuffer())
+    for await (const chunk of file.stream()) hasher.update(chunk)
     const actual = hasher.digest('hex')
     return actual === expectedSha256
-      ? { ok: true, checkedAt: nowSec(), detail: 'sha256 cocok' }
+      ? { ok: true, checkedAt: nowSec(), detail: 'sha256 matches' }
       : { ok: false, checkedAt: nowSec(), detail: `sha256 mismatch (actual ${actual.slice(0, 12)}…)` }
   } catch (err) {
     return { ok: false, checkedAt: nowSec(), detail: String(err) }

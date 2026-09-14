@@ -1,4 +1,11 @@
-import { MediaTranscribeInputSchema, MediaTranscribeOutputSchema, MediaTranscribeStatusInputSchema, MediaTranscribeStatusOutputSchema } from '@enkaku/protocol'
+import {
+  MediaTranscribeCheckInputSchema,
+  MediaTranscribeCheckOutputSchema,
+  MediaTranscribeInputSchema,
+  MediaTranscribeOutputSchema,
+  MediaTranscribeStatusInputSchema,
+  MediaTranscribeStatusOutputSchema,
+} from '@enkaku/protocol'
 import { EnkakuError } from '../util/errors'
 import { defineCapability } from './types'
 
@@ -39,4 +46,19 @@ export const mediaTranscribe = defineCapability({
   },
 })
 
-export const MEDIA_CAPABILITIES = [mediaTranscribeStatus, mediaTranscribe]
+export const mediaTranscribeCheck = defineCapability({
+  id: 'media.transcribe.check',
+  input: MediaTranscribeCheckInputSchema,
+  output: MediaTranscribeCheckOutputSchema,
+  permission: 'media.transcribe',
+  deadline: 120_000,
+  effect: 'read',
+  description:
+    'Doctor for local transcription (plan 318): finds whisper-cli, runs it, verifies the selected model, and transcribes one second of generated silence. Reports every step as ok, fail or skip; never downloads anything.',
+  handler: (ctx) => {
+    if (!ctx.media) throw new EnkakuError('E_NOT_SUPPORTED', 'media.transcribe is not available on this host')
+    return ctx.media.check()
+  },
+})
+
+export const MEDIA_CAPABILITIES = [mediaTranscribeStatus, mediaTranscribe, mediaTranscribeCheck]

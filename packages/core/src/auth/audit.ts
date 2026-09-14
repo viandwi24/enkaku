@@ -165,6 +165,8 @@ export type AuditAction =
   | 'capability.invoke'
   | 'tool.install'
   | 'tool.activate'
+  // Plan 318 — a swappable tool's active pointer cleared (`POST /api/tools/:id/deactivate`), so its last version can be deleted.
+  | 'tool.deactivate'
   | 'tool.delete'
   // Bulk re-provisioning of the required tools (`POST /api/tools/repair`) and a manual manifest
   // refresh (`POST /api/tools/manifest/refresh`) — both `tool.manage` (plan 09 §4.4's table names

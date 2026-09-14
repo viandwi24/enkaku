@@ -5,7 +5,7 @@ import { entrypointRelPath } from './entrypoints'
 import { ToolchainError } from './errors'
 import { extractZip, placeRaw } from './extract'
 import { moveDir, rmPath } from './fs-safe'
-import { checkAdbBinary, checkExtractedEntrypoint, checkFileHash } from './health'
+import { checkAdbBinary, checkExtractedEntrypoint, checkFileHash, checkWhisperCli } from './health'
 import { ManifestStore } from './manifest'
 import { ActivePointerStore, createPaths, ensureLayout, type ToolchainPaths } from './paths'
 import { currentPlatformKey, pickPlatformKey } from './platform'
@@ -323,12 +323,7 @@ export class ToolchainManager {
 
       const candidatePath = join(this.paths.toolsDir, toolId, version, entrypointRelPath(toolId, this.platform))
       // The candidate's health check MUST pass before activation (spec §7.8).
-      const health =
-        toolId === 'adb'
-          ? await checkAdbBinary(candidatePath)
-          : this.mustGetTool(toolId).format === 'zip'
-            ? await checkExtractedEntrypoint(candidatePath)
-            : await checkFileHash(candidatePath, installed.sha256)
+      const health = await this.healthFor(this.mustGetTool(toolId), candidatePath, installed.sha256)
       if (!health.ok) {
         throw new ToolchainError('E_HEALTH_CHECK_FAILED', `health check failed for ${toolId}@${version}: ${health.detail}`)
       }
@@ -382,14 +377,47 @@ export class ToolchainManager {
     if (!ptr) throw new ToolchainError('E_TOOL_NOT_PROVISIONED', `tool ${toolId} is not provisioned yet`)
     const path = join(this.paths.toolsDir, toolId, ptr.version, entrypointRelPath(toolId, this.platform))
     const rec = this.opts.store.listByTool(tool.id).find((r) => r.version === ptr.version)
-    // Chosen by FORMAT, not by name. `adb` keeps its own spawn check because
-    // running `adb version` proves more than any file test can; every other
-    // `zip` tool is checked for a real extracted entrypoint, and only `raw`
-    // tools — where the entrypoint IS the downloaded file — are hashed.
-    const health =
-      toolId === 'adb' ? await checkAdbBinary(path) : tool.format === 'zip' ? await checkExtractedEntrypoint(path) : await checkFileHash(path, rec?.sha256 ?? null)
+    const health = await this.healthFor(tool, path, rec?.sha256 ?? null)
     this.healthCache.set(toolId, health)
     return health
+  }
+
+  /**
+   * Chosen by FORMAT, not by name — except for the two binaries worth running.
+   * `adb version` and `whisper-cli --help` (plan 318) prove more than any file
+   * test can; every other `zip` tool is checked for a real extracted
+   * entrypoint, and only `raw` tools — where the entrypoint IS the downloaded
+   * file — are hashed.
+   */
+  private healthFor(tool: ToolManifestEntry, path: string, sha256: string | null): Promise<HealthResult> {
+    if (tool.id === 'adb') return checkAdbBinary(path)
+    if (tool.id === 'whisper-cpp') return checkWhisperCli(path)
+    return tool.format === 'zip' ? checkExtractedEntrypoint(path) : checkFileHash(path, sha256)
+  }
+
+  /**
+   * Clear a tool's active pointer, so its only installed version can be
+   * deleted (plan 318: a Whisper model has one version, is active the moment
+   * it is installed, and `remove()` refuses an active version). Only for a
+   * swappable tool nothing in the core needs to boot: never adb, and never a
+   * version-locked tool, whose absence the core would only re-provision.
+   */
+  async deactivate(toolId: string): Promise<void> {
+    return this.withLock(toolId, async () => {
+      const tool = this.mustGetTool(toolId)
+      if (!tool.swappable || toolId === 'adb') {
+        throw new ToolchainError('E_DEACTIVATE_REFUSED', `${toolId} cannot be deactivated — the core needs an active version`)
+      }
+      if (this.inFlight.has(toolId)) {
+        throw new ToolchainError('E_TOOL_IN_USE', `${toolId} is busy with another operation`)
+      }
+      if (!(await this.pointers.read(toolId))) return
+      this.pointers.clear(toolId)
+      this.opts.store.setActive(toolId, null)
+      this.healthCache.delete(toolId)
+      this.opts.emit?.({ kind: 'changed', toolId, change: 'deleted' })
+      this.opts.onLog?.('info', `deactivated: ${toolId}`)
+    })
   }
 
   /**

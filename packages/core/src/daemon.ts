@@ -2828,7 +2828,8 @@ let blobGc: BlobGc | null = null
       // the Tools page and every other tool operation share; provisioning
       // whisper-cpp/whisper-model-small on first use goes through it, never
       // a second toolchain.
-      const transcribeService = createTranscribeService({ db, dataDir: cfg.dataDir, toolchain })
+      // Plan 318 — the CLI path and model come from `farm_settings.ai`, read fresh per call.
+      const transcribeService = createTranscribeService({ db, dataDir: cfg.dataDir, toolchain, settings: () => settingsStore.get().ai })
       const capContextDeps: CapabilityContextDeps = {
         db,
         activities,

@@ -41,6 +41,48 @@ function pinActivePointer(dataDir: string, toolId: string, version: string, entr
 
 const sha256 = (data: Uint8Array): string => new Bun.CryptoHasher('sha256').update(data).digest('hex')
 
+describe('the Whisper tools (plan 318)', () => {
+  const MODELS = ['tiny', 'base', 'small', 'medium'] as const
+
+  test('four multilingual models, each swappable, raw, with a real sha256 and size, and a known entrypoint', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-toolchain-'))
+    try {
+      const manager = new ToolchainManager({ dataDir, coreVersion: '0.0.0-test', store: fakeStore() })
+      for (const name of MODELS) {
+        const tool = manager.manifests.getTool(`whisper-model-${name}`)
+        expect(tool?.swappable).toBe(true)
+        expect(tool?.format).toBe('raw')
+        const artifact = tool?.versions[0]?.platforms['*']
+        expect(artifact?.sha256).toMatch(/^[0-9a-f]{64}$/)
+        expect(artifact?.sizeBytes).toBeGreaterThan(1_000_000)
+        expect(artifact?.url).not.toContain('.en')
+      }
+      expect(manager.manifests.getTool('whisper-cpp')?.swappable).toBe(true)
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  test('deactivate clears a swappable tool\'s pointer so its only version can be deleted; adb is refused', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'enkaku-toolchain-'))
+    try {
+      pinActivePointer(dataDir, 'whisper-model-tiny', '1', 'ggml-tiny-q5_1.bin')
+      const store = fakeStore()
+      const manager = new ToolchainManager({ dataDir, coreVersion: '0.0.0-test', store })
+      await manager.init()
+      expect(await manager.activeVersion('whisper-model-tiny')).toBe('1')
+      await expect(manager.remove('whisper-model-tiny', '1')).rejects.toMatchObject({ code: 'E_DELETE_ACTIVE' })
+      await manager.deactivate('whisper-model-tiny')
+      expect(await manager.activeVersion('whisper-model-tiny')).toBeNull()
+      await manager.remove('whisper-model-tiny', '1')
+      expect(existsSync(join(dataDir, 'tools', 'whisper-model-tiny', '1'))).toBe(false)
+      await expect(manager.deactivate('adb')).rejects.toMatchObject({ code: 'E_DEACTIVATE_REFUSED' })
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+})
+
 /**
  * Overrides the bundled manifest for one tool so the install can be driven
  * against a local server instead of the network.

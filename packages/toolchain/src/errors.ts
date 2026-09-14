@@ -17,6 +17,7 @@ export type ToolchainErrorCode =
   | 'E_EXTRACT_UNSAFE_PATH'
   | 'E_TOOL_UNKNOWN_ENTRYPOINT'
   | 'E_NOT_INSTALLED'
+  | 'E_DEACTIVATE_REFUSED'
 
 export class ToolchainError extends Error {
   constructor(
