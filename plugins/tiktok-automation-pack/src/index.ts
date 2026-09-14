@@ -829,6 +829,30 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.35.0 — post-video stops misreading the Samsung feed, types long captions in pieces, and leaves no
+  // drafts behind. From 20 production debug bundles (Samsung SM-A075F/A065F, Android 15/16, id-ID, 2026-09-14).
+  //   1. The feed is no longer the post screen. Any EditText used to mean "post"; the Samsung feed carries two
+  //      inside its video player and the add-phone sheet one more, so a run failed "expected the camera screen
+  //      but the dump reads post" (997c7cfe). The post screen now needs a caption field on the frame and
+  //      outside the player AND an on-screen "Posting"; Beranda, Buat and Profil all on screen read "feed"
+  //      (the own profile too), and "+" is tapped once more on "feed" as it already was on "unknown".
+  //   2. A long caption no longer times out. The guest agent types one character at a time and the farm gave
+  //      up after a flat 15 s — about 160 characters — while the phone kept typing (04fe3367, 4063f322). The
+  //      caption is typed in pieces of at most 60 code points, cut after a space and never inside an emoji,
+  //      and read back at the end as before; a failed run waits (at most 5 s) for the caption to stop
+  //      changing before it presses BACK. The drivers' text.commit budget now grows with the text too — that
+  //      half ships with the core, not with this pack.
+  //   3. No drafts. The resume-edit banner is no longer answered "Simpan draf": the run taps "Edit", leaves
+  //      the editor through its exit dialog with "Buang", relaunches, and stops by name (E_RESUME_EDIT_*) when
+  //      the dialog does not come. A failed run backs out the same way. `tt.discard-draft` lost its "Simpan
+  //      draf" answer, and no answer anywhere in the register — declared, locale or identity fallback — can
+  //      tap "Simpan draf" or "Draf". Which build shows which dialog is known only from these bundles: on the
+  //      Samsung build with ids like `oju`, BACK from the editor raised no dialog at all (4063f322).
+  //   4. The Samsung empty profile ("Bagikan video kenangan", "Bagikan rutinitas harian Anda", its "Unggah"
+  //      button) is recognised, so a profile with no videos no longer waits 12 s for a grid.
+  //   Fixtures: screen-feed-samsung-player-edittext.json, screen-feed-samsung-phone-sheet.json and
+  //   screen-post-samsung.json, from those bundles' trees.
+  //
   // 1.34.2 — the resume-edit banner over the feed is answered "Simpan draf".
   // A dry run of 1.34.1 on the owner's moto (2026-09-14) stopped before the camera on
   // "Lanjut mengedit postingan ini?" (Simpan draf / Edit), left by an earlier dry run —
@@ -982,7 +1006,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.34.2',
+  version: '1.35.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

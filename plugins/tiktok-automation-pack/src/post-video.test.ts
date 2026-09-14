@@ -4,6 +4,7 @@ import { describe, expect, test } from 'bun:test'
 import { UiNodeSchema, type UiNode } from '@enkaku/protocol'
 import {
   captionLanded,
+  captionPieces,
   captionTextToClear,
   createButtonOnScreen,
   descNodeOnScreen,
@@ -161,6 +162,57 @@ describe('gridEmptyState', () => {
     expect(gridEmptyState(says({ bounds: { left: -900, top: 700, right: -600, bottom: 740 } }), MENU_BOTTOM, W)).toBe(false)
     expect(gridEmptyState(says({ className: 'android.widget.EditText' }), MENU_BOTTOM, W)).toBe(false)
     expect(gridEmptyState(profile([cell(0, 0, '1.559')]), MENU_BOTTOM, W)).toBe(false)
+  })
+
+  /* 1.35.0: the Samsung fleet's empty profiles (production bundles 04fe3367 ui/00024, 4063f322 ui/00024 and ui/00065). */
+  test('the Samsung empty profile: its two lines and its "Unggah" (upload_work) button — but never an upload in progress', () => {
+    const says = (over: Partial<UiNode>) => profile([node({ bounds: { left: 182, top: 791, right: 538, bottom: 832 }, ...over })])
+    expect(gridEmptyState(says({ text: 'Bagikan video kenangan' }), MENU_BOTTOM, W)).toBe(true)
+    expect(gridEmptyState(says({ text: 'Bagikan rutinitas harian Anda' }), MENU_BOTTOM, W)).toBe(true)
+    expect(gridEmptyState(says({ text: 'Unggah', className: 'android.widget.Button', clickable: true }), MENU_BOTTOM, W)).toBe(true)
+    expect(gridEmptyState(says({ resourceId: 'com.ss.android.ugc.trill:id/upload_work', className: 'android.widget.Button' }), MENU_BOTTOM, W)).toBe(true)
+    expect(gridEmptyState(says({ text: 'Mengunggah... 4%' }), MENU_BOTTOM, W)).toBe(false)
+  })
+})
+
+/**
+ * The caption is typed in pieces (1.35.0). The guest agent types one code point at a time and the
+ * drivers gave a call 15 s, about 160 characters: 200- and 306-character captions failed
+ * "guest agent did not respond within 15000ms" on the Samsung fleet (bundles 04fe3367, 4063f322).
+ */
+describe('captionPieces', () => {
+  const codePoints = (s: string): number => [...s].length
+
+  test('a short caption is one piece', () => {
+    expect(captionPieces('Oke banget #fyp')).toEqual(['Oke banget #fyp'])
+  })
+
+  test('a long caption joins back exactly, no piece is over 60 code points, and every piece but the last ends after a space', () => {
+    const caption = 'Sambil nunggu, kita cek zona buy dulu ya. Pernah kena SL dulu, baru harga jalan sesuai analisa. '.repeat(3) + '#trading #saham #fyp'
+    const pieces = captionPieces(caption)
+    expect(pieces.length).toBeGreaterThan(1)
+    expect(pieces.join('')).toBe(caption)
+    for (const piece of pieces) expect(codePoints(piece)).toBeLessThanOrEqual(60)
+    for (const piece of pieces.slice(0, -1)) expect(/\s$/u.test(piece)).toBe(true)
+  })
+
+  test('never cuts inside a grapheme: surrogate pairs, skin tones and ZWJ families stay whole', () => {
+    const family = '👨‍👩‍👧' // five code points, one grapheme
+    const caption = `${family}👋🏽`.repeat(20) // no spaces at all
+    const pieces = captionPieces(caption)
+    expect(pieces.join('')).toBe(caption)
+    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+    for (const piece of pieces) {
+      expect(codePoints(piece)).toBeLessThanOrEqual(60)
+      for (const { segment } of segmenter.segment(piece)) expect([family, '👋🏽']).toContain(segment)
+    }
+  })
+
+  test('a word longer than a piece is cut between its letters, and nothing is lost', () => {
+    const word = 'a'.repeat(130)
+    const pieces = captionPieces(`hi ${word} bye`)
+    expect(pieces.join('')).toBe(`hi ${word} bye`)
+    for (const piece of pieces) expect(codePoints(piece)).toBeLessThanOrEqual(60)
   })
 })
 

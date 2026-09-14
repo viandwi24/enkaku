@@ -4,8 +4,8 @@ import { z } from 'zod'
 import { sleep } from './human'
 import { relaunch } from './gesture'
 import { all } from './tree'
-import { centreOf, detectScreen, findNode, captionField, nextButtonIn, pickerCells, pickerSortLabel, type ScreenId } from './screens'
-import { isEditableNode, matchModals, sweepModals, UPLOAD_MODAL_POLICIES, type ModalPolicy } from './modals'
+import { centreOf, detectScreen, findNode, captionField, nextButtonIn, pickerCells, pickerSortLabel, POST_BUTTON_LABELS, type ScreenId } from './screens'
+import { isEditableNode, matchModals, resumeEditTarget, sweepModals, UPLOAD_MODAL_POLICIES, type ModalPolicy } from './modals'
 import { tiktokQueue, type TikTokQueueClaim } from './queue'
 import { readCaptionsFile, pickCaption } from './captions'
 import { resolveVideoFromFolder, recordVideoPosted } from './folder'
@@ -77,16 +77,12 @@ async function capture(ctx: ScriptContext<unknown>, label: string, tree?: UiNode
  */
 const PICKER_SORT_NEWEST_FIRST_LABELS = ['Terbaru', 'Recent', 'Recents', 'Newest', 'Terkini']
 
-/**
- * The post screen's own publish button — read directly off `__fixtures__/screen-post.json`
- * (the fixture 113.2 already ships): a `Button` with text "Posting", the only node in that whole
- * dump carrying that exact text. Matched by TEXT, not by its resource id (`sp3`) — E10 names `sp3`
- * among the obfuscated ids this pack refuses to anchor on, the same reason `nextButtonIn` matches
- * "Berikutnya" by text rather than id. `findNode` walks depth-first from the root for it — safe
- * here because it is unique in the fixture, the same posture `nextButtonIn`'s own comment takes for
- * every screen besides picker/preview, where E9's ambiguity does not apply.
- */
-const POST_BUTTON_LABELS = ['Posting', 'Post', 'Publicar']
+/*
+  The post screen's own publish button — read directly off `__fixtures__/screen-post.json`: a `Button`
+  with text "Posting" (`sp3` on the moto, `t6b`/`tc0` on the Samsungs). Matched by TEXT, never by
+  those obfuscated ids (E10). The labels live in `screens.ts` as `POST_BUTTON_LABELS` since 1.35.0,
+  because `detectScreen` now needs the button on screen to call a screen the post screen.
+*/
 
 /**
  * Case-insensitive membership. Every label this pack matches was read off an id-ID device — the only
@@ -474,7 +470,8 @@ async function enterScreen(
      * so it cannot double-tap the new one).
      */
     retapWhen?: Array<{
-      screen: ScreenId
+      /** The screen (or any of the screens) the old tap should have left. */
+      screen: ScreenId | ScreenId[]
       tap: (tree: UiNode | null) => Promise<void>
       /** A further condition on the tree just read, and the modals cleared so far, for a retap that is only safe on some trees of that screen (1.34.1). */
       when?: (tree: UiNode, cleared: readonly string[]) => boolean
@@ -521,14 +518,17 @@ async function enterScreen(
   const retaps = new Map<number, number>()
   for (let round = 0; round < rounds; round += 1) {
     if (round > 0) await sleep(2_000)
-    const swept = await sweepModals(ctx, policies)
+    const swept = await sweepUpload(ctx, policies)
     for (const id of swept.cleared) if (!cleared.includes(id)) cleared.push(id)
     const read = await ctx.device.dump()
     tree = read
     screen = detectScreen(read)
     if (screen === expected) return { tree: read, cleared }
     const at = (opts?.retapWhen ?? []).findIndex(
-      (r, i) => r.screen === screen && (r.max === undefined || (retaps.get(i) ?? 0) < r.max) && (r.when === undefined || r.when(read, cleared)),
+      (r, i) =>
+        (Array.isArray(r.screen) ? r.screen.includes(screen) : r.screen === screen) &&
+        (r.max === undefined || (retaps.get(i) ?? 0) < r.max) &&
+        (r.when === undefined || r.when(read, cleared)),
     )
     const stuck = at >= 0 ? opts?.retapWhen?.[at] : undefined
     if (stuck && round < rounds - 1) {
@@ -758,18 +758,41 @@ export function judgeGrid(before: string[] | null, after: string[]): NewestCell 
 }
 
 /**
- * TikTok's own words for a profile with no videos. UNVERIFIED — no empty own profile has been dumped on
- * this farm. A wrong candidate costs nothing that matters: an empty reading is NO BASELINE, exactly like
- * an unreadable one, so recognising the state only saves the wait for a grid that will never draw.
+ * TikTok's own words for a profile with no videos. A wrong candidate costs nothing that matters: an empty
+ * reading is NO BASELINE, exactly like an unreadable one, so recognising the state only saves the wait for
+ * a grid that will never draw.
+ *
+ * Only two of these have been seen (1.35.0): "Bagikan video kenangan" (production bundle 04fe3367
+ * ui/00024) and "Bagikan rutinitas harian Anda" (4063f322 ui/00024), on the Samsung fleet's empty
+ * profiles. The rest are unverified.
  */
-const EMPTY_GRID_TEXTS = ['belum ada video', 'tidak ada video', 'bagikan video pertama', 'unggah video pertama', 'no videos yet', 'share your first video', 'upload your first video']
+const EMPTY_GRID_TEXTS = [
+  'belum ada video',
+  'tidak ada video',
+  'bagikan video pertama',
+  'unggah video pertama',
+  'bagikan video kenangan',
+  'bagikan rutinitas harian anda',
+  'no videos yet',
+  'share your first video',
+  'upload your first video',
+]
+
+/**
+ * The empty profile's own upload button (1.35.0): `upload_work`, "Unggah", under both Samsung empty-profile
+ * texts above (and bundle 4063f322 ui/00065). Matched by that id, or by EXACTLY that label — never by a
+ * substring, because "Mengunggah... 4%" is an upload in progress, not an empty grid.
+ */
+const EMPTY_GRID_UPLOAD_ID = 'upload_work'
+const EMPTY_GRID_UPLOAD_LABELS = ['unggah']
 
 /** True when the profile below `belowY` says it has no videos (see `EMPTY_GRID_TEXTS`). */
 export function gridEmptyState(tree: UiNode, belowY: number, frameWidth: number): boolean {
   return all(tree, (n) => {
     if (isEditableNode(n) || n.bounds.top < belowY || !insideFrame(n, frameWidth)) return false
+    if (hasShortId(n, EMPTY_GRID_UPLOAD_ID)) return true
     const label = (n.text || n.desc).trim().toLowerCase()
-    return label !== '' && EMPTY_GRID_TEXTS.some((t) => label.includes(t))
+    return label !== '' && (EMPTY_GRID_TEXTS.some((t) => label.includes(t)) || EMPTY_GRID_UPLOAD_LABELS.includes(label))
   }).length > 0
 }
 
@@ -851,7 +874,7 @@ export function feedNavOnScreen(tree: UiNode, frameWidth: number): boolean {
  */
 async function clearOverFeed(ctx: ScriptContext<unknown>, before: string): Promise<void> {
   try {
-    const swept = await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
+    const swept = await sweepUpload(ctx, UPLOAD_MODAL_POLICIES)
     recordCleared(swept.cleared)
     if (swept.cleared.length > 0) {
       ctx.log.info(`cleared a modal over the feed before ${before}`, { cleared: swept.cleared.join(', ') })
@@ -860,7 +883,153 @@ async function clearOverFeed(ctx: ScriptContext<unknown>, before: string): Promi
   } catch (err) {
     const code = (err as { code?: string }).code
     if (code === 'E_SECURITY_CHECK' || code === 'E_MODAL_UNHANDLED' || code === 'E_MODAL_STUCK') throw err
+    // Every stop of the resume-edit walk is named and must reach the operator (1.35.0).
+    if (code?.startsWith('E_RESUME_EDIT')) throw err
     ctx.log.warn(`could not sweep the feed for modals before ${before} — continuing`, { error: String(err) })
+  }
+}
+
+/**
+ * `sweepModals` for the upload walk's own screens, plus the one answer a sweep cannot give (1.35.0): the
+ * resume-edit banner. The register raises it as `E_RESUME_EDIT_BANNER` instead of tapping it; this runs
+ * `discardResumedEdit` and sweeps again. Used before Post only — clearing the feed and entering a
+ * screen — so a walk through the editor can never start after a video has been submitted.
+ */
+async function sweepUpload(ctx: ScriptContext<unknown>, policies: Record<string, ModalPolicy>): Promise<{ cleared: string[] }> {
+  try {
+    return await sweepModals(ctx, policies)
+  } catch (err) {
+    if ((err as { code?: string }).code !== 'E_RESUME_EDIT_BANNER') throw err
+  }
+  await discardResumedEdit(ctx)
+  try {
+    const again = await sweepModals(ctx, policies)
+    return { cleared: ['tt.resume-edit', ...again.cleared] }
+  } catch (err) {
+    // The banner back straight after a discard: `discardResumedEdit` stops the run by name rather than go round.
+    if ((err as { code?: string }).code === 'E_RESUME_EDIT_BANNER') await discardResumedEdit(ctx)
+    throw err
+  }
+}
+
+/** How long the unfinished post gets to open after "Edit" is tapped on the resume-edit banner (1.35.0). */
+const RESUME_EDIT_OPEN_MS = 10_000
+
+/** How long the exit dialog gets to appear after one BACK (1.35.0). The moto and bundle 04fe3367 drew it inside about a second. */
+const EXIT_DIALOG_WAIT_MS = 4_000
+
+/** What to do by hand when the resume-edit walk stops. */
+const RESUME_EDIT_BY_HAND =
+  'On the phone, open TikTok, tap "Edit" on the "Lanjut mengedit postingan ini?" banner (or open the unfinished post from the profile\'s drafts), go back and choose "Buang", then re-run.'
+
+/**
+ * Throws away the unfinished post TikTok's resume-edit banner offers, without ever keeping it (1.35.0).
+ *
+ * 1.34.2 answered the banner "Simpan draf", which turned every leftover edit — a failed production run
+ * leaves one — into a saved draft on the account. The owner does not want that. So: tap the banner's
+ * "Edit", wait for the editor or post screen, press BACK until the exit dialog shows, and tap exactly
+ * "Buang" (`tt.discard-draft`'s `deny`). Then TikTok is relaunched, so the walk continues from a clean
+ * feed rather than from wherever "Buang" leaves the app (the picker, on bundle 04fe3367).
+ *
+ * What each build does after "Edit" is NOT known: no production bundle carries the banner, and the moto
+ * fixture stops at the banner itself. What BACK does from the editor is known only from bundles: the
+ * moto (E14) and the Samsung build with ids like `upu` (04fe3367) raise "Buang" / "Simpan draf"; the
+ * Samsung build with ids like `oju` (4063f322) left the editor for the profile with no dialog. So when
+ * the dialog does not come, this stops with a named error and says what to do by hand — it does not
+ * guess whether TikTok kept the edit. Runs at most once per run: a banner back after a discard is
+ * `E_RESUME_EDIT_PERSISTS`. Nothing here posts anything.
+ */
+async function discardResumedEdit(ctx: ScriptContext<unknown>): Promise<void> {
+  if (attempt.resumeEditDiscarded) {
+    await capture(ctx, 'resume-edit-again')
+    throw Object.assign(
+      new Error(`TikTok offered to resume an unfinished post again after this run had already discarded one with "Buang" — the run stopped rather than go round, and nothing was posted. ${RESUME_EDIT_BY_HAND}`),
+      { code: 'E_RESUME_EDIT_PERSISTS' },
+    )
+  }
+  attempt.resumeEditDiscarded = true
+
+  const banner = await ctx.device.dump()
+  const edit = resumeEditTarget(banner)
+  if (!edit) {
+    await capture(ctx, 'resume-edit-unreadable', banner)
+    throw Object.assign(
+      new Error(`TikTok is offering to resume an unfinished post, but the banner's "Edit" button could not be read, so the run left it alone (it never answers "Simpan draf") — nothing was posted. ${RESUME_EDIT_BY_HAND}`),
+      { code: 'E_RESUME_EDIT_UNREADABLE' },
+    )
+  }
+  ctx.log.info('TikTok offered to resume an unfinished post — opening it with "Edit" to throw it away with "Buang", never "Simpan draf"')
+  await ctx.device.tap({ point: centreOf(edit) })
+  recordCleared(['tt.resume-edit'])
+
+  const opened = await waitForResumedEdit(ctx)
+  if (opened === 'not-opened') {
+    await capture(ctx, 'resume-edit-not-opened')
+    throw Object.assign(
+      new Error(`"Edit" was tapped on TikTok's resume banner, but neither the editor nor the post screen opened within ${RESUME_EDIT_OPEN_MS / 1000}s — nothing was discarded and nothing was posted. ${RESUME_EDIT_BY_HAND}`),
+      { code: 'E_RESUME_EDIT_NOT_OPENED' },
+    )
+  }
+  if (opened === 'unreadable') ctx.log.warn('the reopened post could not be confirmed by dump (a screen that plays video) — backing out of it blind')
+
+  // From the post screen BACK first returns to the editor, and with a keyboard up the first BACK only
+  // closes it (bundle 4063f322: post → post → editor) — so up to four presses, each followed by a bounded
+  // wait for the exit dialog. Once TikTok has left the upload flow without the dialog, nothing more is pressed.
+  for (let press = 1; press <= 4; press++) {
+    await ctx.device.key('BACK')
+    const seen = await waitForExitDialog(ctx)
+    if (seen === 'dialog') {
+      const swept = await sweepModals(ctx, ABANDON_MODAL_POLICIES, { maxRounds: 2 })
+      recordCleared(swept.cleared)
+      if (!swept.cleared.includes('tt.discard-draft')) break
+      ctx.log.info('threw the unfinished post away with "Buang" — relaunching TikTok onto a clean feed', { presses: press })
+      if (!(await relaunch(ctx))) await capture(ctx, 'feed-not-ready')
+      return
+    }
+    if (seen === 'left') break
+  }
+  await capture(ctx, 'resume-edit-no-exit-dialog')
+  throw Object.assign(
+    new Error(
+      `TikTok's unfinished post was opened to throw it away, but leaving the editor never showed the "Buang" / "Simpan draf" dialog, so the run stopped instead of guessing. Nothing was posted; the unfinished post may still be on this account (on one Samsung TikTok build, BACK has been seen to leave the editor with no dialog at all). ${RESUME_EDIT_BY_HAND}`,
+    ),
+    { code: 'E_RESUME_EDIT_NO_EXIT_DIALOG' },
+  )
+}
+
+/** After "Edit": `opened` once the editor or post screen reads; `unreadable` when the screen could not be read to say; `not-opened` when TikTok stayed on the feed or the banner. */
+async function waitForResumedEdit(ctx: ScriptContext<unknown>): Promise<'opened' | 'unreadable' | 'not-opened'> {
+  const deadline = Date.now() + RESUME_EDIT_OPEN_MS
+  let last: 'unreadable' | 'not-opened' = 'not-opened'
+  for (;;) {
+    await sleep(1_500)
+    try {
+      const tree = await ctx.device.dump()
+      const screen = detectScreen(tree)
+      if (screen === 'editor' || screen === 'post') return 'opened'
+      last = screen === 'unknown' && !matchModals(tree).some((e) => e.id === 'tt.resume-edit') ? 'unreadable' : 'not-opened'
+    } catch {
+      last = 'unreadable'
+    }
+    if (Date.now() >= deadline) return last
+  }
+}
+
+/** After one BACK: `dialog` when the exit dialog is up; otherwise, at the deadline, `in-flow` (still the editor, post screen, or unreadable) or `left`. */
+async function waitForExitDialog(ctx: ScriptContext<unknown>): Promise<'dialog' | 'in-flow' | 'left'> {
+  const deadline = Date.now() + EXIT_DIALOG_WAIT_MS
+  let last: 'in-flow' | 'left' = 'in-flow'
+  for (;;) {
+    await sleep(800)
+    try {
+      const tree = await ctx.device.dump()
+      if (matchModals(tree).some((e) => e.id === 'tt.discard-draft')) return 'dialog'
+      const screen = detectScreen(tree)
+      last = screen === 'editor' || screen === 'post' || screen === 'unknown' ? 'in-flow' : 'left'
+    } catch {
+      last = 'in-flow'
+    }
+    if (Date.now() >= deadline) return last
   }
 }
 
@@ -1086,9 +1255,55 @@ async function readPostScreen(ctx: ScriptContext<unknown>, step: string): Promis
   )
 }
 
-/** Types the caption, then one space when it ends in `#tag`/`@name` — see the comment at the call site. Returns the typing rung that ran. */
+/**
+ * How many code points one `type` call carries (1.35.0). The guest agent's IME types one code point at a
+ * time, 40–140 ms apart, and the drivers gave the whole call a flat 15 s — about 160 characters. Two
+ * production captions (200 and 306 characters, bundles 04fe3367 and 4063f322, Samsung SM-A075F) failed
+ * "guest agent did not respond within 15000ms" while the phone went on typing. Sixty code points is at
+ * most 8.4 s at the slowest delay, inside that budget even on a core that predates the drivers' fix.
+ */
+const CAPTION_PIECE_CODE_POINTS = 60
+
+/**
+ * `caption` cut into pieces of at most `max` code points that join back to exactly `caption` (1.35.0).
+ * A cut goes right AFTER a space where one fits, so every piece but the last ends a word: a `#tag` or
+ * `@name` is never left open at the end of a piece, with TikTok's suggestion list up while the next call
+ * starts. A cut never falls inside a grapheme — a surrogate pair, a skin-toned emoji or a ZWJ family stays
+ * whole. A single word longer than `max` is cut between its graphemes.
+ */
+export function captionPieces(caption: string, max: number = CAPTION_PIECE_CODE_POINTS): string[] {
+  const graphemes = Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(caption), (s) => s.segment)
+  const size = (g: string): number => [...g].length
+  const pieces: string[] = []
+  let start = 0
+  let length = 0
+  for (let i = 0; i < graphemes.length; i++) {
+    const g = graphemes[i] as string
+    while (length + size(g) > max && i > start) {
+      let cut = i
+      for (let j = i - 1; j > start; j--) {
+        if (/^\s+$/u.test(graphemes[j] as string)) {
+          cut = j + 1
+          break
+        }
+      }
+      pieces.push(graphemes.slice(start, cut).join(''))
+      start = cut
+      length = graphemes.slice(start, i).reduce((sum, s) => sum + size(s), 0)
+    }
+    length += size(g)
+  }
+  if (start < graphemes.length) pieces.push(graphemes.slice(start).join(''))
+  return pieces
+}
+
+/** Types the caption in pieces (`captionPieces`), then one space when it ends in `#tag`/`@name` — see the comment at the call site. Returns the typing rung that ran. */
 async function typeCaption(ctx: ScriptContext<unknown>, caption: string): Promise<string> {
-  const typed = await ctx.device.type(caption)
+  // The field is read back once, after the last piece, by `enterCaption` — as before.
+  const pieces = caption === '' ? [caption] : captionPieces(caption)
+  let via = ''
+  for (const piece of pieces) via = (await ctx.device.type(piece)).via
+  if (pieces.length > 1) ctx.log.info('typed the caption in pieces', { pieces: pieces.length, codePoints: [...caption].length })
   if (endsInTagToken(caption)) {
     // A caption ending in `#tag` or `@name` leaves TikTok's suggestion list open, and that list
     // REPLACES the post screen — no Post button anywhere in the tree (observed 2026-09-11 with
@@ -1097,7 +1312,7 @@ async function typeCaption(ctx: ScriptContext<unknown>, caption: string): Promis
     await ctx.device.type(' ')
     ctx.log.info('closed the tag suggestions with a trailing space')
   }
-  return typed.via
+  return via
 }
 
 /**
@@ -1214,6 +1429,98 @@ async function watchPostTap(ctx: ScriptContext<unknown>, frameWidth: number, cap
     if (Date.now() >= deadline) break
   }
   return sawPost ? 'still-there' : 'unreadable'
+}
+
+/** How long a failed run waits for the caption to stop changing before it presses BACK (1.35.0). */
+const TYPING_SETTLE_MS = 5_000
+
+/**
+ * Waits, bounded, until two reads in a row show the caption field holding the same number of code points
+ * (1.35.0). A `type` call that timed out on the host does not stop the phone: the guest agent's IME goes
+ * on committing the rest of the text (bundles 04fe3367 and 4063f322). BACK pressed into that sends the
+ * remaining keys to whatever screen BACK opens. Returns at once when the screen reads as something other
+ * than the post screen; a failed read is a miss, and the wait goes on to its deadline.
+ */
+async function waitForTypingToStop(ctx: ScriptContext<unknown>): Promise<void> {
+  const deadline = Date.now() + TYPING_SETTLE_MS
+  let previous: number | null = null
+  for (;;) {
+    try {
+      const tree = await ctx.device.dump()
+      const field = detectScreen(tree) === 'post' ? captionField(tree) : null
+      if (!field) return
+      const length = [...captionTextToClear(field)].length
+      if (length === previous) return
+      previous = length
+    } catch {
+      previous = null
+    }
+    if (Date.now() >= deadline) {
+      ctx.log.warn(`the caption field was still changing after ${TYPING_SETTLE_MS / 1000}s — backing out anyway`)
+      return
+    }
+    await sleep(700)
+  }
+}
+
+/**
+ * `finish`'s abandon walk (1.35.0): leave an unfinished post without keeping it. Returns true when
+ * TikTok's security check was met, which is left on screen. Best effort — the caller force-stops TikTok
+ * whatever happens here.
+ *
+ * Only when the run got past the camera screen, or TikTok reads as one of the later upload screens (a
+ * fresh process after a timeout kill has no attempt state) — before that no unfinished post exists, and
+ * BACK on the feed only sends TikTok to the background ahead of the force-stop. A caption still being
+ * typed is let finish first (`waitForTypingToStop`). Then up to four BACK presses, each after a sweep:
+ * the sweep taps "Buang" the moment the exit dialog is up (`ABANDON_MODAL_POLICIES`), and nothing the
+ * register resolves can tap "Simpan draf" or "Draf" (`keepsDraft`). The walk ends at "Buang", or as soon
+ * as the feed or profile is back.
+ *
+ * What each build does here is known only from the production bundles: the moto (E14) and the Samsung
+ * build with ids like `upu` (04fe3367) raise "Buang" / "Simpan draf" on BACK from the editor, and "Buang"
+ * lands on the picker; the Samsung build with ids like `oju` (4063f322) went from the editor straight to
+ * the profile with no dialog. What that build keeps of the edit is not known. If it is left for the next
+ * launch, the next run meets the resume-edit banner and throws it away there (`discardResumedEdit`).
+ */
+async function backOutOfEditor(ctx: ScriptContext<unknown>): Promise<boolean> {
+  let tree: UiNode | null = await ctx.device.dump().catch(() => null)
+  const screen = tree ? detectScreen(tree) : 'unknown'
+  const inUpload = screen === 'picker' || screen === 'preview' || screen === 'editor' || screen === 'post'
+  if (!inUpload && !attempt.screens.includes('camera')) {
+    ctx.log.info('the run failed before any unfinished post existed — not backing out', { screen })
+    return false
+  }
+  if (screen === 'post') await waitForTypingToStop(ctx)
+
+  for (let press = 0; press < 4; press++) {
+    if (press > 0) tree = await ctx.device.dump().catch(() => null)
+    if (tree && detectScreen(tree) === 'feed') {
+      ctx.log.info(press === 0 ? 'TikTok is already on its feed or profile — nothing to back out of' : 'left the upload flow without an exit dialog — nothing to discard here', { presses: press })
+      return false
+    }
+    try {
+      const swept = await sweepModals(ctx, ABANDON_MODAL_POLICIES, { maxRounds: 2 })
+      recordCleared(swept.cleared)
+      if (swept.cleared.includes('tt.discard-draft')) {
+        ctx.log.info('threw the unfinished post away with "Buang"', { presses: press })
+        return false
+      }
+    } catch (err) {
+      const code = (err as { code?: string }).code
+      if (code === 'E_SECURITY_CHECK') return true
+      if (code === 'E_RESUME_EDIT_BANNER') {
+        ctx.log.warn('TikTok offered to resume the unfinished post while backing out — left for the next run to throw away')
+        return false
+      }
+      throw err
+    }
+    await ctx.device.key('BACK')
+    await sleep(900)
+  }
+  const last = await sweepModals(ctx, ABANDON_MODAL_POLICIES, { maxRounds: 2 })
+  recordCleared(last.cleared)
+  if (last.cleared.includes('tt.discard-draft')) ctx.log.info('threw the unfinished post away with "Buang"')
+  return false
 }
 
 /**
@@ -1339,10 +1646,12 @@ interface AttemptState {
   folderVideo: { hash: string; path: string } | null
   /** Set when TikTok's security check was seen after Post: `finish` then leaves TikTok open on it instead of force-stopping. */
   leaveOnScreen: boolean
+  /** Set once `discardResumedEdit` has run: a second resume-edit banner in the same run stops it by name (1.35.0). */
+  resumeEditDiscarded: boolean
 }
 
 function freshAttemptState(): AttemptState {
-  return { videoArtifactId: null, caption: null, queueClaim: null, remotePath: null, screens: [], modalsHandled: [], folderVideo: null, leaveOnScreen: false }
+  return { videoArtifactId: null, caption: null, queueClaim: null, remotePath: null, screens: [], modalsHandled: [], folderVideo: null, leaveOnScreen: false, resumeEditDiscarded: false }
 }
 
 /**
@@ -1621,11 +1930,27 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     // (inside enterScreen) clears both before the dump this screen's own act reads.
     //
     // One retap of "+" (1.34.1), for a sheet that took the first tap and was then closed by this
-    // screen's own sweep, leaving the feed. Only after a modal was cleared, only while the feed's own
-    // nav is on screen, and only once — so a camera still arriving can never take a second tap on its
-    // record button.
+    // screen's own sweep, leaving the feed. Only while the feed's own nav is on screen, and only once
+    // — so a camera still arriving can never take a second tap on its record button.
+    //
+    // 1.35.0: on a screen that reads "feed" too, now that the Samsung feed reads as itself instead of
+    // "post" (bundle 997c7cfe) or "unknown". After a cleared modal it fires as before. With nothing
+    // cleared it waits for a SECOND read that still shows the nav: rounds are 2 s apart, so by then a
+    // camera that was merely slow has arrived, and "+" is never tapped into it.
+    let navReads = 0
     const camera = await enterScreen(ctx, UPLOAD_MODAL_POLICIES, 'camera', {
-      retapWhen: [{ screen: 'unknown', when: (tree, cleared) => cleared.length > 0 && feedNavOnScreen(tree, frame.width), max: 1, tap: tapCreate }],
+      retapWhen: [
+        {
+          screen: ['unknown', 'feed'],
+          when: (tree, cleared) => {
+            if (!feedNavOnScreen(tree, frame.width)) return false
+            navReads += 1
+            return cleared.length > 0 || navReads >= 2
+          },
+          max: 1,
+          tap: tapCreate,
+        },
+      ],
     })
     recordCleared(camera.cleared)
     const uploadButton = findNode(requireTree(camera, 'camera'), (n) => hasShortId(n, 'upload_hot_area'))
@@ -1888,8 +2213,9 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
    * 2. Settles the queue claim as `failed` (if this process still holds `attempt.queueKey` — a
    *    fresh process after a timeout kill does not, and the claim is recovered instead by
    *    `claimNext`'s own stale-claim reclaim, queue.ts §3.3).
-   * 3. **The abandon walk** (task 6): backs out of whatever screen the flow died on with bounded
-   *    BACK presses, sweeping with `ABANDON_MODAL_POLICIES` between each — the one place in this
+   * 3. **The abandon walk** (task 6; `backOutOfEditor` since 1.35.0): backs out of an unfinished post
+   *    with bounded BACK presses, tapping "Buang" when the exit dialog shows and never "Simpan draf"
+   *    or "Draf", sweeping with `ABANDON_MODAL_POLICIES` between each — the one place in this
    *    file BACK is the right tool, because here the goal genuinely IS to navigate backward out of
    *    the flow, unlike `run()`'s forward walk. Every step is wrapped so a failure here (the
    *    inspector being unusable, e.g.) is logged and swallowed, never thrown — `finish()` must not
@@ -1921,12 +2247,9 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       if (ctx.error.code !== 'E_SECURITY_CHECK') {
         let securityCheck = false
         try {
-          for (let i = 0; i < 3; i++) {
-            await sweepModals(ctx, ABANDON_MODAL_POLICIES, { maxRounds: 2 })
-            await ctx.device.key('BACK')
-            await sleep(600)
-          }
-          await sweepModals(ctx, ABANDON_MODAL_POLICIES, { maxRounds: 2 })
+          // Backs out of an unfinished post with "Buang" and never keeps a draft (1.35.0) — see `backOutOfEditor`.
+          securityCheck = await backOutOfEditor(ctx)
+          if (securityCheck) ctx.log.warn('a security check appeared while backing out — leaving TikTok open on it')
         } catch (err) {
           // The register raises the security check by its own code wherever it appears — the abandon
           // walk included — and it is left on screen here too.

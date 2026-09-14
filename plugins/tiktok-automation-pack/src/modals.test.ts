@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import { UiNodeSchema, type UiNode } from '@enkaku/protocol'
 import type { ArtifactApi, DeviceApi, FarmApi, JobsApi, KvApi, PluginStorage, ScriptContext, ScriptLogger } from '@enkaku/sdk'
-import { TIKTOK_MODALS, UPLOAD_MODAL_POLICIES, assertNeverList, matchModals, sweepModals, type ModalEntry } from './modals'
+import { TIKTOK_MODALS, UPLOAD_MODAL_POLICIES, assertNeverList, keepsDraft, matchModals, resumeEditTarget, sweepModals, type ModalEntry } from './modals'
 
 /**
  * `modals.ts` — the register, the never-list guard, and `sweepModals` (plan 113 §5 step 113.1,
@@ -86,8 +86,25 @@ describe('TIKTOK_MODALS — matched against the real device dumps they were writ
   test('tt.resume-edit matches the banner over the feed (2026-09-14), and tt.discard-draft does not, though both show "Simpan draf"', () => {
     const banner = loadFixture('screen-feed-resume-edit-banner.json')
     expect(matchModals(banner).map((e) => e.id)).toEqual(['tt.resume-edit'])
-    expect(UPLOAD_MODAL_POLICIES['tt.resume-edit']).toBe('ack')
-    expect(TIKTOK_MODALS.find((e) => e.id === 'tt.resume-edit')?.actions.ack).toEqual({ text: 'Simpan draf' })
+  })
+
+  test('tt.resume-edit is never answered "Simpan draf" (1.35.0): its answer is "Edit", walked by post-video, and the sweep hands it off by code', () => {
+    const entry = TIKTOK_MODALS.find((e) => e.id === 'tt.resume-edit')
+    expect(entry?.actions).toEqual({ ack: { text: 'Edit' } })
+    expect(entry?.abortCode).toBe('E_RESUME_EDIT_BANNER')
+    expect(UPLOAD_MODAL_POLICIES['tt.resume-edit']).toBe('abort')
+  })
+
+  test('resumeEditTarget is the banner\'s own "Edit" button, never "Simpan draf" beside it (1.35.0)', () => {
+    const target = resumeEditTarget(loadFixture('screen-feed-resume-edit-banner.json'))
+    expect(target?.text).toBe('Edit')
+    expect(target?.bounds).toEqual({ left: 419, top: 163, right: 685, bottom: 219 })
+    // The editor's side button carries "Edit" as a desc, and there is no banner there.
+    expect(resumeEditTarget(loadFixture('screen-exit-modal.json'))).toBeNull()
+  })
+
+  test('tt.discard-draft offers only "Buang" (1.35.0)', () => {
+    expect(TIKTOK_MODALS.find((e) => e.id === 'tt.discard-draft')?.actions).toEqual({ deny: { text: 'Buang' } })
   })
 
   test('tt.discard-draft matches the exit-modal screen dump, and nothing else in the register does', () => {
@@ -170,6 +187,17 @@ describe('assertNeverList — the safety guard, promoted from a comment to somet
       { id: 'poisoned.agree', match: { textIncludes: ['Kebijakan baru'] }, actions: { ack: { text: 'Setuju' } }, seen: (TIKTOK_MODALS[0] as ModalEntry).seen },
     ]
     expect(() => assertNeverList(poisoned)).toThrow()
+  })
+
+  test('refuses an answer that keeps a draft, for every policy — "Simpan draf" and "Draf" are never declared (1.35.0)', () => {
+    for (const label of ['Simpan draf', 'Draf', 'Save draft']) {
+      for (const policy of ['allow', 'deny', 'ack'] as const) {
+        const poisoned: ModalEntry[] = [{ id: 'poisoned.draft', match: { textIncludes: ['Buang'] }, actions: { [policy]: { text: label } }, seen: (TIKTOK_MODALS[0] as ModalEntry).seen }]
+        expect(() => assertNeverList(poisoned)).toThrow()
+      }
+    }
+    expect(keepsDraft({ text: 'Buang', desc: '' })).toBe(false)
+    expect(keepsDraft({ text: '', desc: 'Simpan draf' })).toBe(true)
   })
 
   test('does NOT refuse sys.media\'s own allow → "Izinkan semua" — the one deliberate, narrowly-carved exception', () => {
@@ -280,6 +308,36 @@ describe('sweepModals — the looping sweep over a fake ctx (plan 113 §4.2)', (
       expect(taps).toEqual([])
       expect(screenshots).toEqual(['modal-tt.security-check'])
     }
+  })
+
+  test('the resume-edit banner raises E_RESUME_EDIT_BANNER and taps nothing — neither "Simpan draf" nor "Edit" (1.35.0)', async () => {
+    for (const policies of [UPLOAD_MODAL_POLICIES, { 'tt.resume-edit': 'ack' as const }]) {
+      const { ctx, taps } = fakeCtx([loadFixture('screen-feed-resume-edit-banner.json')])
+      await expect(sweepModals(ctx, policies)).rejects.toMatchObject({ code: 'E_RESUME_EDIT_BANNER' })
+      expect(taps).toEqual([])
+    }
+  })
+
+  test('a deny on the exit dialog taps "Buang", and with "Buang" unreadable it never falls back to "Simpan draf" (1.35.0)', async () => {
+    const exit = loadFixture('screen-exit-modal.json')
+    const done = fakeCtx([exit, loadFixture('screen-editor.json')])
+    expect((await sweepModals(done.ctx, { 'tt.discard-draft': 'deny' })).cleared).toEqual(['tt.discard-draft'])
+    // "Buang"'s own bounds in screen-exit-modal.json: [80,257][317,292].
+    expect(done.taps).toEqual([{ point: { x: 199, y: 275 } }])
+
+    // The identity fallback used to take any clickable node carrying the dialog's identity — "Simpan draf" included.
+    const noBuang = structuredClone(exit)
+    const strip = (n: UiNode): void => {
+      n.children = n.children.filter((c) => c.text !== 'Buang')
+      for (const c of n.children) {
+        if (c.text === 'Simpan draf') c.clickable = true
+        strip(c)
+      }
+    }
+    strip(noBuang)
+    const refused = fakeCtx([noBuang])
+    await expect(sweepModals(refused.ctx, { 'tt.discard-draft': 'deny' })).rejects.toMatchObject({ code: 'E_MODAL_UNHANDLED' })
+    expect(refused.taps).toEqual([])
   })
 
   /*

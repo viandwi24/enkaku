@@ -87,10 +87,10 @@ export function centreOf(n: UiNode): { x: number; y: number } {
  * Which of the six screens this dump was taken on — the seven E10 ids, checked most-specific
  * first, because several of them are NOT mutually exclusive (the app keeps earlier screens
  * mounted underneath later ones, which is exactly what makes E9's ambiguity possible in the
- * first place). Never returns `'feed'`: §3.5 says the feed is never dumped (E3 — the inspector
- * cannot see it), so there is no anchor to detect it by; a caller that starts on the feed knows
- * that by NOT having called this function yet, not by this function saying so. A tree matching
- * none of the six static screens comes back `'unknown'` rather than a guess.
+ * first place). §3.5 said the feed is never dumped (E3 — the inspector cannot see it on the moto),
+ * so this used to never return `'feed'`. The Samsung fleet's feed dumps are complete, and since
+ * 1.35.0 a tree with the bottom nav's three tabs on screen reads `'feed'` — see the last branch. A
+ * tree matching none of the screens comes back `'unknown'` rather than a guess.
  */
 export function detectScreen(root: UiNode): ScreenId {
   const has = (shortId: string) => findNode(root, (n) => hasId(n, shortId)) !== null
@@ -134,11 +134,78 @@ export function detectScreen(root: UiNode): ScreenId {
 
   // The post screen (screen-post.json) carries NONE of the seven ids — its own resourceIds
   // (`gya`, `sp3`, `g9g`, all confirmed present in that fixture) are exactly the obfuscated kind
-  // this function refuses to anchor on. The one structural fact the walk DID confirm (E13) is
-  // that it carries exactly one `EditText` — the caption field — so that identifies it instead.
-  if (findNode(root, (n) => n.className === 'android.widget.EditText')) return 'post'
+  // this function refuses to anchor on. E13 found it carries one `EditText`, the caption field.
+  //
+  // "Any EditText" was not enough (1.35.0). On the Samsung fleet's For You feed (production bundle
+  // 997c7cfe, `screen-feed-samsung-player-edittext.json`) two EditTexts sit inside the video player
+  // (`player_view > … > r5y`), one with inverted bounds and one drawn on the frame, and the "add phone
+  // number" sheet carries one too ("Nomor telepon", `screen-feed-samsung-phone-sheet.json`). Both read
+  // as `'post'`, so `post-video` failed "expected the camera screen but the dump reads post" on a feed.
+  // So the post screen now needs BOTH halves of what a person sees there: a caption field drawn on the
+  // frame and outside the player, and an on-screen "Posting" button — `sp3` on the moto
+  // (screen-post.json), `t6b`/`tc0` [367,1397][697,1487] on the Samsungs (screen-post-samsung.json),
+  // matched by its label, never by those ids.
+  if (postScreenShowing(root)) return 'post'
+
+  // The feed's own bottom nav, all three tabs drawn on screen (1.35.0). The inspector usually cannot
+  // read an autoplaying feed (E3), but the Samsung fleet's dumps of it are complete, and a feed that
+  // reads `'unknown'` cannot be told apart from a screen that has not arrived. The own profile carries
+  // the same bottom nav, so it reads `'feed'` too — to this flow both mean "not in the upload walk".
+  if (feedNavShowing(root)) return 'feed'
 
   return 'unknown'
+}
+
+/** The post screen's publish button labels. The English spellings are confident; `Publicar` is unverified. */
+export const POST_BUTTON_LABELS = ['Posting', 'Post', 'Publicar']
+
+/** The resource ids of the subtrees that hold the feed's video player — nothing inside them is ever the caption field. */
+const PLAYER_SUBTREE_IDS = ['player_view', 'video_visible_area_container']
+
+/** The width the dump spans: its root's, or the widest top-level window when the root reports 0,0,0,0 (seen in this pack's fixtures). */
+function frameWidthOf(root: UiNode): number {
+  return Math.max(root.bounds.right, ...root.children.map((c) => c.bounds.right), 0)
+}
+
+/** Drawn on the frame: a real size, not above or left of the screen, and not past its right edge (a page kept in the tree off to the side). */
+function onFrame(n: UiNode, width: number): boolean {
+  const b = n.bounds
+  return b.right > b.left && b.bottom > b.top && b.left >= 0 && b.top >= 0 && (width <= 0 || b.right <= width + 2)
+}
+
+/**
+ * The post screen, read from what it shows: an EditText on the frame and outside every player subtree,
+ * and an on-screen, non-editable node labelled "Posting". Exported for the tests.
+ */
+export function postScreenShowing(root: UiNode): boolean {
+  const width = frameWidthOf(root)
+  const player = new Set<UiNode>()
+  for (const container of findAll(root, (n) => PLAYER_SUBTREE_IDS.some((id) => hasId(n, id)))) walk(container, (n) => player.add(n))
+  const field = findNode(root, (n) => n.className === 'android.widget.EditText' && !player.has(n) && onFrame(n, width))
+  if (!field) return false
+  return findNode(root, (n) => !/EditText|AutoCompleteTextView/.test(n.className) && matchesLabel(n.text, POST_BUTTON_LABELS) && onFrame(n, width)) !== null
+}
+
+/** The bottom nav's three tabs, by desc (or text), in id-ID and en. */
+const FEED_NAV_TABS: string[][] = [
+  ['Beranda', 'Home'],
+  ['Buat', 'Create'],
+  ['Profil', 'Profile'],
+]
+
+/** `value` reads as `label`: the same words, case-insensitive, optionally followed by a non-letter ("Profil, 2 notifikasi") — `post-video.ts`'s `labelMatches` rule. */
+function readsAs(value: string, label: string): boolean {
+  const v = value.trim().toLowerCase()
+  const l = label.toLowerCase()
+  if (!v.startsWith(l)) return false
+  return v.length === l.length || !/[\p{L}\p{N}]/u.test(v.charAt(l.length))
+}
+
+/** True when Beranda, Buat and Profil (or Home, Create and Profile) are all drawn on screen. Exported for the tests. */
+export function feedNavShowing(root: UiNode): boolean {
+  const width = frameWidthOf(root)
+  const drawn = findAll(root, (n) => onFrame(n, width) && (n.desc.trim() !== '' || n.text.trim() !== ''))
+  return FEED_NAV_TABS.every((labels) => drawn.some((n) => labels.some((l) => readsAs(n.desc, l) || n.text.trim().toLowerCase() === l.toLowerCase())))
 }
 
 export interface PickerCell {

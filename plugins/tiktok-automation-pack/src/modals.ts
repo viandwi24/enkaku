@@ -60,7 +60,9 @@ export interface ModalEntry {
   /**
    * When set, a match is never answered and `sweepModals` throws THIS code, whatever the caller's
    * policy — for a sheet an operator must see and act on by hand (`tt.security-check`), so `finish`
-   * can recognise it and leave it on screen instead of a generic `E_MODAL_UNHANDLED`.
+   * can recognise it and leave it on screen instead of a generic `E_MODAL_UNHANDLED`; or for a dialog
+   * whose answer is a walk across screens that one tap cannot make (`tt.resume-edit`, walked by
+   * `post-video.ts`'s `discardResumedEdit`), so the caller that owns the walk can recognise it (1.35.0).
    */
   abortCode?: string
   /** The operator-facing sentence thrown with `abortCode`. */
@@ -223,11 +225,21 @@ export const TIKTOK_MODALS: ModalEntry[] = [
   {
     id: 'tt.resume-edit',
     // A banner over the For You feed, "Lanjut mengedit postingan ini?" with "Simpan draf" and "Edit", when an
-    // unfinished post was left in the editor (seen on the owner's moto, 2026-09-14, after a dry run backed out —
-    // a failed production run leaves the same). `ack` is "Simpan draf": the banner goes, the draft stays in the
-    // profile's drafts, nothing is posted and nothing is thrown away. "Edit" would reopen some other run's video.
+    // unfinished post was left in the editor (seen on the owner's moto, 2026-09-14, after a dry run backed out;
+    // `screen-feed-resume-edit-banner.json`). No production bundle carries it, so which Samsung build raises it is
+    // not known — only that a force-stop with an unposted edit open leaves one behind for the next launch.
+    //
+    // 1.34.2 answered "Simpan draf", which turned every leftover edit into a saved draft on a real account. The
+    // owner does not want failed runs to leave drafts (2026-09-14), so 1.35.0 answers "Edit" and then leaves the
+    // editor through its exit dialog with "Buang" — a walk across screens one tap cannot make. The sweep therefore
+    // never taps this banner: it raises `E_RESUME_EDIT_BANNER` whatever the policy, and `post-video.ts`'s
+    // `discardResumedEdit` walks it. `ack` names the "Edit" that walk taps (`resumeEditTarget`), so
+    // `assertNeverList` judges it like every other answer.
     match: { textIncludes: ['Lanjut mengedit postingan ini', 'Continue editing this post'], onScreen: true },
-    actions: { ack: { text: 'Simpan draf' } },
+    actions: { ack: { text: 'Edit' } },
+    abortCode: 'E_RESUME_EDIT_BANNER',
+    abortMessage:
+      'TikTok is offering to resume an unfinished post ("Lanjut mengedit postingan ini?"). A sweep never answers it: the post-video walk opens it with "Edit" and discards it with "Buang".',
     seen: { device: 'moto g06 power (ZP2222RMBS)', app: 'com.ss.android.ugc.trill', locale: 'id-ID', at: '2026-09-14' },
   },
   {
@@ -238,8 +250,16 @@ export const TIKTOK_MODALS: ModalEntry[] = [
     // by the plan's own wording ("caller's" — §4.2's table leaves the choice open), so this is a
     // judgment call made here and worth a caller double-checking before relying on it.
     // Not while the resume-edit banner is up: it carries the same "Simpan draf" button (1.34.2).
+    //
+    // 1.35.0: `deny` → "Buang" is the ONLY answer. The `ack` → "Simpan draf" this entry used to offer is gone —
+    // the owner does not want a run to leave drafts on an account — and `keepsDraft` stops any fallback from
+    // reaching that button either. Which build shows this dialog is known only from these dumps: the moto (E14,
+    // `screen-exit-modal.json`) and the Samsung build with ids like `upu`/`t6b` (production bundle 04fe3367
+    // ui/00063: BACK from the editor raised "Buang" [102,246][356,284] / "Simpan draf") show it; the Samsung
+    // build with ids like `oju`/`tc0` (bundle 4063f322 ui/00063 → 00065) went from the editor straight to the
+    // profile on BACK, with no dialog at all.
     match: { textIncludes: ['Buang', 'Simpan draf'], notWith: ['Lanjut mengedit postingan ini', 'Continue editing this post'] },
-    actions: { deny: { text: 'Buang' }, ack: { text: 'Simpan draf' } },
+    actions: { deny: { text: 'Buang' } },
     seen: SEEN,
   },
   {
@@ -294,7 +314,8 @@ export const UPLOAD_MODAL_POLICIES: Record<string, ModalPolicy> = {
   'sys.media': 'allow',
   'tt.camera-wall': 'ignore',
   'tt.discard-draft': 'abort',
-  'tt.resume-edit': 'ack',
+  // Never tapped by a sweep, whatever this says — the entry's `abortCode` hands it to `discardResumedEdit` (1.35.0).
+  'tt.resume-edit': 'abort',
   'tt.notice': 'ack',
   // Both observed on the 2026-08-18 posting run, both AFTER the Post tap — which is exactly why the
   // 2026-08-17 walk never met them, and why an unattended run that only knew the pre-post modals
@@ -394,11 +415,16 @@ function resolveActionTarget(nodes: UiNode[], entry: ModalEntry, policy: 'allow'
   if (entry.closeNearIdentity && policy === 'deny') {
     const root = nodes[0]
     const anchor = root ? nodes.find((n) => matchesIdentity(n, entry.match) && drawnOnScreen(n, root)) : undefined
-    if (anchor && root) return closeNear(root, anchor)
+    if (anchor && root) {
+      const close = closeNear(root, anchor)
+      return close && !keepsDraft(close) ? close : null
+    }
   }
+  // Every lookup below reads only nodes that do not keep a draft (1.35.0) — see `keepsDraft`.
+  const candidates = nodes.filter((n) => !keepsDraft(n))
   const sel = entry.actions[policy]
   if (sel) {
-    const direct = nodes.find((n) => selectorMatchesNode(n, sel))
+    const direct = candidates.find((n) => selectorMatchesNode(n, sel))
     if (direct) return direct
   }
   // Locale fallback, and the reason it reuses `dialogs.ts`'s own lists rather than inventing a
@@ -412,15 +438,51 @@ function resolveActionTarget(nodes: UiNode[], entry: ModalEntry, policy: 'allow'
   // widens the locale coverage without widening what this file is allowed to tap.
   const localeFallback = policy === 'deny' ? DENY_SELECTORS : policy === 'ack' ? ACK_SELECTORS : []
   for (const candidate of localeFallback) {
-    const hit = nodes.find((n) => n.clickable && !isEditableNode(n) && selectorMatchesNode(n, candidate))
+    const hit = candidates.find((n) => n.clickable && !isEditableNode(n) && selectorMatchesNode(n, candidate))
     if (hit) return hit
   }
 
+  // The identity fallback is the one that could reach "Simpan draf": that label is part of
+  // `tt.discard-draft`'s identity, so a `deny` whose "Buang" was not readable would have tapped it.
   if (entry.match.textIncludes || entry.match.textEquals) {
-    const fallback = nodes.find((n) => n.clickable && matchesIdentity(n, entry.match))
+    const fallback = candidates.find((n) => n.clickable && matchesIdentity(n, entry.match))
     if (fallback) return fallback
   }
   return null
+}
+
+/**
+ * Labels that keep the unfinished post: "Simpan draf" (the exit dialog and the resume-edit banner) and
+ * "Draf" (the post screen's own button). "draf" also covers "draft"/"drafts".
+ */
+const DRAFT_TERMS = ['draf']
+
+/**
+ * True when tapping `node` would keep a draft (1.35.0). The owner does not want failed runs to leave
+ * drafts on an account, so nothing the register resolves — a declared action, the locale fallback or
+ * the identity fallback — is ever such a node, and `assertNeverList` refuses one as a declared answer.
+ */
+export function keepsDraft(node: Pick<UiNode, 'text' | 'desc'>): boolean {
+  const label = `${node.text} ${node.desc}`.toLowerCase()
+  return DRAFT_TERMS.some((t) => label.includes(t))
+}
+
+/**
+ * The resume-edit banner's own "Edit" button, or null (1.35.0) — what `discardResumedEdit` taps. Only a
+ * node drawn on screen whose TEXT is exactly the entry's `ack` label counts (the editor's side button
+ * carries "Edit" as a desc and is never this one), nearest below the banner's title; never an editable
+ * field, never a draft-keeping label.
+ */
+export function resumeEditTarget(root: UiNode): UiNode | null {
+  const entry = TIKTOK_MODALS.find((e) => e.id === 'tt.resume-edit')
+  const sel = entry?.actions.ack
+  if (!entry || !sel || !('text' in sel)) return null
+  const nodes = flatten(root)
+  const title = nodes.find((n) => matchesIdentity(n, entry.match) && drawnOnScreen(n, root))
+  if (!title) return null
+  const hits = nodes.filter((n) => !isEditableNode(n) && !keepsDraft(n) && n.text.trim() === sel.text && drawnOnScreen(n, root))
+  hits.sort((a, b) => Math.abs(a.bounds.top - title.bounds.bottom) - Math.abs(b.bounds.top - title.bounds.bottom))
+  return hits[0] ?? null
 }
 
 /**
@@ -463,7 +525,8 @@ export function assertNeverList(register: ModalEntry[]): void {
       if (label === null) continue
       if (entry.id === 'sys.media' && policy === 'allow' && label === 'Izinkan semua') continue
       const lower = label.toLowerCase()
-      const terms = policy === 'deny' ? OTHER_NEVER_TERMS : [...GRANT_TERMS, ...OTHER_NEVER_TERMS]
+      // A draft-keeping label is refused for every policy (1.35.0): see `keepsDraft`.
+      const terms = policy === 'deny' ? [...OTHER_NEVER_TERMS, ...DRAFT_TERMS] : [...GRANT_TERMS, ...OTHER_NEVER_TERMS, ...DRAFT_TERMS]
       const hit = terms.find((term) => lower.includes(term))
       if (hit) {
         throw Object.assign(

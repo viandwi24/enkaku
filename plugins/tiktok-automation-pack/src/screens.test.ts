@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import { UiNodeSchema, type UiNode } from '@enkaku/protocol'
-import { captionField, detectScreen, findAll, nextButtonIn, pickerCells, pickerSortLabel, type ScreenId } from './screens'
+import { captionField, detectScreen, feedNavShowing, findAll, nextButtonIn, pickerCells, pickerSortLabel, postScreenShowing, type ScreenId } from './screens'
 
 /**
  * `screens.ts` — the six-screen machine (plan 113 §5 step 113.2, §6 criteria 3, 6), tested against
@@ -42,7 +42,7 @@ describe('detectScreen — against the six real screen dumps', () => {
     expect(detectScreen(loadFixture('screen-preview.json'))).toBe('preview')
   })
 
-  test('never returns "feed" — there is no anchor to detect it by (§3.5); a tree matching none of the seven ids comes back "unknown"', () => {
+  test('a tree matching no screen comes back "unknown", and none of the six walked upload screens reads "feed"', () => {
     const blank: UiNode = { resourceId: '', text: '', desc: '', className: '', packageName: '', bounds: { left: 0, top: 0, right: 0, bottom: 0 }, clickable: false, enabled: true, focused: false, index: 0, children: [] }
     expect(detectScreen(blank)).toBe('unknown')
     const results: ScreenId[] = ['screen-camera-wall.json', 'screen-editor.json', 'screen-exit-modal.json', 'screen-picker.json', 'screen-post.json', 'screen-preview.json'].map(
@@ -142,5 +142,53 @@ describe('detectScreen — the 2026-09 camera', () => {
     expect(detectScreen(loadFixture('screen-camera-wall.json'))).toBe('camera')
     expect(detectScreen(loadFixture('screen-editor.json'))).toBe('editor')
     expect(detectScreen(loadFixture('screen-exit-modal.json'))).toBe('editor')
+  })
+})
+
+/**
+ * The Samsung fleet (production debug bundles, SM-A075F, TikTok id-ID, 2026-09-14; 1.35.0).
+ *
+ * "Any EditText means the post screen" read the For You feed as `'post'` — the feed carries two
+ * EditTexts inside its video player — and a run failed "expected the camera screen but the dump reads
+ * post" (bundle 997c7cfe). The fixtures are those bundles' own trees, systemui removed.
+ */
+describe('detectScreen — the Samsung fleet (1.35.0)', () => {
+  test('screen-feed-samsung-player-edittext.json (997c7cfe ui/00051) -> feed, not post, though an EditText inside the player is drawn on the frame', () => {
+    const tree = loadFixture('screen-feed-samsung-player-edittext.json')
+    // Not vacuous: the fixture really carries an on-frame EditText, which HEAD 1.34.2 read as the caption field.
+    const onFrame = findAll(tree, (n) => n.className === 'android.widget.EditText' && n.bounds.left >= 0 && n.bounds.right <= 720 && n.bounds.bottom > n.bounds.top)
+    expect(onFrame.length).toBeGreaterThan(0)
+    expect(postScreenShowing(tree)).toBe(false)
+    expect(feedNavShowing(tree)).toBe(true)
+    expect(detectScreen(tree)).toBe('feed')
+  })
+
+  test('screen-feed-samsung-phone-sheet.json (afa20e58 ui/00020) -> unknown, not post: the sheet\'s "Nomor telepon" field is no caption field, and the sheet covers the nav', () => {
+    const tree = loadFixture('screen-feed-samsung-phone-sheet.json')
+    expect(findAll(tree, (n) => n.className === 'android.widget.EditText')).toHaveLength(1)
+    expect(detectScreen(tree)).toBe('unknown')
+  })
+
+  test('screen-post-samsung.json (04fe3367 ui/00050) -> post: a caption field outside the player, and "Posting" on screen', () => {
+    const tree = loadFixture('screen-post-samsung.json')
+    expect(postScreenShowing(tree)).toBe(true)
+    expect(detectScreen(tree)).toBe('post')
+  })
+
+  test('the moto is read as before: its post screen is post, and its feed under the resume-edit banner is feed', () => {
+    expect(detectScreen(loadFixture('screen-post.json'))).toBe('post')
+    expect(detectScreen(loadFixture('screen-feed-resume-edit-banner.json'))).toBe('feed')
+  })
+
+  test('a caption field with no "Posting" on screen is not the post screen', () => {
+    for (const name of ['screen-post.json', 'screen-post-samsung.json']) {
+      const tree = structuredClone(loadFixture(name))
+      const visit = (n: UiNode): void => {
+        if (n.text === 'Posting') n.text = ''
+        for (const c of n.children) visit(c)
+      }
+      visit(tree)
+      expect({ name, screen: detectScreen(tree) }).toEqual({ name, screen: 'unknown' })
+    }
   })
 })

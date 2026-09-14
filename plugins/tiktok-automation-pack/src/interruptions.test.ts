@@ -79,14 +79,16 @@ describe('the add-phone-number sheet', () => {
     expect(findInterruption(tree)).toBeNull()
   })
 
-  test('no screen this pack walks is mistaken for it', () => {
+  test('no screen this pack walks is mistaken for it, and the one fixture that IS the sheet reads as it', () => {
+    // The Samsung fleet's own dump of the sheet over the feed (production bundle afa20e58 ui/00020, 1.35.0).
+    const expected: Record<string, string> = { 'screen-feed-samsung-phone-sheet.json': 'tt.phone-prompt' }
     const dir = join(import.meta.dir, '__fixtures__')
     const names = readdirSync(dir).filter((f) => f.endsWith('.json'))
     expect(names.length).toBeGreaterThan(5)
     for (const name of names) {
       const raw = JSON.parse(readFileSync(join(dir, name), 'utf8')) as { node?: unknown }
       const tree = UiNodeSchema.parse(raw.node ?? raw)
-      expect({ name, found: findInterruption(tree)?.interruption.id ?? null }).toEqual({ name, found: null })
+      expect({ name, found: findInterruption(tree)?.interruption.id ?? null }).toEqual({ name, found: expected[name] ?? null })
     }
   })
 
