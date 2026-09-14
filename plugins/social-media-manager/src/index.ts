@@ -73,6 +73,15 @@ import {
  *
  * ## Changelog
  *
+ * - **0.22.0 — every phone and every video, not the first 50.** The owner
+ *   (2026-09-14), on a farm of more than 50 phones: the New session phone
+ *   picker listed 50 and said "narrowed from 50". The page read one page of
+ *   `/api/devices`, which answers 50 rows by default; `/api/artifacts` has the
+ *   same default, so a folder of more than 50 uploads was cut the same way.
+ *   Both lists now follow `nextCursor` to the end at 200 per request
+ *   (`readAllPages`). The router was never affected: it reads the fleet
+ *   through `device.list`, which is not paged.
+ *
  * - **0.21.0 — an honest report per phone, and a way to settle "not confirmed".**
  *   The owner (2026-09-14): every platform must post, and when one does not the
  *   report must say so exactly, so a tester can retry by themselves. The case:
@@ -1000,7 +1009,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.21.0',
+  version: '0.22.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

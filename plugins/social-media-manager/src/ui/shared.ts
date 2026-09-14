@@ -37,7 +37,34 @@ export const ArtifactSchema = z.object({
 })
 export type Artifact = z.infer<typeof ArtifactSchema>
 
-const ArtifactListSchema = z.object({ items: z.array(ArtifactSchema) })
+/** The largest page the farm's list endpoints hand out (`api/pagination.ts`, `MAX_LIMIT`). */
+const PAGE_LIMIT = 200
+/** A guard against a cursor that never ends — 100 pages of 200 is far beyond any farm this plugin serves. */
+const MAX_PAGES = 100
+
+/**
+ * Every item of a paged farm list, following `nextCursor` to the end.
+ *
+ * `/api/devices` and `/api/artifacts` answer 50 rows by default and at most 200
+ * per request. Reading only the first page capped the phone picker at 50 on a
+ * farm with more phones (and the video list at 50 on a folder of 73), with
+ * nothing on screen saying anything was missing.
+ */
+async function readAllPages<T extends z.ZodType>(path: string, item: T): Promise<z.infer<T>[]> {
+  const PageSchema = z.object({ items: z.array(item), nextCursor: z.string().nullable().default(null) })
+  const out: z.infer<T>[] = []
+  let cursor: string | null = null
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const url = new URL(path, 'http://farm.local')
+    url.searchParams.set('limit', String(PAGE_LIMIT))
+    if (cursor !== null) url.searchParams.set('cursor', cursor)
+    const res = await api(`${CORE}${url.pathname}${url.search}`, PageSchema)
+    out.push(...res.items)
+    cursor = res.nextCursor
+    if (cursor === null) break
+  }
+  return out
+}
 
 /**
  * The uploads, newest first.
@@ -48,8 +75,7 @@ const ArtifactListSchema = z.object({ items: z.array(ArtifactSchema) })
  * extension is the fallback, because older uploads carry no type at all.
  */
 export async function listVideos(): Promise<Artifact[]> {
-  const res = await api(`${CORE}/api/artifacts?kind=upload`, ArtifactListSchema)
-  const items: Artifact[] = res.items
+  const items: Artifact[] = await readAllPages('/api/artifacts?kind=upload', ArtifactSchema)
   return items.filter((a) => isVideo(a)).sort((x, y) => y.createdAt - x.createdAt)
 }
 
@@ -72,11 +98,8 @@ export const DeviceSchema = z.object({
 })
 export type Device = z.infer<typeof DeviceSchema>
 
-const DeviceListSchema = z.object({ items: z.array(DeviceSchema) })
-
 export async function listDevices(): Promise<Device[]> {
-  const res = await api(`${CORE}/api/devices`, DeviceListSchema)
-  return res.items
+  return readAllPages('/api/devices', DeviceSchema)
 }
 
 /** `#7 Galaxy A15`, or the bare label — the same shape the rest of Studio names a phone by. */
