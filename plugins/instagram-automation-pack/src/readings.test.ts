@@ -3,6 +3,10 @@ import type { UiNode } from '@enkaku/protocol'
 import {
   asciiCaption,
   captionDoneButton,
+  captionLines,
+  createMenuSheet,
+  keyboardDismissPoint,
+  keyboardShowing,
   draftSheet,
   editorNextButton,
   gallerySurface,
@@ -63,6 +67,62 @@ describe('post-video — the walk, screen by screen', () => {
     expect(reelDestinationTab(post)?.text).toBe('REEL')
     const reel = await fixture('screen-reel-gallery.json')
     expect(gallerySurface(reel)).toBe('reel')
+  })
+
+  test('"+" can open the "Buat" sheet instead, and its Reel row is the way to the Reel gallery', async () => {
+    const sheet = await fixture('screen-create-menu-sheet.json')
+    const menu = createMenuSheet(sheet)
+    expect(menu).not.toBeNull()
+    expect(menu?.reel?.desc).toBe('Buat reel baru')
+    expect(menu?.reel?.bounds).toEqual({ left: 0, top: 891, right: 720, bottom: 986 })
+    expect(gallerySurface(sheet)).toBeNull()
+    expect(createMenuSheet(await fixture('screen-new-post.json'))).toBeNull()
+    expect(createMenuSheet(await fixture('screen-home.json'))).toBeNull()
+    // Behind this sheet is the PROFILE: the home feed is only kept in the tree off screen, so it has no "+" to tap.
+    expect(homeCreateButton(sheet)).toBeNull()
+  })
+
+  test('the share screen with the keyboard still up: the keyboard is seen, and a mangled caption is not "landed"', async () => {
+    const share = await fixture('screen-share-keyboard-open.json')
+    expect(keyboardShowing(share)).toBe(true)
+    expect(keyboardShowing(await fixture('screen-share.json'))).toBe(false)
+    // A person taps the page above the keys: a plain label, not the caption, a row, a toggle or a link.
+    const spot = keyboardDismissPoint(share)
+    expect(spot?.label).toBe('Tambahkan Label AI')
+    expect(spot?.y).toBeLessThan(992)
+    expect(keyboardDismissPoint(await fixture('screen-share.json'))).toBeNull()
+    const intended =
+      'Pernah kena SL dulu, baru habis itu harga jalan sesuai analisa lu? Bisa jadi bukan arah market yang salah lu baca, tapi di mana market ambil liquidity. Perhatiin gap kosong di chart, biasanya zona itu diusik lagi. Coba cek chart lu sekarang \n\n#fyp #trading #belajartrading'
+    // The field holds "... sekarang\n\n#fyp #tra rtro" — the first words match, the hashtags do not.
+    expect(captionLanded(share, intended)).toBe(false)
+    expect(captionLanded(share, 'Pernah kena SL dulu, baru habis itu harga jalan sesuai analisa lu? Bisa jadi bukan arah market yang salah lu baca, tapi di mana market ambil liquidity. Perhatiin gap kosong di chart, biasanya zona itu diusik lagi. Coba cek chart lu sekarang\n\n#fyp #tra rtro')).toBe(true)
+  })
+
+  test('a hashtag that lost its "#" is not a landed caption', async () => {
+    const sheet = await fixture('screen-share-reels-sheet.json')
+    const words = 'Pernah kena SL dulu, baru habis itu harga jalan sesuai analisa lu? Bisa jadi bukan arah market yang salah lu baca, tapi di mana market ambil liquidity. Perhatiin gap kosong di chart, biasanya zona itu diusik lagi. Coba cek chart lu sekarang'
+    // The field holds "... #liquidity tradingindonesia".
+    expect(captionLanded(sheet, `${words}\n\n#fyp #trading #belajartrading #gapchart #liquidity #tradingindonesia`)).toBe(false)
+    expect(captionLanded(sheet, `${words}\n\n#fyp #trading #belajartrading #gapchart #liquidity tradingindonesia`)).toBe(true)
+    expect(shareNuxButton(sheet)).not.toBeNull()
+  })
+
+  test('after Share: the Reels tab keeps the OLD profile off screen, and its count is not read', async () => {
+    const reels = await fixture('screen-reels-tab-stale-profile.json')
+    expect(profilePostCount(reels)).toBeNull()
+    expect(profilePostCount(await fixture('screen-profile-empty.json'))).toBe(0)
+  })
+
+  test('captionLines: one entry per line, blank lines kept, emoji dropped and counted', () => {
+    expect(captionLines('Coba cek chart lu sekarang 👀\n\n#fyp  #trading')).toEqual({ lines: ['Coba cek chart lu sekarang', '', '#fyp #trading'], dropped: 1 })
+    expect(captionLines('plain words')).toEqual({ lines: ['plain words'], dropped: 0 })
+    expect(captionLines('🔥🔥').lines.join('')).toBe('')
+  })
+
+  test('the resume-draft dialog can land late, over the Reel gallery, hiding its cells', async () => {
+    const late = await fixture('screen-reel-gallery-resume-draft.json')
+    expect(resumeDraftDialog(late)?.startNew?.text).toBe('Mulai video baru')
+    expect(galleryVideoCells(late).length).toBe(0)
   })
 
   test('the Reel gallery lists video cells newest first, each with its duration', async () => {

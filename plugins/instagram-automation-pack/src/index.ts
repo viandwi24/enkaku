@@ -51,7 +51,7 @@ import postVideo from './post-video'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.3.0',
+  version: '0.4.3',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -60,6 +60,49 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.4.3 — a Reel that posted is reported `posted`, and the caption check
+   * sees a lost `#`.** The 0.4.2 retry DID post (the profile showed 1 post), yet
+   * reported `unverified`: after Share Instagram sits on the Reels tab and keeps
+   * the profile page in the tree off screen with its old count, and
+   * `profilePostCount` read that stale "0" eight times. It now reads only an
+   * on-screen header (fixture `screen-reels-tab-stale-profile.json`). The same run's
+   * caption lost one `#` ("#liquidity tradingindonesia") and still passed, because
+   * `captionLanded` compared letters and digits only; `#` and `@` now count, and
+   * a line with hashtags is typed word by word with a short human pause, each
+   * word carrying its leading space so no `#` begins a command.
+   *
+   * **0.4.2 — the caption arrives whole, and Share is not tapped through the
+   * keyboard.** The 0.4.1 retry reached Share and stopped there, for two reasons
+   * its artifacts show. The caption carried an emoji, so it was typed through the
+   * session's text engine instead of adb, and Instagram's hashtag suggestions ate
+   * the hashtags ("#fyp #tra rtro") — while `captionLanded`, which compared only
+   * the first 24 letters, called it landed. And the keyboard was still up over
+   * "Selanjutnya", so the Share tap hit a key. Now the caption is typed line by
+   * line through adb with ENTER between lines (characters adb cannot carry are
+   * left out, and the log says how many), `captionLanded` compares the whole
+   * caption, and a keyboard still showing is put away before Share the way a
+   * person does it — a tap on plain page just above the keys, on a label that
+   * is part of nothing tappable (`keyboardDismissPoint`) — with BACK only as the
+   * fallback when there is no such spot or the keyboard stays up.
+   *
+   * **0.4.1 — the right "+", and a draft prompt that lands late.** The 0.4.0
+   * retry's timeline showed two causes. "+" was tapped at x=-1398: with the
+   * profile open, the home feed stays in the tree off screen, and its "+" was
+   * taken as the button — the tap hit the profile's own "+", which is what
+   * opened the "Buat" sheet. `homeCreateButton` now only takes an on-screen
+   * button. Then "Terus edit draf Anda?" appeared a moment AFTER the Reel
+   * gallery drew, over its grid, and the wait for video cells timed out. The
+   * gallery wait now also stops on that dialog or the draft sheet, starts a new
+   * video (the old edit stays in Drafts), and waits again.
+   *
+   * **0.4.0 — "+" that opens the "Buat" sheet still reaches the Reel gallery.**
+   * On a routed run (2026-09-14, the owner's moto, a fresh account) "+" opened a
+   * "Buat" bottom sheet — Reel, Edits, Posting, Cerita, Sorotan, Siaran Langsung —
+   * instead of the gallery, and `post-video` failed with "the create gallery did
+   * not open". It now recognises that sheet (`createMenuSheet`, fixture
+   * `screen-create-menu-sheet.json`), taps its Reel row, and carries on; a sheet
+   * with no recognisable Reel row fails by name before anything is posted.
    *
    * **0.3.0 — posting, three more warm-ups, and anchors measured on the owner's
    * moto.** One hand walk on the owner's moto g06 power (Android 15, id-ID,

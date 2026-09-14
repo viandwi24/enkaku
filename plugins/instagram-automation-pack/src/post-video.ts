@@ -115,17 +115,35 @@ export function parseCount(raw: string): number | null {
   return Math.round(n * (unit === 'rb' || unit === 'k' ? 1_000 : 1_000_000))
 }
 
-/** The logged-in profile's post count, or null when this is not the profile header. */
+/**
+ * The logged-in profile's post count, or null when the profile header is not ON SCREEN.
+ *
+ * On screen only: after Share, Instagram lands on the Reels tab and keeps the
+ * profile page in the tree off to the side with its OLD count. Reading that node
+ * reported "0 posts" eight times for a Reel that had posted, and the run ended
+ * `unverified` (routed run, 2026-09-14, `screen-reels-tab-stale-profile.json`).
+ */
 export function profilePostCount(tree: UiNode): number | null {
-  const node = rowsById(tree, 'profile_header_familiar_post_count_value')[0] ?? rowsById(tree, 'row_profile_header_textview_post_count')[0]
+  const visible = (id: string): UiNode | undefined => rowsById(tree, id).find(onScreen)
+  const node = visible('profile_header_familiar_post_count_value') ?? visible('row_profile_header_textview_post_count')
   return node ? parseCount(node.text) : null
 }
 
-/** The home feed's "+" (create) button: the clickable inside the left action-bar container. */
+/** A node Instagram actually drew on screen — not a page kept in the tree off to the side, whose bounds go negative. */
+const onScreen = (n: UiNode): boolean => n.bounds.left >= 0 && n.bounds.right > n.bounds.left && n.bounds.bottom > n.bounds.top
+
+/**
+ * The home feed's "+" (create) button: the clickable inside the left action-bar container.
+ *
+ * Only an ON-SCREEN container counts. With the profile tab open Instagram keeps
+ * the home feed in the tree off to the side (`right: -2796` on a routed run,
+ * 2026-09-14), so the feed's "+" was "found", tapped at x=-1398, and the tap
+ * landed on the profile's own "+" — which opens the "Buat" sheet, not the gallery.
+ */
 export function homeCreateButton(tree: UiNode): UiNode | null {
-  const container = rowsById(tree, 'action_bar_buttons_container_left')[0]
+  const container = rowsById(tree, 'action_bar_buttons_container_left').find(onScreen)
   if (!container) return null
-  return all(tree, (n) => n.clickable && fromInstagram(n) && within(n, container) && n !== container)[0] ?? null
+  return all(tree, (n) => n.clickable && fromInstagram(n) && onScreen(n) && within(n, container) && n !== container)[0] ?? null
 }
 
 /** Which create gallery is on screen: the Reel gallery, the "new post" gallery, or neither. */
@@ -201,9 +219,86 @@ export function captionField(tree: UiNode): UiNode | null {
 export function captionLanded(tree: UiNode, caption: string): boolean {
   const field = rowsById(tree, 'caption_input_text_view')[0]
   if (!field) return false
-  const squash = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
-  const want = squash(caption).slice(0, 24)
-  return want !== '' && squash(field.text).startsWith(want)
+  // `#` and `@` count: a hashtag that lost its `#` ("#liquidity tradingindonesia") is not the caption that was asked for.
+  const squash = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}#@]+/gu, '')
+  // The WHOLE caption, not its first words: on a routed run (2026-09-14) the hashtags came out
+  // "#fyp #tra rtro" — Instagram's hashtag suggestions ate the rest — and a 24-character check passed it.
+  const want = squash(caption)
+  return want !== '' && squash(field.text) === want
+}
+
+/**
+ * The caption as adb can type it: one entry per line (a blank line stays an empty
+ * entry, pressed as ENTER), each line printable ASCII with its spaces collapsed.
+ * `dropped` counts the characters that could not be carried (emoji, accents).
+ */
+export function captionLines(caption: string): { lines: string[]; dropped: number } {
+  let dropped = 0
+  const lines = caption
+    .replace(/\r\n?/g, '\n')
+    .trim()
+    .split('\n')
+    .map((line) => {
+      // `u`: an emoji is one code point but two UTF-16 units, and is one character left out, not two.
+      const ascii = line.replace(/[^\x20-\x7e\t]/gu, () => {
+        dropped += 1
+        return ''
+      })
+      return ascii.replace(/\s+/g, ' ').trim()
+    })
+  return { lines, dropped }
+}
+
+const isKeyboardNode = (n: UiNode): boolean => /inputmethod|honeyboard|swiftkey|keyboard/i.test(n.packageName) && onScreen(n)
+
+/**
+ * A soft keyboard is up. It is its own window, drawn over the bottom of the
+ * share screen — on a routed run (2026-09-14) it covered "Selanjutnya", the tap
+ * meant for Share landed on the keyboard, and nothing was shared.
+ */
+export function keyboardShowing(tree: UiNode): boolean {
+  return all(tree, isKeyboardNode).length > 0
+}
+
+/**
+ * Where a person taps to put the keyboard away: plain screen just above it.
+ *
+ * The owner's rule for this farm is that nothing looks machine-made, and BACK
+ * to close a keyboard is not what someone who just finished typing does — they
+ * tap the page above it. So this picks a label of Instagram's own that is
+ * above the keyboard's keys and NOT part of anything tappable: a point whose
+ * smallest enclosing clickable is only a page-sized container (the screen's
+ * scroll view), never a row, a toggle, a link, or the caption field itself.
+ * The lowest such label wins — nearest the thumb. Null when there is none, and
+ * the caller falls back to BACK.
+ */
+export function keyboardDismissPoint(tree: UiNode): { x: number; y: number; label: string } | null {
+  const keys = all(tree, (n) => isKeyboardNode(n) && n.clickable)
+  if (keys.length === 0) return null
+  const keyboardTop = Math.min(...keys.map((k) => k.bounds.top))
+  const frame = treeFrame(tree)
+  const frameArea = frame.width * frame.height
+  const clickables = all(tree, (n) => n.clickable && fromInstagram(n) && onScreen(n))
+  const ACTION_BAR_BOTTOM = 168
+  const candidates = all(
+    tree,
+    (n) =>
+      fromInstagram(n) &&
+      onScreen(n) &&
+      !n.clickable &&
+      (n.text.trim() !== '' || n.desc.trim() !== '') &&
+      n.bounds.top > ACTION_BAR_BOTTOM &&
+      n.bounds.bottom < keyboardTop - 8,
+  )
+    .map((n) => ({ n, x: Math.round((n.bounds.left + n.bounds.right) / 2), y: Math.round((n.bounds.top + n.bounds.bottom) / 2) }))
+    .filter(({ x, y }) => {
+      const around = clickables.filter((c) => c.bounds.left <= x && x <= c.bounds.right && c.bounds.top <= y && y <= c.bounds.bottom)
+      const smallest = Math.min(...around.map((c) => (c.bounds.right - c.bounds.left) * (c.bounds.bottom - c.bounds.top)))
+      return around.length === 0 || smallest >= frameArea * 0.4
+    })
+    .sort((a, b) => b.n.bounds.bottom - a.n.bounds.bottom)
+  const pick = candidates[0]
+  return pick ? { x: pick.x, y: pick.y, label: (pick.n.text.trim() || pick.n.desc.trim()).slice(0, 60) } : null
 }
 
 /**
@@ -252,6 +347,25 @@ export function resumeDraftDialog(tree: UiNode): { startNew: UiNode | null } | n
   if (!headline) return null
   const startNew = rowsById(tree, 'auxiliary_button').find((n) => n.clickable && /^(mulai video baru|start new video)$/i.test(n.text.trim())) ?? null
   return { startNew }
+}
+
+/**
+ * The "Buat" (Create) bottom sheet some accounts get on "+" instead of the
+ * gallery — Reel, Edits, Posting, Cerita, Sorotan, Siaran Langsung (met on a
+ * routed run, 2026-09-14, `__fixtures__/screen-create-menu-sheet.json`). Its
+ * "Reel" row opens the Reel gallery. Null when the sheet is not up; `reel` is
+ * null when the sheet is up but has no Reel row this reading recognises.
+ */
+export function createMenuSheet(tree: UiNode): { reel: UiNode | null } | null {
+  const title = rowsById(tree, 'title_text_view').find((n) => /^(buat|create)$/i.test(n.text.trim()))
+  if (!title) return null
+  const sheet = rowsById(tree, 'layout_container_bottom_sheet').find((n) => within(title, n))
+  if (!sheet) return null
+  const byDesc = all(tree, (n) => n.clickable && within(n, sheet) && /^(buat reel baru|create new reel)$/i.test(n.desc.trim()))[0]
+  if (byDesc) return { reel: byDesc }
+  const label = rowsById(tree, 'label').find((n) => within(n, sheet) && /^reels?$/i.test(n.text.trim()))
+  const row = label ? all(tree, (n) => n.clickable && within(n, sheet) && within(label, n) && n !== sheet).pop() ?? null : null
+  return { reel: row }
 }
 
 /** `/sdcard/…` and `/storage/emulated/0/…` are the same file; MediaStore reports the latter. */
@@ -380,8 +494,21 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     }
     await tapCentre(ctx, plus)
 
-    const galleryReady = (t: UiNode): boolean => gallerySurface(t) !== null || draftSheet(t) !== null || resumeDraftDialog(t) !== null || hiddenDialog(t)
+    const galleryReady = (t: UiNode): boolean =>
+      gallerySurface(t) !== null || createMenuSheet(t) !== null || draftSheet(t) !== null || resumeDraftDialog(t) !== null || hiddenDialog(t)
     let opened = await waitForTree(ctx, galleryReady, { budgetMs: 15_000 })
+    const menu = createMenuSheet(opened.tree)
+    if (menu) {
+      await capture(ctx, 'ig-03-create-menu', opened.tree)
+      if (!menu.reel) fail('E_ANCHOR_NOT_FOUND', '"+" opened the "Buat" sheet but it has no Reel row this pack recognises — see artifact ig-03-create-menu.')
+      ctx.log.info('"+" opened the "Buat" sheet — choosing Reel')
+      await tapCentre(ctx, menu.reel)
+      opened = await waitForTree(
+        ctx,
+        (t) => (gallerySurface(t) !== null || draftSheet(t) !== null || resumeDraftDialog(t) !== null || hiddenDialog(t)) && createMenuSheet(t) === null,
+        { budgetMs: 15_000 },
+      )
+    }
     const resume = resumeDraftDialog(opened.tree)
     if (resume) {
       await capture(ctx, 'ig-03-resume-draft', opened.tree)
@@ -416,7 +543,27 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       }
       await tapCentre(ctx, reelTab)
     }
-    const reelGallery = await waitForTree(ctx, (t) => gallerySurface(t) === 'reel' && galleryVideoCells(t).length > 0, { budgetMs: 15_000 })
+    /*
+      The resume-draft dialog (or the draft sheet) can land AFTER the Reel gallery
+      has drawn, over its grid — which hides every cell from the reader (routed
+      run, 2026-09-14, `screen-reel-gallery-resume-draft.json`). So the wait also
+      stops on either prompt, answers it the same way as above, and waits again.
+    */
+    const cellsShowing = (t: UiNode): boolean => gallerySurface(t) === 'reel' && galleryVideoCells(t).length > 0 && resumeDraftDialog(t) === null && draftSheet(t) === null
+    let reelGallery = await waitForTree(ctx, (t) => cellsShowing(t) || resumeDraftDialog(t) !== null || draftSheet(t) !== null, { budgetMs: 15_000 })
+    for (let round = 0; round < 3 && !cellsShowing(reelGallery.tree); round++) {
+      const lateResume = resumeDraftDialog(reelGallery.tree)
+      const lateSheet = lateResume ? null : draftSheet(reelGallery.tree)
+      if (!lateResume && !lateSheet) break
+      const answer = lateResume ? lateResume.startNew : (lateSheet?.discard ?? null)
+      if (!answer) {
+        await capture(ctx, 'ig-04-draft-prompt', reelGallery.tree)
+        fail('E_UNFINISHED_DRAFT', 'Instagram asked about an unfinished draft over the Reel gallery and offered no way to start a new video — see artifact ig-04-draft-prompt.')
+      }
+      ctx.log.warn('an unfinished-draft prompt landed over the Reel gallery — starting a new video', { prompt: lateResume ? 'resume-draft' : 'draft-sheet' })
+      await tapCentre(ctx, answer)
+      reelGallery = await waitForTree(ctx, cellsShowing, { budgetMs: 15_000 })
+    }
     const galleryTree = await capture(ctx, 'ig-04-reel-gallery', reelGallery.tree)
     if (!reelGallery.ok) {
       fail('E_ANCHOR_NOT_FOUND', gallerySurface(galleryTree) === 'reel' ? 'the Reel gallery shows no video at all — the pushed video did not appear. See artifact ig-04-reel-gallery.' : 'the Reel gallery did not open — see artifact ig-04-reel-gallery.')
@@ -464,8 +611,18 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       anything is shared.
     */
     const shareFrame = treeFrame(shareTree)
-    const ascii = asciiCaption(caption)
-    const viaAdb = ascii === caption.replace(/\s+/g, ' ').trim()
+    /*
+      Typed line by line through adb, with ENTER between lines. The session's text
+      engine is not used for a caption adb can mostly carry: through it Instagram's
+      hashtag suggestions ate the hashtags on a routed run (2026-09-14, "#fyp #tra
+      rtro"). What adb cannot carry (emoji, accents) is left out, and said so.
+    */
+    const { lines, dropped } = captionLines(caption)
+    const typedCaption = lines.join('\n')
+    const viaAdb = typedCaption.trim() !== ''
+    if (viaAdb && dropped > 0) {
+      ctx.log.warn('the caption has characters adb cannot type (emoji, accents) — they were left out of the Instagram caption', { dropped })
+    }
     let landed = false
     for (let attempt = 0; attempt < 2 && !landed; attempt++) {
       const now = attempt === 0 ? shareTree : await ctx.device.dump()
@@ -477,8 +634,30 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       const point = field ? centre(field) : { x: Math.round(shareFrame.width * SHARE_CAPTION.x), y: Math.round(shareFrame.height * SHARE_CAPTION.y) }
       await ctx.device.tap({ point }, { via: 'adb' })
       await sleep(FOCUS_SETTLE_MS)
-      const typed = viaAdb ? await ctx.device.type(ascii, { via: 'adb', instant: true }) : await ctx.device.type(caption, { instant: true })
-      ctx.log.info('typed the caption', { via: typed.via, length: caption.length, attempt: attempt + 1 })
+      if (viaAdb) {
+        for (const [i, line] of lines.entries()) {
+          if (i > 0) await ctx.device.key('ENTER')
+          if (line === '') continue
+          if (!/[#@]/.test(line)) {
+            await ctx.device.type(line, { via: 'adb', instant: true })
+            continue
+          }
+          /*
+            A line with hashtags or mentions goes in word by word, with a short human pause, and each
+            word after the first carries its LEADING space — so a `#` is never the first key of a
+            command. Instagram opens a suggestion list while a hashtag is being typed; on a routed run
+            (2026-09-14) a `#` that began a new command was lost under it ("#liquidity tradingindonesia").
+          */
+          const words = line.split(' ')
+          for (const [j, word] of words.entries()) {
+            if (j > 0) await sleep(250 + Math.round(Math.random() * 450))
+            await ctx.device.type(j === 0 ? word : ` ${word}`, { via: 'adb', instant: true })
+          }
+        }
+      } else {
+        await ctx.device.type(caption, { instant: true })
+      }
+      ctx.log.info('typed the caption', { via: viaAdb ? 'adb, line by line' : 'session text engine', length: viaAdb ? typedCaption.length : caption.length, lines: lines.length, attempt: attempt + 1 })
       await sleep(1_500)
       let after = await ctx.device.dump()
       const done = captionDoneButton(after)
@@ -487,16 +666,39 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         await tapCentre(ctx, done)
         after = (await waitForTree(ctx, (t) => shareButton(t) !== null && captionDoneButton(t) === null, { budgetMs: 8_000 })).tree
       }
-      landed = captionLanded(after, viaAdb ? ascii : caption)
+      landed = captionLanded(after, viaAdb ? typedCaption : caption)
       if (!landed) await capture(ctx, `ig-07-caption-attempt-${attempt + 1}`, after)
     }
     if (!landed) {
-      fail('E_CAPTION_NOT_FOCUSED', 'typed the caption but the caption field on the share screen does not hold it, so nothing was shared. See the ig-07-caption-attempt artifacts.')
+      fail('E_CAPTION_NOT_FOCUSED', 'typed the caption but the caption field on the share screen does not hold all of it, so nothing was shared. See the ig-07-caption-attempt artifacts.')
     }
     screens.push('caption')
-    const back = await waitForTree(ctx, (t) => shareButton(t) !== null && captionDoneButton(t) === null, { budgetMs: 8_000 })
+    let back = await waitForTree(ctx, (t) => shareButton(t) !== null && captionDoneButton(t) === null, { budgetMs: 8_000 })
+    if (back.ok && keyboardShowing(back.tree)) {
+      /*
+        The keyboard is its own window over the bottom of the screen, Share included. Put it away the
+        way a person does: a tap on plain page just above the keys (`keyboardDismissPoint`), through
+        the session's normal human-shaped tap. BACK is the fallback only — and is pressed ONLY while the
+        keyboard is seen, since on the bare share screen BACK leaves the screen.
+      */
+      const spot = keyboardDismissPoint(back.tree)
+      if (spot) {
+        ctx.log.info('the keyboard is still up over Share — tapping the page above it', { label: spot.label })
+        await sleep(400 + Math.round(Math.random() * 500))
+        await ctx.device.tap({ point: { x: spot.x, y: spot.y } })
+        back = await waitForTree(ctx, (t) => shareButton(t) !== null && !keyboardShowing(t), { budgetMs: 4_000 })
+      }
+      if (!back.ok || keyboardShowing(back.tree)) {
+        const still = await ctx.device.dump()
+        if (keyboardShowing(still)) {
+          ctx.log.info(spot ? 'the keyboard stayed up after the tap — closing it with BACK' : 'no plain spot above the keyboard — closing it with BACK')
+          await ctx.device.key('BACK')
+        }
+        back = await waitForTree(ctx, (t) => shareButton(t) !== null && !keyboardShowing(t), { budgetMs: 8_000 })
+      }
+    }
     await capture(ctx, 'ig-08-captioned', back.tree)
-    if (!back.ok) fail('E_ANCHOR_NOT_FOUND', 'the share screen is not showing after the caption — nothing was shared. See artifact ig-08-captioned.')
+    if (!back.ok) fail('E_ANCHOR_NOT_FOUND', 'the share screen is not showing (or the keyboard would not close) after the caption — nothing was shared. See artifact ig-08-captioned.')
 
     if (ctx.params.dryRun) {
       const discarded = await discardEdit(ctx)
