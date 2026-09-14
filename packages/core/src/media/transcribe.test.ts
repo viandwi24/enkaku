@@ -132,12 +132,17 @@ describe('createTranscribeService — refusals (plan 317)', () => {
     await expect(service.transcribe({ artifactId: 'a2', language: 'auto' })).rejects.toMatchObject({ code: 'E_TRANSCRIBE_UNAVAILABLE' })
   })
 
-  test('status() reports unavailable with a reason naming the env override', async () => {
+  test('status() never waits for a download: it starts provisioning in the background, then reports why it failed', async () => {
     const { db, dataDir } = setUp()
     const service = createTranscribeService({ db, dataDir, toolchain: unavailableToolchain() })
-    const status = await service.status()
-    expect(status.available).toBe(false)
-    expect(status.reason).toContain('ENKAKU_WHISPER_CPP_PATH')
+    const first = await service.status()
+    expect(first.available).toBe(false)
+    expect(first.reason).toContain('Downloading')
+    // The background attempt (a refused install in this fake) settles on its own; the next status names the failure.
+    await Bun.sleep(20)
+    const second = await service.status()
+    expect(second.available).toBe(false)
+    expect(second.reason).toContain('ENKAKU_WHISPER_CPP_PATH')
   })
 })
 

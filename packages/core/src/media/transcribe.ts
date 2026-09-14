@@ -207,15 +207,54 @@ export function createTranscribeService(deps: TranscribeServiceDeps): Transcribe
     return { cliPath, modelPath }
   }
 
+  /*
+    Provisioning started by `status()` runs in the background, one at a time: the whisper model is 190 MB, and a
+    status check with a 10-second deadline that waited for it timed out on its very first call while the download
+    carried on unseen (measured on the dev farm, 2026-09-14). The last failure is kept so the next status can say it.
+  */
+  let provisioning: Promise<void> | null = null
+  let lastProvisionError: string | null = null
+
+  async function readyPath(toolId: string): Promise<string | null> {
+    try {
+      return await deps.toolchain.resolveToolPath(toolId)
+    } catch {
+      return null
+    }
+  }
+
+  function provisionInBackground(): void {
+    if (provisioning) return
+    lastProvisionError = null
+    provisioning = (async () => {
+      for (const toolId of [WHISPER_CPP_TOOL_ID, WHISPER_MODEL_TOOL_ID]) {
+        if ((await readyPath(toolId)) !== null) continue
+        try {
+          await ensureProvisioned(deps.toolchain, toolId)
+        } catch (err) {
+          lastProvisionError = unavailableReason(toolId, err)
+          return
+        }
+      }
+    })().finally(() => {
+      provisioning = null
+    })
+  }
+
   return {
     async status() {
-      try {
-        const { modelPath } = await resolvePaths()
-        return { available: true, model: modelPath, reason: null }
-      } catch (err) {
-        const message = err instanceof EnkakuError ? err.message : String(err)
-        return { available: false, model: null, reason: message }
+      const cliPath = await readyPath(WHISPER_CPP_TOOL_ID)
+      const modelPath = await readyPath(WHISPER_MODEL_TOOL_ID)
+      if (cliPath !== null && modelPath !== null) return { available: true, model: modelPath, reason: null }
+      if (lastProvisionError !== null && !provisioning) {
+        const reason = lastProvisionError
+        // The next status tries again, so a fixed manifest or a restored network recovers without a restart.
+        lastProvisionError = null
+        return { available: false, model: null, reason }
       }
+      provisionInBackground()
+      const missing = cliPath === null ? 'whisper.cpp' : 'the Whisper model (190 MB)'
+      return { available: false, model: null, reason: `Downloading ${missing} for the first time — check again in a minute.` }
     },
 
     async transcribe(input) {
