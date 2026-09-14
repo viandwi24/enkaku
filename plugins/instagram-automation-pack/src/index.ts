@@ -51,7 +51,7 @@ import postVideo from './post-video'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.4.3',
+  version: '0.4.4',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -60,6 +60,15 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.4.4 — five hashtags, as Instagram allows.** The first production run
+   * (2026-09-14, 20 Samsung phones through the Social Media Manager) failed every
+   * Instagram post at the caption check, and the saved fields all read the same
+   * way: five hashtags, then the sixth onward with no `#`
+   * ("#choch marketstructure belajartrading"). Instagram keeps at most five
+   * hashtags; the session had three fixed plus five per video. `captionLines`
+   * now keeps the first five hashtags and leaves the rest out by name, the log
+   * says which, and the caption check compares against what was typed.
    *
    * **0.4.3 — a Reel that posted is reported `posted`, and the caption check
    * sees a lost `#`.** The 0.4.2 retry DID post (the profile showed 1 post), yet

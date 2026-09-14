@@ -114,9 +114,18 @@ describe('post-video — the walk, screen by screen', () => {
   })
 
   test('captionLines: one entry per line, blank lines kept, emoji dropped and counted', () => {
-    expect(captionLines('Coba cek chart lu sekarang 👀\n\n#fyp  #trading')).toEqual({ lines: ['Coba cek chart lu sekarang', '', '#fyp #trading'], dropped: 1 })
-    expect(captionLines('plain words')).toEqual({ lines: ['plain words'], dropped: 0 })
+    expect(captionLines('Coba cek chart lu sekarang 👀\n\n#fyp  #trading')).toEqual({ lines: ['Coba cek chart lu sekarang', '', '#fyp #trading'], dropped: 1, hashtagsDropped: [] })
+    expect(captionLines('plain words')).toEqual({ lines: ['plain words'], dropped: 0, hashtagsDropped: [] })
     expect(captionLines('🔥🔥').lines.join('')).toBe('')
+  })
+
+  test('captionLines keeps Instagram\'s five hashtags and leaves the rest out by name (the production run of 2026-09-14)', () => {
+    const caption = 'Ngomongin CHoCH, simpen dulu!\n\n#AkademiBitorex #fyp #trading #changeofcharacter #choch #marketstructure #belajartrading #priceaction'
+    const { lines, hashtagsDropped } = captionLines(caption)
+    expect(lines).toEqual(['Ngomongin CHoCH, simpen dulu!', '', '#AkademiBitorex #fyp #trading #changeofcharacter #choch'])
+    expect(hashtagsDropped).toEqual(['#marketstructure', '#belajartrading', '#priceaction'])
+    // A `#` inside ordinary words is not a hashtag and is never counted or dropped.
+    expect(captionLines('nomor #1 di sini #a #b #c #d #e #f').hashtagsDropped).toEqual(['#f'])
   })
 
   test('the resume-draft dialog can land late, over the Reel gallery, hiding its cells', async () => {

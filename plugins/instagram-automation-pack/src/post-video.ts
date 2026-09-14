@@ -232,8 +232,16 @@ export function captionLanded(tree: UiNode, caption: string): boolean {
  * entry, pressed as ENTER), each line printable ASCII with its spaces collapsed.
  * `dropped` counts the characters that could not be carried (emoji, accents).
  */
-export function captionLines(caption: string): { lines: string[]; dropped: number } {
+/** Instagram keeps at most this many hashtags in a caption; a `#` typed past it does not stay a hashtag (measured 2026-09-14). */
+export const INSTAGRAM_HASHTAG_LIMIT = 5
+
+/** A word Instagram treats as a hashtag: `#` then letters/digits/underscore, with at least one letter (`#1` is not one). */
+const HASHTAG_WORD = /^#[\p{L}\p{N}_]*\p{L}[\p{L}\p{N}_]*$/u
+
+export function captionLines(caption: string): { lines: string[]; dropped: number; hashtagsDropped: string[] } {
   let dropped = 0
+  const hashtagsDropped: string[] = []
+  let hashtagsKept = 0
   const lines = caption
     .replace(/\r\n?/g, '\n')
     .trim()
@@ -244,9 +252,22 @@ export function captionLines(caption: string): { lines: string[]; dropped: numbe
         dropped += 1
         return ''
       })
-      return ascii.replace(/\s+/g, ' ').trim()
+      // Instagram keeps at most INSTAGRAM_HASHTAG_LIMIT hashtags: past that, a typed `#` does not stay a hashtag
+      // (the production run of 2026-09-14: 20 phones, every caption kept five and the sixth onward lost their `#`).
+      // So the first five are typed and the rest are left out by name, rather than typed and then refused.
+      const words = ascii.replace(/\s+/g, ' ').trim().split(' ').filter((w) => w !== '')
+      const kept = words.filter((w) => {
+        if (!HASHTAG_WORD.test(w)) return true
+        if (hashtagsKept < INSTAGRAM_HASHTAG_LIMIT) {
+          hashtagsKept += 1
+          return true
+        }
+        hashtagsDropped.push(w)
+        return false
+      })
+      return kept.join(' ')
     })
-  return { lines, dropped }
+  return { lines, dropped, hashtagsDropped }
 }
 
 const isKeyboardNode = (n: UiNode): boolean => /inputmethod|honeyboard|swiftkey|keyboard/i.test(n.packageName) && onScreen(n)
@@ -617,7 +638,10 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       hashtag suggestions ate the hashtags on a routed run (2026-09-14, "#fyp #tra
       rtro"). What adb cannot carry (emoji, accents) is left out, and said so.
     */
-    const { lines, dropped } = captionLines(caption)
+    const { lines, dropped, hashtagsDropped } = captionLines(caption)
+    if (hashtagsDropped.length > 0) {
+      ctx.log.warn(`Instagram keeps ${INSTAGRAM_HASHTAG_LIMIT} hashtags — the rest were left out of the caption`, { left: hashtagsDropped.join(' ') })
+    }
     const typedCaption = lines.join('\n')
     const viaAdb = typedCaption.trim() !== ''
     if (viaAdb && dropped > 0) {
