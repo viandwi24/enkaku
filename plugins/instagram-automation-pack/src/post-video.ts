@@ -235,8 +235,11 @@ export function captionLanded(tree: UiNode, caption: string): boolean {
 /** Instagram keeps at most this many hashtags in a caption; a `#` typed past it does not stay a hashtag (measured 2026-09-14). */
 export const INSTAGRAM_HASHTAG_LIMIT = 5
 
-/** A word Instagram treats as a hashtag: `#` then letters/digits/underscore, with at least one letter (`#1` is not one). */
-const HASHTAG_WORD = /^#[\p{L}\p{N}_]*\p{L}[\p{L}\p{N}_]*$/u
+/**
+ * A word Instagram treats as a hashtag: `#` then letters/digits/underscore, with at least one letter (`#1` is not
+ * one). Punctuation around it does not stop it counting — `#fyp,` and `(#fyp)` are hashtags to Instagram too (0.4.5).
+ */
+const HASHTAG_WORD = /^[^\p{L}\p{N}_#]*#[\p{L}\p{N}_]*\p{L}[\p{L}\p{N}_]*[^\p{L}\p{N}_]*$/u
 
 export function captionLines(caption: string): { lines: string[]; dropped: number; hashtagsDropped: string[] } {
   let dropped = 0
@@ -270,7 +273,36 @@ export function captionLines(caption: string): { lines: string[]; dropped: numbe
   return { lines, dropped, hashtagsDropped }
 }
 
-const isKeyboardNode = (n: UiNode): boolean => /inputmethod|honeyboard|swiftkey|keyboard/i.test(n.packageName) && onScreen(n)
+/**
+ * The farm's own keyboard. With a phone's Text input on `auto`, the guest agent's IME is the one on screen — every
+ * caption dump of the 2026-09-14 Samsung production run showed it, with its "Switch keyboard" button over "Selanjutnya",
+ * and a package-name test for keyboards never saw it (0.4.5).
+ */
+const FARM_KEYBOARD_PACKAGE = 'dev.enkaku.guestagent'
+
+const isKeyboardNode = (n: UiNode): boolean =>
+  (/inputmethod|honeyboard|swiftkey|keyboard/i.test(n.packageName) || n.packageName === FARM_KEYBOARD_PACKAGE) && onScreen(n)
+
+/**
+ * Something that is not Instagram is drawn over the centre of `node` — a keyboard, an IME switcher, any overlay.
+ * A tap there lands on that window, not on Instagram's button (a0873cec, 2026-09-14: Share tapped "Switch keyboard").
+ */
+export function coveredByAnotherWindow(tree: UiNode, node: UiNode): boolean {
+  const x = (node.bounds.left + node.bounds.right) / 2
+  const y = (node.bounds.top + node.bounds.bottom) / 2
+  return all(
+    tree,
+    (n) =>
+      n.packageName !== '' &&
+      !fromInstagram(n) &&
+      n.packageName !== 'com.android.systemui' &&
+      onScreen(n) &&
+      n.bounds.left <= x &&
+      x <= n.bounds.right &&
+      n.bounds.top <= y &&
+      y <= n.bounds.bottom,
+  ).length > 0
+}
 
 /**
  * A soft keyboard is up. It is its own window, drawn over the bottom of the
@@ -739,7 +771,23 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     }
 
     // --- Share ------------------------------------------------------------------
-    await tapCentre(ctx, shareButton(back.tree) as UiNode)
+    // Share is tapped only when nothing else sits over it. One more BACK while a keyboard is provably up, then stop:
+    // a tap on a covering window shares nothing and can open an Android keyboard picker instead (0.4.5).
+    let shareScreenTree = (await waitForTree(ctx, (t) => shareButton(t) !== null, { budgetMs: 4_000 })).tree
+    const shareNode = shareButton(shareScreenTree)
+    if (shareNode && coveredByAnotherWindow(shareScreenTree, shareNode)) {
+      if (keyboardShowing(shareScreenTree)) {
+        ctx.log.info('a keyboard still covers Share — closing it with BACK')
+        await ctx.device.key('BACK')
+        shareScreenTree = (await waitForTree(ctx, (t) => { const b = shareButton(t); return b !== null && !coveredByAnotherWindow(t, b) }, { budgetMs: 6_000 })).tree
+      }
+      const again = shareButton(shareScreenTree)
+      if (!again || coveredByAnotherWindow(shareScreenTree, again)) {
+        await capture(ctx, 'ig-08-share-covered', shareScreenTree)
+        fail('E_SHARE_COVERED', 'another window (most likely a keyboard) stays over Share, so it was not tapped and nothing was shared. See artifact ig-08-share-covered.')
+      }
+    }
+    await tapCentre(ctx, shareButton(shareScreenTree) as UiNode)
     ctx.log.info('tapped Share — confirming by the profile rather than trusting the tap')
     const leftShare = (t: UiNode): boolean => shareButton(t) === null || shareNuxButton(t) !== null
     let after = await waitForTree(ctx, leftShare, { budgetMs: 20_000 })
@@ -815,6 +863,21 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     if (!ctx.error) return undefined
     await ctx.artifact.screenshot('ig-failed').catch(() => {})
     if (ctx.error.code !== 'E_PERMISSION_DIALOG_HIDDEN') {
+      /*
+        A run that failed is never past Share (after Share nothing throws — see the header), so whatever edit is open
+        is unposted. Back out and throw it away ("Mulai dari awal") before stopping the app: a force-stop alone kept
+        it, and the next "+" turned it into a saved draft on the account — the drafts the owner found after the
+        2026-09-14 production run. Best effort, and only while Instagram is in front.
+      */
+      try {
+        const tree = await ctx.device.dump()
+        if (tree && !isReady(tree) && readableInstagramNodes(tree).length > 0) {
+          const discarded = await discardEdit(ctx)
+          ctx.log.info(discarded ? 'discarded the unposted edit before stopping Instagram' : 'could not fully back out of the unposted edit before stopping Instagram')
+        }
+      } catch (err) {
+        ctx.log.warn('could not back out of the unposted edit', { error: String(err) })
+      }
       await ctx.device.app.forceStop(INSTAGRAM_PACKAGE, { clearRecents: true }).catch(() => {})
     }
     return undefined

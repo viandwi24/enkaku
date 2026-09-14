@@ -4,6 +4,7 @@ import {
   asciiCaption,
   captionDoneButton,
   captionLines,
+  coveredByAnotherWindow,
   createMenuSheet,
   keyboardDismissPoint,
   keyboardShowing,
@@ -117,6 +118,20 @@ describe('post-video — the walk, screen by screen', () => {
     expect(captionLines('Coba cek chart lu sekarang 👀\n\n#fyp  #trading')).toEqual({ lines: ['Coba cek chart lu sekarang', '', '#fyp #trading'], dropped: 1, hashtagsDropped: [] })
     expect(captionLines('plain words')).toEqual({ lines: ['plain words'], dropped: 0, hashtagsDropped: [] })
     expect(captionLines('🔥🔥').lines.join('')).toBe('')
+  })
+
+  test('Samsung production share screen: the farm keyboard is a keyboard, and it covers Share (a0873cec, 2026-09-14)', async () => {
+    const tree = await fixture('screen-share-farm-keyboard.json')
+    expect(keyboardShowing(tree)).toBe(true)
+    const share = shareButton(tree)
+    expect(share).not.toBeNull()
+    expect(coveredByAnotherWindow(tree, share as UiNode)).toBe(true)
+    const moto = await fixture('screen-share.json')
+    expect(coveredByAnotherWindow(moto, shareButton(moto) as UiNode)).toBe(false)
+  })
+
+  test('a hashtag with punctuation around it still counts toward the five', () => {
+    expect(captionLines('a #one, #two. (#three) #four! #five #six,').hashtagsDropped).toEqual(['#six,'])
   })
 
   test('captionLines keeps Instagram\'s five hashtags and leaves the rest out by name (the production run of 2026-09-14)', () => {

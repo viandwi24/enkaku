@@ -51,7 +51,7 @@ import postVideo from './post-video'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.4.4',
+  version: '0.4.5',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -60,6 +60,18 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.4.5 — the farm's keyboard, a covered Share, and no draft left behind.**
+   * From the exported timelines of the 2026-09-14 Samsung production run:
+   * with Text input on `auto` the keyboard on screen is the guest agent's own
+   * (`dev.enkaku.guestagent`), which `keyboardShowing` did not recognise, and in
+   * one run its "Switch keyboard" button sat over "Selanjutnya" — the Share tap
+   * would land on it. The farm keyboard now counts as a keyboard, and Share is
+   * tapped only when no other window covers it (else `E_SHARE_COVERED`, nothing
+   * shared). A failed run now backs out and discards the unposted edit ("Mulai
+   * dari awal") before stopping Instagram: a force-stop alone kept it, and the
+   * next "+" saved it as a draft on the account. A hashtag with punctuation
+   * around it (`#fyp,`) counts toward the five.
    *
    * **0.4.4 — five hashtags, as Instagram allows.** The first production run
    * (2026-09-14, 20 Samsung phones through the Social Media Manager) failed every
