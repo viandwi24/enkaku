@@ -65,6 +65,17 @@ import {
  *
  * ## Changelog
  *
+ * - **0.18.0 — a tidier page, sessions as a table, captions edited in place.**
+ *   The owner (2026-09-14): the tab strip sat under a doubled top margin, the
+ *   Refresh button floated alone, and the session list was cards. The plugin view
+ *   no longer adds its own padding on top of the host's; Refresh sits on the tab
+ *   row; the Sessions list is a table (session, platforms, progress, status,
+ *   pacing, actions — the Start/Retry/Remove dialogs are one shared component, so
+ *   their wording cannot drift); a session's video table shows the caption as a
+ *   column and edits it in place (Ctrl/⌘+Enter saves) through `update-post`; the
+ *   compose form's spacing is one scale and it no longer says "no phone" while
+ *   the phone list is still loading. UI only.
+ *
  * - **0.17.0 — Instagram can be chosen under "Where it posts".** The router
  *   has sent posts to Instagram since 0.13.0, but the page's own platform list
  *   still marked it not postable, so the New session form and the Edit form
@@ -938,7 +949,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.17.0',
+  version: '0.18.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

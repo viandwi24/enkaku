@@ -538,7 +538,8 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
       `@container`, not a viewport breakpoint: this panel does not know how wide
       its box is, and every width decision below is about the box.
     */
-    <Card className="@container">
+    <Card className="@container gap-0 py-0">
+      {/* The card's own `py-6`/`gap-6` are cleared so the content's `p-4` is the only inset, even on all four sides. */}
       <CardContent className="space-y-5 p-4">
         <Step n={1} title="Upload the videos" hint="They land in the farm’s own files, the same place the Files screen writes to.">
           <div
@@ -554,7 +555,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
               void startUploads([...e.dataTransfer.files])
             }}
             className={cn(
-              'flex flex-col items-center gap-2 rounded-lg border border-dashed px-4 py-6 text-center transition-colors',
+              'flex flex-col items-center gap-2 rounded-inner border border-dashed px-4 py-6 text-center transition-colors',
               dragging ? 'border-accent bg-accent-soft' : 'border-border-2 bg-panel-2',
             )}
           >
@@ -580,7 +581,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
           </div>
 
           {uploads.length > 0 ? (
-            <ul className="mt-3 space-y-1.5">
+            <ul className="space-y-1.5">
               {uploads.map((row) => (
                 <li key={row.id} className="flex flex-wrap items-center gap-2 rounded-small border border-border px-2 py-1.5 text-[11.5px]">
                   <span className="min-w-0 grow wrap-anywhere">{row.name}</span>
@@ -606,7 +607,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
         </Step>
 
         <Step n={2} title="Pick the videos" hint="Everything already uploaded, newest first.">
-          <div className="mb-2 flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="readout text-[11.5px] text-dim">
               {selected.size} of {allVideos.length} picked
             </span>
@@ -636,7 +637,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
           ) : allVideos.length === 0 ? (
             <EmptyState title="No video uploaded yet" description="Drop a folder above. Anything stored as a video shows up here." />
           ) : (
-            <ul className="max-h-64 space-y-1 overflow-y-auto rounded-lg border border-border p-1">
+            <ul className="max-h-64 space-y-1 overflow-y-auto rounded-inner border border-border p-1">
               {allVideos.map((video) => {
                 const ticked = selected.has(video.id)
                 return (
@@ -704,7 +705,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
             missing.
           */}
           {PLATFORMS.filter((p) => !p.postable).map((p) => (
-            <p key={p.id} className="mt-2 text-[11.5px] text-dim">
+            <p key={p.id} className="text-[11.5px] text-dim">
               {p.title} cannot be picked: this build has no verified upload flow for it, so nothing would be sent.
             </p>
           ))}
@@ -722,11 +723,16 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
             </SelectContent>
           </Select>
 
+          {/* While the fleet is still being read, say so — "no label" and "no phone" are claims about a list that has not arrived. */}
           {phoneMode === 'labels' ? (
-            fleetLabels.length === 0 ? (
-              <p className="mt-2 text-[11.5px] text-dim">No phone in this farm carries a label yet, so there is nothing to narrow by.</p>
+            devices.loading && devices.data === null ? (
+              <p className="flex items-center gap-2 text-[12px] text-dim">
+                <Spinner className="size-3" /> Reading the farm’s phones…
+              </p>
+            ) : fleetLabels.length === 0 ? (
+              <p className="text-[11.5px] text-dim">No phone in this farm carries a label yet, so there is nothing to narrow by.</p>
             ) : (
-              <div className="mt-2 flex flex-wrap gap-1.5">
+              <div className="flex flex-wrap gap-1.5">
                 {fleetLabels.map((name) => {
                   const on = chosenLabels.has(name)
                   return (
@@ -755,10 +761,14 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
           {phoneMode === 'devices' ? (
             devices.error ? (
               <ErrorState message={devices.error} onRetry={devices.reload} />
+            ) : devices.loading && devices.data === null ? (
+              <p className="flex items-center gap-2 text-[12px] text-dim">
+                <Spinner className="size-3" /> Reading the farm’s phones…
+              </p>
             ) : fleet.length === 0 ? (
-              <p className="mt-2 text-[11.5px] text-dim">The farm listed no phone at all.</p>
+              <p className="text-[11.5px] text-dim">The farm listed no phone at all.</p>
             ) : (
-              <div className="mt-2 space-y-1.5">
+              <div className="space-y-1.5">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Input
                     type="search"
@@ -766,7 +776,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
                     onChange={(e) => setDeviceQuery(e.target.value)}
                     placeholder="Search by #, name, label or group…"
                     aria-label="Search phones"
-                    className="h-8 max-w-xs grow text-[12px]"
+                    className="h-7 max-w-xs grow text-[12px]"
                   />
                   <Button
                     type="button"
@@ -785,27 +795,27 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
                 {shownDevices.length === 0 ? (
                   <p className="text-[11.5px] text-dim">No phone matches “{deviceQuery}”. Phones already chosen stay chosen.</p>
                 ) : (
-              <ul className="max-h-72 space-y-1 overflow-y-auto rounded-lg border border-border p-1">
-                {shownDevices.map((device) => (
-                  <li key={device.id}>
-                    <label className="flex cursor-pointer items-center gap-2 rounded-small px-2 py-1.5 text-[12px] hover:bg-hover">
-                      <Checkbox
-                        checked={chosenDevices.has(device.id)}
-                        onCheckedChange={(next) =>
-                          setChosenDevices((prev) => {
-                            const copy = new Set(prev)
-                            if (next === true) copy.add(device.id)
-                            else copy.delete(device.id)
-                            return copy
-                          })
-                        }
-                      />
-                      <span className="min-w-0 grow wrap-anywhere">{deviceName(device)}</span>
-                      <span className="flex-none text-[11px] text-faint">{device.status}</span>
-                    </label>
-                  </li>
-                ))}
-              </ul>
+                  <ul className="max-h-72 space-y-1 overflow-y-auto rounded-inner border border-border p-1">
+                    {shownDevices.map((device) => (
+                      <li key={device.id}>
+                        <label className="flex cursor-pointer items-center gap-2 rounded-small px-2 py-1.5 text-[12px] hover:bg-hover">
+                          <Checkbox
+                            checked={chosenDevices.has(device.id)}
+                            onCheckedChange={(next) =>
+                              setChosenDevices((prev) => {
+                                const copy = new Set(prev)
+                                if (next === true) copy.add(device.id)
+                                else copy.delete(device.id)
+                                return copy
+                              })
+                            }
+                          />
+                          <span className="min-w-0 grow wrap-anywhere">{deviceName(device)}</span>
+                          <span className="flex-none text-[11px] text-faint">{device.status}</span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
             )
@@ -816,7 +826,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
             service side will compute, not the count of ticked boxes, so a
             choice that resolves to nothing says so here rather than at 2 a.m.
           */}
-          <p className="mt-2 text-[12.5px]">
+          <p className="text-[12.5px]">
             {chosenPlatforms.length === 0 ? (
               <span className="text-dim">Pick a platform above and this says how many phones it reaches.</span>
             ) : devices.loading && devices.data === null ? (
@@ -882,7 +892,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
               </Field>
             </div>
           </div>
-          <p className="mt-2 text-[12.5px] font-medium">{pacing}</p>
+          <p className="text-[12.5px] font-medium">{pacing}</p>
         </Step>
 
         <Step n={6} title="Captions" hint="Taken from each file’s own name unless you write your own.">
@@ -894,20 +904,20 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
           {ownCaptions ? (
             <>
               <Textarea
-                className="mt-2 min-h-24 text-[12px]"
+                className="min-h-24 text-[12px]"
                 value={captionText}
                 placeholder={'One line for every video, or exactly one line per video.'}
                 onChange={(e) => setCaptionText(e.target.value)}
               />
-              <p className="mt-1 text-[11.5px] text-dim">
+              <p className="text-[11.5px] text-dim">
                 {captionLines.length} line{captionLines.length === 1 ? '' : 's'} for {chosenIds.length} video
                 {chosenIds.length === 1 ? '' : 's'}.
               </p>
             </>
           ) : autoCaptions.length === 0 ? (
-            <p className="mt-2 text-[11.5px] text-dim">Pick a video and its caption appears here.</p>
+            <p className="text-[11.5px] text-dim">Pick a video and its caption appears here.</p>
           ) : (
-            <div className="mt-2 rounded-lg border border-border bg-panel-2 px-2 py-1.5">
+            <div className="rounded-inner border border-border bg-panel-2 px-2 py-1.5">
               <ul className="space-y-0.5 text-[11.5px] text-dim">
                 {autoCaptions.slice(0, 3).map((caption, index) => (
                   // The list is derived from an ordered selection and has no
@@ -930,7 +940,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
         </Step>
 
         {warnings.length > 0 ? (
-          <ul className="space-y-1 rounded-lg border border-warn/35 px-3 py-2 text-[11.5px] leading-relaxed text-dim">
+          <ul className="space-y-1 rounded-inner border border-warn/35 px-3 py-2 text-[11.5px] leading-relaxed text-dim">
             {warnings.map((note) => (
               <li key={note}>{note}</li>
             ))}
@@ -938,7 +948,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
         ) : null}
 
         {refusals.length > 0 ? (
-          <ul className="space-y-1 rounded-lg border border-border px-3 py-2 text-[11.5px] leading-relaxed text-dim">
+          <ul className="space-y-1 rounded-inner border border-border px-3 py-2 text-[11.5px] leading-relaxed text-dim">
             {refusals.map((note) => (
               <li key={note}>{note}</li>
             ))}
@@ -976,9 +986,10 @@ function clampInt(raw: string, min: number, max: number, fallback: number): numb
 
 function Step({ n, title, hint, children }: { n: number; title: string; hint: string; children: React.ReactNode }) {
   return (
-    <section className="space-y-2">
-      <div>
-        <h3 className="text-[13px] font-medium">
+    // One gap for everything a step holds, so no child adds a margin of its own on top of it.
+    <section className="flex flex-col gap-2">
+      <div className="space-y-0.5">
+        <h3 className="text-row font-medium">
           <span className="readout mr-1.5 text-faint">{n}</span>
           {title}
         </h3>

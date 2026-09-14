@@ -112,7 +112,7 @@ import {
  *   differs: retry the stragglers, not the lot.
  *
  * So nothing here ever rounds a mixed outcome up into a clean one: a session
- * with failures shows the number, on the card, before anything is opened.
+ * with failures shows the number, on its row, before anything is opened.
  */
 
 /** How often a moving session is re-read. Slow on purpose — a batch moves in minutes, not frames. */
@@ -610,20 +610,51 @@ const EMPTY_FLEET: readonly Device[] = []
 const NO_WARNINGS: readonly string[] = []
 
 /**
- * The front page: every session, newest first, and nothing about any one of
- * them that does not fit on a card.
+ * The last refresh failed and an older picture is still up. Said out loud,
+ * quietly, rather than either hiding it or throwing away rows the operator is
+ * reading.
+ */
+function StaleNotice({ error }: { error: string }): ReactElement {
+  return (
+    <p className="rounded-inner border border-warn/35 px-3 py-2 text-[11.5px] leading-relaxed text-dim">
+      The last refresh did not get through, so what is below is from a moment ago. {error}
+    </p>
+  )
+}
+
+/**
+ * The front page: every session, newest first, one table row each, and nothing
+ * about any one of them that does not fit on that row.
  *
  * What is deliberately NOT here is the videos. A session of forty carries forty
  * names, forty captions, up to eighty platform lines and every phone under
  * them — expanded inline, two open sessions made a page nobody could scan. So a
- * card answers the two questions a list is for, *is it out yet* and *what
+ * row answers the two questions a list is for, *is it out yet* and *what
  * broke*, and opening it goes to the session's own page for the rest.
+ *
+ * The Refresh button is the tab row's, one level up (`index.tsx`); this panel
+ * reports only whether a refresh is out, so the spinner can sit beside it.
  */
-export function SessionsPanel({ refreshKey, onOpen }: { refreshKey: number; onOpen: (groupId: string) => void }): ReactElement {
+export function SessionsPanel({
+  refreshKey,
+  onOpen,
+  onRefreshingChange,
+}: {
+  refreshKey: number
+  onOpen: (groupId: string) => void
+  onRefreshingChange: (refreshing: boolean) => void
+}): ReactElement {
   const { data, error, loading, reload } = useSessionsData(refreshKey)
   const { startSession, retrySession, removeSession, busy } = useSessionActions(reload)
 
   const groups = data?.groups ?? []
+
+  // The spinner is for a REFRESH, and only while rows are already on screen —
+  // the first load draws skeletons instead. A panel whose rows vanish every ten
+  // seconds looks broken while working perfectly.
+  const refreshing = loading && data !== null
+  useEffect(() => onRefreshingChange(refreshing), [refreshing, onRefreshingChange])
+  useEffect(() => () => onRefreshingChange(false), [onRefreshingChange])
 
   return (
     /**
@@ -631,30 +662,11 @@ export function SessionsPanel({ refreshKey, onOpen }: { refreshKey: number; onOp
      * wide the box it is in happens to be, and a `lg:` here would be a claim
      * about the window instead.
      */
-    <div className="@container space-y-2.5 pt-1">
-      <div className="flex items-center gap-2">
-        {/* The spinner is for a REFRESH, and only while rows are already on
-            screen — the first load draws skeletons instead. A panel whose rows
-            vanish every ten seconds looks broken while working perfectly. */}
-        {loading && data !== null ? <Spinner className="size-3.5 text-faint" /> : null}
-        <div className="grow" />
-        <Button variant="outline" size="sm" onClick={reload}>
-          <ArrowsClockwiseIcon aria-hidden />
-          Refresh
-        </Button>
-      </div>
-
-      {/* The last refresh failed and an older picture is still up. Said out
-          loud, quietly, rather than either hiding it or throwing away rows the
-          operator is reading. */}
-      {error !== null && data !== null ? (
-        <p className="rounded-inner border border-warn/35 px-3 py-2 text-[11.5px] leading-relaxed text-dim">
-          The last refresh did not get through, so what is below is from a moment ago. {error}
-        </p>
-      ) : null}
+    <div className="@container flex flex-col gap-3">
+      {error !== null && data !== null ? <StaleNotice error={error} /> : null}
 
       {loading && data === null ? (
-        <LoadingRows rows={2} />
+        <LoadingRows rows={3} />
       ) : error !== null && data === null ? (
         <ErrorState message={error} onRetry={reload} />
       ) : groups.length === 0 ? (
@@ -664,17 +676,33 @@ export function SessionsPanel({ refreshKey, onOpen }: { refreshKey: number; onOp
           description="Open “New session”, drop in your videos, choose where they go and how fast — the session appears here, with every video, every phone and every failure in it."
         />
       ) : (
-        groups.map((group) => (
-          <SessionCard
-            key={group.id}
-            group={group}
-            onOpen={() => onOpen(group.id)}
-            busy={busy(group)}
-            onStart={() => startSession(group)}
-            onRetry={() => retrySession(group)}
-            onRemove={() => removeSession(group)}
-          />
-        ))
+        <div className="overflow-hidden rounded-inner border border-line">
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead>Session</TableHead>
+                <TableHead className="hidden @2xl:table-cell">Platforms</TableHead>
+                <TableHead className="w-44">Progress</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="hidden @5xl:table-cell">Pacing</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {groups.map((group) => (
+                <SessionRow
+                  key={group.id}
+                  group={group}
+                  onOpen={() => onOpen(group.id)}
+                  busy={busy(group)}
+                  onStart={() => startSession(group)}
+                  onRetry={() => retrySession(group)}
+                  onRemove={() => removeSession(group)}
+                />
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       )}
     </div>
   )
@@ -841,9 +869,13 @@ export function SessionDetail({ groupId, refreshKey, onBack }: { groupId: string
   const devices = data?.devices ?? EMPTY_MAP
 
   return (
-    <div className="@container space-y-3 py-4">
+    // No vertical padding of its own — the host pads the view — and the same
+    // `gap-3` rhythm as the tabbed page, so moving between the two does not
+    // shift anything.
+    <div className="@container flex flex-col gap-3">
       <div className="flex items-center gap-2">
-        <Button variant="ghost" size="sm" onClick={onBack}>
+        {/* Pulled left by its own padding, so the caret lines up with the card's edge below. */}
+        <Button variant="ghost" size="sm" onClick={onBack} className="-ml-2.5">
           <CaretLeftIcon aria-hidden />
           All sessions
         </Button>
@@ -855,11 +887,7 @@ export function SessionDetail({ groupId, refreshKey, onBack }: { groupId: string
         </Button>
       </div>
 
-      {error !== null && data !== null ? (
-        <p className="rounded-inner border border-warn/35 px-3 py-2 text-[11.5px] leading-relaxed text-dim">
-          The last refresh did not get through, so what is below is from a moment ago. {error}
-        </p>
-      ) : null}
+      {error !== null && data !== null ? <StaleNotice error={error} /> : null}
 
       {loading && data === null ? (
         <LoadingRows rows={3} />
@@ -918,7 +946,7 @@ function LiveLine({ moving, updatedAt, posts, now }: { moving: boolean; updatedA
   const started = startedAt(posts)
   const retried = lastRetryAt(posts)
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-0.5 text-[11.5px] text-dim">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] text-dim">
       <span className="inline-flex items-center gap-1.5">
         <span className={cn('size-1.5 shrink-0 rounded-pill', moving ? 'animate-pulse bg-accent' : 'bg-faint-2')} aria-hidden />
         {updatedAt !== null ? <span>Updated {relativeTime(Math.floor(updatedAt / 1000), now)}</span> : null}
@@ -1020,7 +1048,7 @@ function SessionTable({
   const toggle = useCallback((id: string) => setOpen((prev) => flip(prev, id)), [])
   const toggleEdit = useCallback((id: string) => setEditing((prev) => flip(prev, id)), [])
 
-  const columns = 5 + platforms.length
+  const columns = 6 + platforms.length
 
   return (
     <div className="space-y-2">
@@ -1062,14 +1090,17 @@ function SessionTable({
           }
         />
       ) : (
-        <div className="rounded-inner border border-line">
+        // `Table` scrolls sideways inside its own container, so a session with
+        // many platforms widens this box's scroller, never the page.
+        <div className="overflow-hidden rounded-inner border border-line">
           <Table>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
                 <TableHead className="w-12">#</TableHead>
                 <TableHead>Video</TableHead>
+                <TableHead>Caption</TableHead>
                 <TableHead className="hidden w-28 @xl:table-cell">Turn</TableHead>
-                <TableHead className="w-52">Phone</TableHead>
+                <TableHead className="w-64">Phone</TableHead>
                 {platforms.map((p) => (
                   <TableHead key={p} className="@3xl:w-60">
                     {platformTitle(p)}
@@ -1144,7 +1175,7 @@ function FilterChip({
       onClick={onClick}
       title={title}
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-pill border px-2.5 py-1 text-[12px] transition-colors',
+        'inline-flex items-center gap-1.5 rounded-pill border px-2.5 py-1 text-[12px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
         selected ? 'border-accent/40 bg-accent-soft text-accent' : 'border-line bg-panel text-text-2 hover:bg-hover',
         count === 0 && !selected && 'text-faint',
       )}
@@ -1298,10 +1329,93 @@ function PhoneCell({
         emptyText="No phone matches."
         disabled={saving}
         ariaLabel={`Phone for ${name}`}
-        className="w-80"
+        className="w-64"
         triggerClassName={cn('h-7 min-w-0 text-[12px]', unassigned && 'border-warn/60')}
       />
       {saving ? <Spinner className="size-3.5 shrink-0 text-faint" /> : null}
+    </div>
+  )
+}
+
+/**
+ * A video's caption, edited in place.
+ *
+ * Read-only it is two lines and a tooltip; clicked, it is a text area with the same limit the member enforces, saved
+ * through `smm/update-post` like every other edit — so an empty caption is refused before Save, and the warnings the
+ * service answers with land under the row. Ctrl/⌘+Enter saves, Escape puts the caption back as it was.
+ */
+function CaptionCell({
+  post,
+  name,
+  saving,
+  onSave,
+  onWarnings,
+}: {
+  post: Post
+  name: string
+  saving: boolean
+  onSave: SaveEdit
+  onWarnings: (videoArtifactId: string, list: readonly string[]) => void
+}): ReactElement {
+  const [draft, setDraft] = useState<string | null>(null)
+  const editing = draft !== null
+  const problem =
+    draft === null ? null : draft.trim().length === 0 ? 'The caption cannot be empty.' : draft.length > CAPTION_MAX ? `The caption is ${draft.length} characters; the limit is ${CAPTION_MAX}.` : null
+  const dirty = draft !== null && draft !== post.caption
+  const save = (): void => {
+    if (draft === null || !dirty || problem !== null || saving) return
+    onSave(post, { caption: draft }, name, (list) => {
+      onWarnings(post.videoArtifactId, list)
+      setDraft(null)
+    })
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        data-row-action
+        onClick={() => setDraft(post.caption)}
+        title={post.caption ? `${post.caption}\n\nClick to edit` : 'Click to write a caption'}
+        className="block w-full min-w-[10rem] max-w-[20rem] rounded-inner px-1 py-0.5 text-left hover:bg-hover focus-visible:outline-2 focus-visible:outline-accent"
+      >
+        {post.caption ? (
+          <span className="line-clamp-2 text-[11.5px] leading-snug text-text-2">{post.caption}</span>
+        ) : (
+          <span className="text-[11.5px] text-faint">No caption — click to write one</span>
+        )}
+      </button>
+    )
+  }
+
+  return (
+    <div data-row-action className="w-[20rem] max-w-full space-y-1.5">
+      <Textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') setDraft(null)
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) save()
+        }}
+        rows={4}
+        autoFocus
+        disabled={saving}
+        aria-label={`Caption for ${name}`}
+        className="text-[12px]"
+      />
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Button type="button" size="sm" disabled={!dirty || problem !== null || saving} onClick={save}>
+          {saving ? <Spinner className="size-3.5" /> : null}
+          Save
+        </Button>
+        <Button type="button" size="sm" variant="ghost" disabled={saving} onClick={() => setDraft(null)}>
+          Cancel
+        </Button>
+        <span className={cn('readout ml-auto text-[11px] tabular-nums', draft.length > CAPTION_MAX ? 'text-danger' : 'text-faint')}>
+          {draft.length} / {CAPTION_MAX}
+        </span>
+      </div>
+      {problem !== null ? <p className="text-[11px] text-danger">{problem}</p> : null}
     </div>
   )
 }
@@ -1383,7 +1497,7 @@ function VideoRows({
             aria-expanded={open}
             aria-controls={detailId}
             aria-label={`${open ? 'Hide' : 'Show'} every attempt for ${name}`}
-            className="inline-flex items-center gap-1 rounded-inner px-1 py-0.5 text-[12px] text-dim focus-visible:outline-2 focus-visible:outline-accent"
+            className="inline-flex items-center gap-1 rounded-small px-1 py-0.5 text-[12px] text-dim outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           >
             <CaretRightIcon className={cn('size-3 shrink-0 text-faint transition-transform', open && 'rotate-90')} aria-hidden />
             <span className="readout tabular-nums">{turn}</span>
@@ -1393,11 +1507,12 @@ function VideoRows({
           <div className="max-w-[14rem] truncate text-[12.5px] font-medium text-text @3xl:max-w-[20rem]" title={name}>
             {name}
           </div>
-          <div className="max-w-[14rem] truncate text-[11px] text-dim @3xl:max-w-[20rem]" title={post.caption}>
-            {post.caption}
-          </div>
           {/* Narrow boxes hide the Turn column; its fact moves under the name rather than vanish. */}
           <div className="mt-0.5 text-[11px] text-faint @xl:hidden">Turn {turnText(post, now)}</div>
+        </TableCell>
+        {/* The caption on the row itself, and edited there (owner, 2026-09-14) — two lines at most until clicked. */}
+        <TableCell className="align-top">
+          <CaptionCell post={post} name={name} saving={saving} onSave={onSave} onWarnings={onWarnings} />
         </TableCell>
         <TableCell
           className="readout hidden align-top text-[11.5px] whitespace-nowrap text-dim @xl:table-cell"
@@ -1428,7 +1543,7 @@ function VideoRows({
           </TableCell>
         ))}
         <TableCell className="align-top">
-          <div data-row-action className="flex justify-end gap-1">
+          <div data-row-action className="flex justify-end gap-1.5">
             <Button
               variant={editing ? 'secondary' : 'outline'}
               size="sm"
@@ -1441,7 +1556,7 @@ function VideoRows({
             </Button>
             <Button
               variant="ghost"
-              size="sm"
+              size="icon-sm"
               aria-expanded={open}
               aria-controls={detailId}
               aria-label={`${open ? 'Hide' : 'Show'} every attempt for ${name}`}
@@ -1908,10 +2023,20 @@ function AttemptDetail({
   )
 }
 
+/** The sentence for a session the farm has not reported on — said, never left as a blank. */
+const NOT_REPORTED = 'Nothing reported yet — the farm has not looked at this session since it was made.'
+
 /**
- * One session on the list: what it is, how far it has got, and the way in.
+ * One session on the list: what it is, how far it has got, what broke, and the
+ * way in.
+ *
+ * The title is the way in — a real button, so it is reachable from the
+ * keyboard — and the rest of the row is for reading. Platforms and pacing have
+ * their own columns on a wide box; on a narrow one they move under the title
+ * rather than vanish, because pacing is what explains a session that looks
+ * stuck.
  */
-function SessionCard({
+function SessionRow({
   group,
   onOpen,
   busy,
@@ -1926,35 +2051,97 @@ function SessionCard({
   onRetry: () => void
   onRemove: () => void
 }): ReactElement {
+  const p = group.progress
+  const total = p?.total ?? group.videoArtifactIds.length
+  const platforms = group.platforms.map(platformTitle).join(', ')
+  const pacing = pacingLine(group)
+  const quiet = p !== null && p.running === 0 && p.waiting === 0 && p.failed === 0 && p.attention === 0
+
   return (
-    <Card className="gap-0 rounded-card px-3.5 py-3">
-      <SessionHead group={group} onOpen={onOpen} busy={busy} onStart={onStart} onRetry={onRetry} onRemove={onRemove} />
-    </Card>
+    <TableRow>
+      <TableCell className="min-w-[12rem]">
+        <button
+          type="button"
+          onClick={onOpen}
+          className="rounded-small text-left text-row font-medium wrap-anywhere text-text underline-offset-2 outline-none hover:text-accent hover:underline focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          {group.title}
+        </button>
+        <div className="mt-0.5 text-[11px] text-faint">{relativeTime(group.createdAt)}</div>
+        <div className="text-[11px] text-faint @2xl:hidden">{platforms}</div>
+        <div className="text-[11px] text-faint @5xl:hidden">{pacing}</div>
+      </TableCell>
+      <TableCell className="hidden text-[12px] text-text-2 @2xl:table-cell">{platforms}</TableCell>
+      <TableCell>
+        {/* Posted-only on purpose; failures are never drawn as progress, they are counted in Status. */}
+        <div className="flex min-w-[8rem] flex-col gap-1">
+          <Progress value={percent(p?.posted ?? 0, total)} className="w-full" />
+          <span className="readout text-[11.5px] whitespace-nowrap text-dim">
+            {p?.posted ?? 0} of {total} posted
+          </span>
+        </div>
+      </TableCell>
+      <TableCell>
+        {p === null ? (
+          <span className="text-[11.5px] text-dim" title={NOT_REPORTED}>
+            Nothing reported yet
+          </span>
+        ) : quiet ? (
+          p.posted === total && total > 0 ? (
+            <span className="text-[11.5px] text-ok">All posted</span>
+          ) : (
+            <span className="text-faint">—</span>
+          )
+        ) : (
+          <div className="flex flex-wrap items-center gap-1">
+            <ProgressBadges group={group} />
+          </div>
+        )}
+      </TableCell>
+      <TableCell className="hidden text-[11.5px] text-dim @5xl:table-cell">{pacing}</TableCell>
+      <TableCell>
+        <SessionActions group={group} busy={busy} onStart={onStart} onRetry={onRetry} onRemove={onRemove} className="flex-nowrap" />
+      </TableCell>
+    </TableRow>
   )
 }
 
 /**
- * The header both screens share: title, the farm's own summary line, the three
- * actions, the progress bar and the pacing.
- *
- * One component rather than two similar ones, because the wording of Start,
- * Retry and Remove is the most consequential text in this plugin — each one
- * publishes to, or stops publishing to, somebody's real account — and two
- * copies of it would drift apart on the first edit.
- *
- * `onOpen` is what tells the two apart: on the list the title is the way into
- * the session, and on the session's own page there is nowhere left to go.
+ * Running, waiting, failed, needs a look — as badges, only the ones that are
+ * non-zero. Shared by the list's Status column and the session page's header
+ * so the two can never word a count differently.
+ */
+function ProgressBadges({ group }: { group: Group }): ReactElement | null {
+  const p = group.progress
+  if (p === null) return null
+  return (
+    <>
+      {p.running > 0 ? <Badge variant="default">{p.running} running</Badge> : null}
+      {p.waiting > 0 ? <Badge variant="secondary">{p.waiting} waiting</Badge> : null}
+      {/* Never folded into anything softer: a session with failures says how
+          many, before anything is opened. */}
+      {p.failed > 0 ? <Badge variant="destructive">{p.failed} failed</Badge> : null}
+      {p.attention > 0 ? (
+        <Badge variant="warn" title="Some posted and some did not, or a result could not be confirmed. Open the session to see which phone.">
+          {p.attention} need a look
+        </Badge>
+      ) : null}
+    </>
+  )
+}
+
+/**
+ * The header of a session's own page: title, the farm's own summary line, the
+ * three actions, the progress bar and the pacing.
  */
 function SessionHead({
   group,
-  onOpen,
   busy,
   onStart,
   onRetry,
   onRemove,
 }: {
   group: Group
-  onOpen?: () => void
   busy: boolean
   onStart: () => void
   onRetry: () => void
@@ -1964,115 +2151,28 @@ function SessionHead({
   const total = p?.total ?? group.videoArtifactIds.length
   const summary = summaryLine(group)
 
-  const heading = (
-    <span className="min-w-0">
-      <span className="block text-row font-medium wrap-anywhere text-text">{group.title}</span>
-      <span className="mt-0.5 block text-[11.5px] leading-relaxed text-dim">
-        {summary ?? 'Nothing reported yet — the farm has not looked at this session since it was made.'}
-      </span>
-    </span>
-  )
-
   return (
     <>
-      <div className="flex flex-wrap items-start gap-2">
-        {onOpen ? (
-          // The whole heading is the target, not a caret: opening the session is
-          // the most common thing anyone does on this card, and a 16px chevron
-          // is the smallest possible way to offer it.
-          <button type="button" onClick={onOpen} className="flex min-w-0 grow items-start gap-1.5 text-left hover:underline">
-            <CaretRightIcon className="mt-0.5 size-3.5 shrink-0 text-faint" aria-hidden />
-            {heading}
-          </button>
-        ) : (
-          <div className="flex min-w-0 grow items-start gap-1.5">{heading}</div>
-        )}
-
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
-          <ConfirmDialog
-            trigger={
-              <Button size="sm" disabled={busy}>
-                <PlayIcon aria-hidden />
-                Start
-              </Button>
-            }
-            title={`Start “${group.title}”?`}
-            destructive={false}
-            confirmLabel="Start"
-            description={
-              <>
-                Every video in this session is given its turn: the first goes now and the rest are spread{' '}
-                <span className="readout">{pacingLine(group)}</span>. Phones post as their turn comes, so this finishes minutes or hours from now, not
-                at once. Starting a session that is already part-way through only gives a turn to videos that never got one — nothing that has already
-                posted is posted again.
-              </>
-            }
-            onConfirm={onStart}
-          />
-
-          <ConfirmDialog
-            trigger={
-              <Button variant="outline" size="sm" disabled={busy}>
-                <ArrowsClockwiseIcon aria-hidden />
-                Retry failed
-              </Button>
-            }
-            title={`Retry the failures in “${group.title}”?`}
-            destructive={false}
-            confirmLabel="Retry failed"
-            description={
-              <>
-                Only the phones whose upload <strong>failed</strong> are sent again, re-spaced by this session’s own gaps.
-                <br />A phone that already posted is left alone — re-sending it would put the same video on that account twice, and that cannot be
-                undone. A phone whose result could not be confirmed (<span className="readout">unverified</span>) is left alone for the same reason: it
-                may well have posted, so it waits for a person to look rather than being re-sent.
-              </>
-            }
-            onConfirm={onRetry}
-          />
-
-          <ConfirmDialog
-            trigger={
-              <Button variant="ghost" size="sm" disabled={busy} aria-label={`Remove ${group.title}`}>
-                <TrashIcon aria-hidden />
-                Remove
-              </Button>
-            }
-            title={`Remove “${group.title}” and stop what is left?`}
-            confirmLabel="Remove and stop"
-            description={
-              <>
-                Removing the session STOPS it: whatever has not gone out yet stays where it is and is never sent. What has already posted stays
-                posted — that cannot be taken back — and the video rows keep their own record of it. What you lose is this card, the place these{' '}
-                {total} video{total === 1 ? '' : 's'} are watched and retried together.
-              </>
-            }
-            onConfirm={onRemove}
-          />
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="min-w-0 grow">
+          <h2 className="text-row font-medium wrap-anywhere text-text">{group.title}</h2>
+          <p className="mt-0.5 text-[11.5px] leading-relaxed text-dim">{summary ?? NOT_REPORTED}</p>
         </div>
+        <SessionActions group={group} busy={busy} onStart={onStart} onRetry={onRetry} onRemove={onRemove} className="shrink-0 flex-wrap" />
       </div>
 
       {/* How far along, and what that number leaves out. The bar is posted-only
           on purpose; failures are never drawn as progress, they are counted
           beside it in their own words. */}
-      <div className="mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1">
+      <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1">
         <Progress value={percent(p?.posted ?? 0, total)} className="min-w-[120px] max-w-xs grow" />
         <span className="readout text-[11.5px] text-dim">
           {p?.posted ?? 0} of {total} posted
         </span>
-        {p && p.running > 0 ? <Badge variant="default">{p.running} running</Badge> : null}
-        {p && p.waiting > 0 ? <Badge variant="secondary">{p.waiting} waiting</Badge> : null}
-        {/* Never folded into anything softer: a session with failures says how
-            many, on the card, before anything is opened. */}
-        {p && p.failed > 0 ? <Badge variant="destructive">{p.failed} failed</Badge> : null}
-        {p && p.attention > 0 ? (
-          <Badge variant="warn" title="Some posted and some did not, or a result could not be confirmed. Open the session to see which phone.">
-            {p.attention} need a look
-          </Badge>
-        ) : null}
+        <ProgressBadges group={group} />
       </div>
 
-      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-faint">
+      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-faint">
         <span>{relativeTime(group.createdAt)}</span>
         <span aria-hidden>·</span>
         <span>{group.platforms.map(platformTitle).join(', ')}</span>
@@ -2080,6 +2180,97 @@ function SessionHead({
         <span>{pacingLine(group)}</span>
       </div>
     </>
+  )
+}
+
+/**
+ * Start, Retry failed and Remove, each behind its confirmation — the one copy
+ * of them, drawn by both the list's rows and a session's own page.
+ *
+ * One component rather than two similar ones, because the wording of Start,
+ * Retry and Remove is the most consequential text in this plugin — each one
+ * publishes to, or stops publishing to, somebody's real account — and two
+ * copies of it would drift apart on the first edit.
+ */
+function SessionActions({
+  group,
+  busy,
+  onStart,
+  onRetry,
+  onRemove,
+  className,
+}: {
+  group: Group
+  busy: boolean
+  onStart: () => void
+  onRetry: () => void
+  onRemove: () => void
+  className?: string
+}): ReactElement {
+  const total = group.progress?.total ?? group.videoArtifactIds.length
+  return (
+    <div className={cn('flex items-center justify-end gap-1.5', className)}>
+      <ConfirmDialog
+        trigger={
+          <Button size="sm" disabled={busy}>
+            <PlayIcon aria-hidden />
+            Start
+          </Button>
+        }
+        title={`Start “${group.title}”?`}
+        destructive={false}
+        confirmLabel="Start"
+        description={
+          <>
+            Every video in this session is given its turn: the first goes now and the rest are spread{' '}
+            <span className="readout">{pacingLine(group)}</span>. Phones post as their turn comes, so this finishes minutes or hours from now, not
+            at once. Starting a session that is already part-way through only gives a turn to videos that never got one — nothing that has already
+            posted is posted again.
+          </>
+        }
+        onConfirm={onStart}
+      />
+
+      <ConfirmDialog
+        trigger={
+          <Button variant="outline" size="sm" disabled={busy}>
+            <ArrowsClockwiseIcon aria-hidden />
+            Retry failed
+          </Button>
+        }
+        title={`Retry the failures in “${group.title}”?`}
+        destructive={false}
+        confirmLabel="Retry failed"
+        description={
+          <>
+            Only the phones whose upload <strong>failed</strong> are sent again, re-spaced by this session’s own gaps.
+            <br />A phone that already posted is left alone — re-sending it would put the same video on that account twice, and that cannot be
+            undone. A phone whose result could not be confirmed (<span className="readout">unverified</span>) is left alone for the same reason: it
+            may well have posted, so it waits for a person to look rather than being re-sent.
+          </>
+        }
+        onConfirm={onRetry}
+      />
+
+      <ConfirmDialog
+        trigger={
+          <Button variant="ghost" size="sm" disabled={busy} aria-label={`Remove ${group.title}`}>
+            <TrashIcon aria-hidden />
+            Remove
+          </Button>
+        }
+        title={`Remove “${group.title}” and stop what is left?`}
+        confirmLabel="Remove and stop"
+        description={
+          <>
+            Removing the session STOPS it: whatever has not gone out yet stays where it is and is never sent. What has already posted stays
+            posted — that cannot be taken back — and the video rows keep their own record of it. What you lose is this session's entry, the place these{' '}
+            {total} video{total === 1 ? '' : 's'} are watched and retried together.
+          </>
+        }
+        onConfirm={onRemove}
+      />
+    </div>
   )
 }
 
@@ -2101,7 +2292,7 @@ function JobLink({ jobId }: { jobId: string }): ReactElement {
   return (
     <a
       href={`/jobs?job=${encodeURIComponent(jobId)}`}
-      className="readout text-accent underline-offset-2 hover:underline"
+      className="readout rounded-small text-accent underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-accent/40"
       title={`Open job ${jobId} on the Jobs screen`}
     >
       run

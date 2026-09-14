@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { Tabs, TabsContent, TabsList, TabsTrigger, type PluginViewProps } from '@enkaku/ui'
+import { ArrowsClockwiseIcon, Button, Spinner, Tabs, TabsContent, TabsList, TabsTrigger, type PluginViewProps } from '@enkaku/ui'
 import { ComposePanel } from './parts/compose'
 import { SessionDetail, SessionsPanel } from './parts/sessions'
 
@@ -23,10 +23,11 @@ import { SessionDetail, SessionsPanel } from './parts/sessions'
  * ada sub page nampilin list item dari sesi"* — one menu entry, two tabs, and
  * a session that opens onto its own page. So:
  *
- * - **Sessions** — every batch, newest first, with how far each has got.
+ * - **Sessions** — every batch, newest first, one table row each, with how far
+ *   each has got.
  * - **New session** — the whole compose flow: files in, phones and pacing
  *   chosen, session created.
- * - **A session's own page** — reached by opening a card, and it replaces both
+ * - **A session's own page** — reached by opening a row, and it replaces both
  *   tabs rather than expanding inside one, because forty videos with their
  *   phones and errors is a page's worth of reading, not a drawer.
  *
@@ -72,23 +73,44 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
     [setParams],
   )
 
+  /*
+    Refresh sits on the tab row rather than on a row of its own inside the
+    panel. It asks for the same "look again now" a new session does — a bump of
+    `refreshKey` — so the list keeps its one loader; the list reports back only
+    whether a refresh is out, for the spinner beside the button.
+  */
+  const [refreshing, setRefreshing] = useState(false)
+  const refresh = useCallback(() => setRefreshKey((n) => n + 1), [])
+
   if (openSessionId !== null) {
     return <SessionDetail groupId={openSessionId} refreshKey={refreshKey} onBack={backToList} />
   }
 
+  /*
+    No vertical padding of its own: the host already pads the view and draws
+    the page header above it, so a `py-*` here is a second gap nobody asked for.
+  */
   return (
-    <Tabs
-      value={tab}
-      onValueChange={(next) => setParams({ tab: next === 'new' ? 'new' : null })}
-      className="py-4"
-    >
-      <TabsList variant="line">
-        <TabsTrigger value="sessions">Sessions</TabsTrigger>
-        <TabsTrigger value="new">New session</TabsTrigger>
-      </TabsList>
+    <Tabs value={tab} onValueChange={(next) => setParams({ tab: next === 'new' ? 'new' : null })} className="gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <TabsList variant="line">
+          <TabsTrigger value="sessions">Sessions</TabsTrigger>
+          <TabsTrigger value="new">New session</TabsTrigger>
+        </TabsList>
+        <div className="grow" />
+        {tab === 'sessions' ? (
+          <>
+            {refreshing ? <Spinner className="size-3.5 text-faint" /> : null}
+            <Button variant="outline" size="sm" onClick={refresh}>
+              <ArrowsClockwiseIcon aria-hidden />
+              Refresh
+            </Button>
+          </>
+        ) : null}
+      </div>
 
       <TabsContent value="sessions">
-        <SessionsPanel refreshKey={refreshKey} onOpen={openSession} />
+        <SessionsPanel refreshKey={refreshKey} onOpen={openSession} onRefreshingChange={setRefreshing} />
       </TabsContent>
       <TabsContent value="new">
         <ComposePanel onCreated={onCreated} />
