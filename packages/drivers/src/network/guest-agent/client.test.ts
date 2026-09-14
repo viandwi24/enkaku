@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { GUEST_AGENT_PROTOCOL } from '@enkaku/protocol'
-import { GUEST_AGENT_REPAIRABLE_ERROR_CODES, GuestAgentClientError, createGuestAgentClient, type GuestAgentConnect } from './client'
+import { GUEST_AGENT_REPAIRABLE_ERROR_CODES, GuestAgentClientError, createGuestAgentClient, textCommitTimeoutMs, type GuestAgentConnect } from './client'
 
 /** A parsed request line, for fakes that need to answer per-method. */
 function parseLine(line: string): { id: string; token: string; method: string; [k: string]: unknown } {
@@ -315,6 +315,42 @@ describe('createGuestAgentClient (plan 44 §5.5)', () => {
     const client = createGuestAgentClient({ port: 1, token: 't', connect })
     const result = await client.textCommit('abc')
     expect(result).toEqual({ committed: 3, ime: 'current' })
+  })
+
+  test('textCommit() waits as long as typing the text can take, not the flat per-call timeout', async () => {
+    // Answers 150 ms after the request — far past this client's 20 ms timeout, well inside the typing budget.
+    const slow: GuestAgentConnect = async (connectOpts) => {
+      let written = ''
+      const socket = {
+        write(data: string) {
+          written += data
+          setTimeout(() => {
+            const req = parseLine(written.slice(0, written.indexOf('\n')))
+            const body = `${JSON.stringify({ id: req.id, ok: true, result: { committed: 6, ime: 'current' } })}\n`
+            connectOpts.socket.data(socket, new TextEncoder().encode(body))
+          }, 150)
+          return data.length
+        },
+        end() {
+          // no-op — the fake has nothing to release
+        },
+      }
+      return socket
+    }
+    const client = createGuestAgentClient({ port: 1, token: 't', connect: slow, timeoutMs: 20 })
+    expect(await client.textCommit('abcdef', [40, 140])).toEqual({ committed: 6, ime: 'current' })
+    // The same slow agent still times out every other call, and a commit with no per-character delay.
+    await expect(client.ping()).rejects.toMatchObject({ code: 'E_TIMEOUT' })
+    await expect(client.textCommit('abcdef')).rejects.toMatchObject({ code: 'E_TIMEOUT' })
+  })
+
+  test('textCommitTimeoutMs: 5 s plus every code point at the slowest delay, never below the per-call timeout', () => {
+    // The production caption that failed: 200 characters at up to 140 ms each.
+    expect(textCommitTimeoutMs(15_000, 'a'.repeat(200), [40, 140])).toBe(33_000)
+    expect(textCommitTimeoutMs(15_000, 'abc', [40, 140])).toBe(15_000)
+    expect(textCommitTimeoutMs(15_000, 'a'.repeat(200))).toBe(15_000)
+    // Code points, not UTF-16 units: one emoji is one commit on the device.
+    expect(textCommitTimeoutMs(0, '👋👋', [0, 1_000])).toBe(7_000)
   })
 
   test('textStatus() returns the validated result', async () => {

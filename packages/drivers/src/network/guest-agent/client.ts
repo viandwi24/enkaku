@@ -245,6 +245,21 @@ export interface GuestAgentClient {
   uiStatus(): Promise<UiStatusResult>
 }
 
+/**
+ * The socket budget for one `text.commit`. With `perCharMs`, the agent's IME commits the text one
+ * code point at a time and sleeps up to `perCharMs[1]` between them (`TextFacet.kt`), answering only
+ * when the last one is in. The flat per-call timeout (15 s by default) cut a production caption off
+ * at about 160 characters — Samsung SM-A075F, 2026-09-14: 200- and 306-character captions both failed
+ * `E_TIMEOUT` after 15 s — and the phone went on typing after the host had given up, into whatever
+ * screen the caller moved to next. So the budget covers the slowest case: 5 s of slack plus every
+ * code point at the longest delay. Without `perCharMs` the whole string is committed in one call and
+ * the per-call timeout stands.
+ */
+export function textCommitTimeoutMs(timeoutMs: number, text: string, perCharMs?: [number, number]): number {
+  if (perCharMs === undefined) return timeoutMs
+  return Math.max(timeoutMs, 5_000 + [...text].length * perCharMs[1])
+}
+
 /** One connect → write one line → read one line → close, with a hard timeout. */
 function sendOnce(connect: GuestAgentConnect, port: number, timeoutMs: number, line: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -595,7 +610,7 @@ export function createGuestAgentClient(opts: GuestAgentClientOptions): GuestAgen
         text,
         ...(perCharMs !== undefined ? { perCharMs } : {}),
       })
-      return call(connect, opts.port, timeoutMs, req, TextCommitResultSchema)
+      return call(connect, opts.port, textCommitTimeoutMs(timeoutMs, text, perCharMs), req, TextCommitResultSchema)
     },
 
     textStatus() {
