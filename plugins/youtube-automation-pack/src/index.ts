@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.30.1',
+  version: '0.31.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,32 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.31.0 — the production Samsung flow, from its exported runs.** Twenty
+   * SM-A075F/SM-A065F runs of `post-video` (2026-09-13/14) and their ui trees.
+   * The trim screen's "Selesai" is now `shorts_trim_finish_trim_button` on this
+   * YouTube build (12 hours earlier it was `creation_next_button`): the wait
+   * and the tap accept either id, or a clickable "Selesai" / "Tambahkan segmen
+   * ke project" — 0.30.0 stopped there four runs out of four. The channel read
+   * before posting was "unreadable" on every run, because "Lihat channel" is no
+   * longer clickable itself: the row holding it is tapped, and a "Dapatkan
+   * YouTube Premium" page opened instead is left with BACK and read again; a
+   * baseline that still cannot be read is tried once more. After Upload
+   * YouTube shows the channel itself with the new cell at "Mengirim file •
+   * 1%": that screen is read first, the channel is re-opened through the Anda
+   * tab rather than by force-stopping YouTube mid-upload, and a new cell
+   * carrying the title that is still uploading or processing reports
+   * `unverified` ("uploaded, still processing on YouTube") — or `posted` once
+   * the run has seen it finish. The details screen's taps and the Upload band
+   * are measured from YouTube's content frame instead of fractions of a
+   * 1640-tall screen, which on 1600 put the band inside the farm keyboard's
+   * strip; the farm keyboard (`dev.enkaku.guestagent`) counts as a keyboard,
+   * and BACK is pressed only when a keyboard window is in the tree, never on
+   * pixels alone. The details screen is checked for landscape before anything
+   * is typed. A failure on the details screen backs out and taps a discard
+   * button matched by exact label before YouTube is closed (not yet measured on
+   * hardware), and `finish` leaves YouTube open while an upload is still
+   * sending.
    *
    * **0.30.1 — a landscape YouTube gets one relaunch before
    * `E_SCREEN_LANDSCAPE`.** Most of the production Samsung fleet (SM-A075F,

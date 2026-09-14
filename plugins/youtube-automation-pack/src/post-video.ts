@@ -2,10 +2,10 @@ import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
-import { compareShots } from './screen-pixels'
+import { compareShots, pngSize } from './screen-pixels'
 import type { Region } from './screen-pixels'
 import { all, flatten, rowsById } from './tree'
-import { YOUTUBE_PACKAGE, capture, centre, labelled, relaunch, sleep, waitForTree } from './youtube'
+import { YOUTUBE_PACKAGE, capture, centre, hasId, labelled, relaunch, sleep, waitForTree } from './youtube'
 
 /**
  * `post-video` — upload one video as a YouTube Short, for the Social Media
@@ -26,11 +26,17 @@ import { YOUTUBE_PACKAGE, capture, centre, labelled, relaunch, sleep, waitForTre
  * | unfinished edit   | `alertTitle` "…draf…", "Mulai dari awal"         | screen-resume-draft.json         |
  * | gallery           | `thumb_image_view` desc = the FILE NAME          | screen-gallery.json              |
  * | gallery, picked   | `selected_state` inside the cell, `multi_select_next_button` | screen-gallery-selected.json |
- * | trim (optional)   | `creation_next_button` ("Selesai")               | screen-trim.json                 |
+ * | trim (optional)   | `shorts_trim_finish_trim_button` or `creation_next_button` ("Selesai") | screen-trim-finish.json, screen-trim.json |
  * | Shorts editor     | `shorts_post_bottom_button` ("Berikutnya")       | screen-shorts-editor.json        |
- * | details           | NONE — see below                                 | screen-details-hidden.json       |
- * | You tab           | `Lihat channel` (desc)                           | screen-you.json                  |
+ * | details           | NONE — see below                                 | screen-details-hidden.json, screen-details-hidden-1600.json |
+ * | You tab           | `Lihat channel`, or the clickable row holding it | screen-you.json, screen-you-label-row.json |
+ * | Premium page      | "Dapatkan YouTube Premium" (toolbar title)       | screen-premium-page.json         |
  * | channel           | `Edit channel` (desc), cells below it            | screen-channel-draft.json        |
+ * | channel, uploading | the new cell "… Mengirim file • 1%"             | screen-channel-uploading.json    |
+ *
+ * The rows added in 0.31.0 come from the production SM-A075F exports of
+ * 2026-09-14 (runs f32d8f38, ea9736fe, 72395efa) — ui trees only, status bar
+ * dropped, channel names replaced.
  *
  * The gallery naming its cells by file name is the best anchor this farm has
  * on any platform: the video is pushed under a name unique to this job, so the
@@ -69,7 +75,7 @@ import { YOUTUBE_PACKAGE, capture, centre, labelled, relaunch, sleep, waitForTre
  *   then the outcome proven on a screen that CAN be read — the channel's own
  *   video list.
  *
- * ## What each outcome means (0.30.0)
+ * ## What each outcome means (0.31.0)
  *
  * - **a thrown error** — only while nothing can have been uploaded: before the
  *   Upload tap, or after it when the details screen is provably pixel-for-pixel
@@ -77,62 +83,86 @@ import { YOUTUBE_PACKAGE, capture, centre, labelled, relaunch, sleep, waitForTre
  *   after an Upload that took would duplicate the Short on a real channel.
  * - **`posted`** — the channel page, read before the walk and again after
  *   Upload, has one more cell carrying THIS title (the whole title, or a prefix
- *   the channel visibly cut with an ellipsis) that is no longer processing.
- * - **`unverified`** — Upload was pressed and anything short of that: a cell
- *   still processing, a new cell whose title does not match (a title that lost
- *   keys uploads under YouTube's default), a channel that could not be read
- *   before or after, or a screen that changed without visibly leaving details.
+ *   the channel visibly cut with an ellipsis) that is no longer processing. With
+ *   no reading from before, only a titled cell this run itself SAW uploading
+ *   after Upload, and then saw finished, counts.
+ * - **`unverified`** — Upload was pressed and anything short of that: a new
+ *   cell still uploading or processing ("uploaded, still processing on
+ *   YouTube"), a new cell whose title does not match (a title that lost keys
+ *   uploads under YouTube's default), an upload YouTube shows as failed, a
+ *   channel that could not be read before or after, or a screen that changed
+ *   without visibly leaving details. Never `failed`.
  */
 
 /**
- * The details screen, measured with `uiautomator` on the walk (720x1640, id-ID).
- * Fractions of the full frame so another resolution scales; the layout is a
- * top-anchored title and a bottom-anchored button bar.
+ * Where the details screen's taps go and which pixels are compared, measured
+ * from YouTube's own `content` frame (0.31.0).
  *
- * - title field: EditText `[192,190][699,258]` — centre (445, 224).
- * - Upload: `upload_bottom_button` `[370,1465][699,1535]` — centre x 534.
+ * Two phones, both 720 wide:
  *
- * The Upload y is 1480, not the centre. It was chosen when the farm's own
- * input bar (~125px) could still be over the screen: inside the button whether
- * YouTube resized for it or not. Since 0.30.0 no keyboard can be up when
- * Upload is tapped (`putKeyboardAway`), so the choice no longer carries any
- * weight — and it is not moved, because nothing on hardware has measured a
- * better one.
- */
-const DETAILS_TITLE = { x: 445 / 720, y: 224 / 1640 }
-const DETAILS_UPLOAD = { x: 534 / 720, y: 1480 / 1640 }
-
-/**
- * The band of the frame the Upload button sits in (`[1465..1535]` above, with
- * a margin, stopping above the navigation bar at 1556). A keyboard up in any
- * shape — over the bar, or with YouTube resized so the bar moved above it —
- * changes these pixels; with the keyboard gone they are what they were before
- * the title was ever tapped.
- */
-const UPLOAD_BAND: Region = { top: 1455 / 1640, bottom: 1545 / 1640, left: 0, right: 1 }
-
-/**
- * Everything YouTube draws on the details screen: `android:id/content` in
- * `screen-details-hidden.json` is `[0,70][720,1556]`. The status bar above it
- * is left out, so a clock that ticks over does not read as "the tap did
- * something".
- */
-const DETAILS_CONTENT: Region = { top: 70 / 1640, bottom: 1556 / 1640, left: 0, right: 1 }
-
-/**
- * Where a keyboard is put away when this screen gives the reader no plain page
- * to tap (it never does — the details window is hidden).
+ * - the owner's moto g06 (720x1640, `uiautomator` on the walk): `content`
+ *   `[0,70][720,1556]` (`screen-details-hidden.json`); the title field
+ *   `[192,190][699,258]`; `upload_bottom_button` `[370,1465][699,1535]`.
+ * - the production SM-A075F (720x1600, run 72395efa): `content`
+ *   `[0,64][720,1510]` (`ui/00058`, `screen-details-hidden-1600.json`);
+ *   "Upload video Shorts" drawn at about `[371,1413][697,1487]`
+ *   (`frames/00048`), the title hint at y≈217.
  *
- * NOT "just below the title block": nothing below the title field was measured,
- * and whatever is there on the walked screen (the rows under the title) opens
- * something when tapped. What IS measured is YouTube's toolbar, identical on
- * every screen of the walk: the back arrow `[0,70][98,154]`, the title text
- * from x=105 on the 88..135 line, action icons from x=468 at the earliest
- * (`screen-channel-draft.json`, `screen-you.json`). (200, 112) is inside the
- * header's own title text — plain page, clear of the arrow and of any icon,
- * and above the title field at any focus state.
+ * Both put the title field 154px below the content top and the button 21-23px
+ * above the content bottom. Until 0.30.1 every point was a fraction of the
+ * whole 1640 frame; scaled to 1600 the Upload band reached down to y=1507,
+ * into the farm keyboard's strip ("Enkaku input — driven by the farm",
+ * y≈1484-1600 in `frames/00057`), which YouTube does not resize for. The band
+ * read "different" with the title typed and the button in plain view, and the
+ * run pressed BACK — which on this screen can leave it and keep a draft.
+ *
+ * So each is an offset from the content frame, in px at 720 wide:
+ *
+ * - title: (445, content top + 154).
+ * - Upload: (534, content bottom − 76) — inside the button on both phones
+ *   (moto 1480, the value walked; Samsung 1434), and above the farm strip.
+ * - the Upload band: content bottom − 101 to content bottom − 36 — the
+ *   button's upper part, where its label is, ending above the farm strip on
+ *   the Samsung (1474 < 1484). A phone keyboard (about the bottom 40% of the
+ *   screen) still covers all of it.
+ * - blank page, to put a keyboard away when the reader offers none: (200,
+ *   content top + 42). NOT "just below the title block" — the rows there open
+ *   something when tapped. It is inside the header's own title text: the back
+ *   arrow ends at x=98, the text runs from x=105 on the 88..135 line (moto),
+ *   action icons start at x=468 at the earliest (`screen-channel-draft.json`,
+ *   `screen-you.json`).
+ * - content: the whole content frame, the status bar left out so a clock that
+ *   ticks over does not read as "the tap did something".
+ *
+ * A tree with no `content` node falls back to the moto's fractions.
  */
-const DETAILS_BLANK = { x: 200 / 720, y: 112 / 1640 }
+export interface DetailsGeometry {
+  frame: { width: number; height: number }
+  title: { x: number; y: number }
+  upload: { x: number; y: number }
+  blank: { x: number; y: number }
+  uploadBand: Region
+  content: Region
+}
+
+export function detailsGeometry(tree: UiNode): DetailsGeometry {
+  const frame = frameOf(tree)
+  const px = (v: number): number => Math.round((v * frame.width) / 720)
+  const box = all(tree, (n) => fromYouTube(n) && hasId(n, 'content') && n.bounds.bottom > n.bounds.top)[0]
+  const top = box ? box.bounds.top : Math.round((70 / 1640) * frame.height)
+  const bottom = box ? box.bounds.bottom : Math.round((1556 / 1640) * frame.height)
+  return {
+    frame,
+    title: { x: px(445), y: top + px(154) },
+    upload: { x: px(534), y: bottom - px(76) },
+    blank: { x: px(200), y: top + px(42) },
+    uploadBand: { top: (bottom - px(101)) / frame.height, bottom: (bottom - px(36)) / frame.height, left: 0, right: 1 },
+    content: { top: top / frame.height, bottom: bottom / frame.height, left: 0, right: 1 },
+  }
+}
+
+/** How many times the channel is read after Upload, ten seconds apart. */
+const CONFIRM_ROUNDS = 6
 
 /**
  * How long the title tap gets before the text is typed.
@@ -323,6 +353,29 @@ export function isSelectedCell(tree: UiNode, cell: UiNode): boolean {
   return rowsById(tree, 'selected_state').some((s) => s.bounds.left >= b.left && s.bounds.right <= b.right && s.bounds.top >= b.top && s.bounds.bottom <= b.bottom)
 }
 
+/**
+ * The trim screen's "Selesai" (0.31.0).
+ *
+ * YouTube changed its id between two runs of the same fleet 12 hours apart: `creation_next_button` on
+ * 2026-09-13 (72395efa `ui/00041`, and the moto walk's `screen-trim.json`), `shorts_trim_finish_trim_button`
+ * on 2026-09-14 (f32d8f38 `ui/00046`, `screen-trim-finish.json`) — where 0.30.0 waited 20 s for the old id
+ * with the button on screen, four runs out of four. So: either id first, then a clickable node labelled
+ * "Selesai"/"Done" or described "Tambahkan segmen ke project". The same node serves the wait and the tap.
+ */
+const TRIM_DONE_IDS = ['shorts_trim_finish_trim_button', 'creation_next_button'] as const
+const TRIM_DONE_TEXTS: readonly string[] = ['Selesai', 'Done']
+const TRIM_DONE_DESCS: readonly string[] = ['Tambahkan segmen ke project', 'Add segment to project']
+
+export function trimDoneButton(tree: UiNode): UiNode | null {
+  const visible = onScreenIn(tree)
+  const buttons = all(tree, (n) => fromYouTube(n) && n.clickable && visible(n))
+  return (
+    buttons.find((n) => TRIM_DONE_IDS.some((id) => hasId(n, id))) ??
+    buttons.find((n) => TRIM_DONE_TEXTS.includes(n.text.trim()) || TRIM_DONE_DESCS.includes(n.desc.trim())) ??
+    null
+  )
+}
+
 /** Labels YouTube puts on a cell that is not a published video. */
 const NOT_A_VIDEO = ['Draf', 'Drafts', 'Draft']
 
@@ -367,7 +420,11 @@ function norm(s: string): string {
   return s.toLowerCase().replace(/#/g, '').replace(/\s+/g, ' ').trim()
 }
 
-const IN_FLIGHT = /mengupload|uploading|memproses|processing|\b\d{1,3}\s?%/i
+/** A cell still on its way: "Mengirim file • 1%" is what the new cell read right after Upload (72395efa `ui/00064`). */
+const IN_FLIGHT = /mengupload|uploading|mengirim file|sending file|memproses|processing|\b\d{1,3}\s?%/i
+
+/** A cell whose upload YouTube gave up on. Such a cell is never `posted`, whatever title it carries. */
+const UPLOAD_FAILED = /\bgagal\b|\bfailed\b|dibatalkan|\bcancell?ed\b/i
 
 /** View counts, "… ago" and durations: the words on a cell that change while its video stays the same. */
 const CHANGING_WORDS = [
@@ -414,7 +471,8 @@ export function cellShowsTitle(words: string, title: string): boolean {
 
 export type ChannelJudgement =
   | { kind: 'new' }
-  | { kind: 'processing'; words: string }
+  | { kind: 'processing'; words: string; titled: boolean }
+  | { kind: 'upload-error'; words: string }
   | { kind: 'untitled-new' }
   | { kind: 'no-baseline'; titled: boolean }
   | { kind: 'same' }
@@ -425,15 +483,32 @@ export type ChannelJudgement =
  * walk (`null` when it could not be read), `after` the reading now.
  *
  * - `new` — more cells carry this title than before, one of them not processing. The only `posted`.
- * - `processing` — a cell that was not there before is still uploading or processing.
+ *   With no reading from before: `seenUploading` (how many cells carried this title when this run saw
+ *   one of them still uploading) cells or more carry it now, and none is in flight (0.31.0) — the cell
+ *   was seen new while it uploaded, not assumed new.
+ * - `processing` — a cell that was not there before is still uploading or processing; `titled` says
+ *   whether it carries this title (a cell still uploading is new by nature, baseline or not).
+ * - `upload-error` — a new cell carrying this title that YouTube shows as failed.
  * - `untitled-new` — a cell that was not there before (or simply more cells), but none with this title.
  * - `no-baseline` — no reading from before, so nothing can be proven new; `titled` says whether a cell carries this title.
  * - `same`, `unreadable` — what they say.
  */
-export function judgeChannel(before: string[] | null, after: string[] | null, title: string): ChannelJudgement {
+export function judgeChannel(before: string[] | null, after: string[] | null, title: string, opts?: { seenUploading?: number }): ChannelJudgement {
   if (after === null) return { kind: 'unreadable' }
-  const inFlight = (cell: string): boolean => IN_FLIGHT.test(norm(cell).replace(norm(title), ' '))
+  const rest = (cell: string): string => norm(cell).replace(norm(title), ' ')
+  const inFlight = (cell: string): boolean => IN_FLIGHT.test(rest(cell))
+  const failed = (cell: string): boolean => UPLOAD_FAILED.test(rest(cell))
   const titled = (cell: string): boolean => cellShowsTitle(cell, title)
+  const busiest = (cells: string[]): string | undefined => cells.find((c) => titled(c) && inFlight(c)) ?? cells.find(inFlight)
+
+  if (before === null) {
+    const broken = after.find((c) => titled(c) && failed(c))
+    if (broken) return { kind: 'upload-error', words: broken }
+    const busy = busiest(after)
+    if (busy) return { kind: 'processing', words: busy, titled: titled(busy) }
+    if (opts?.seenUploading !== undefined && opts.seenUploading > 0 && after.filter(titled).length >= opts.seenUploading) return { kind: 'new' }
+    return { kind: 'no-baseline', titled: after.some(titled) }
+  }
 
   // Cells after, minus the cells before — matched by title words, as a multiset.
   const left = new Map<string, number>()
@@ -448,24 +523,28 @@ export function judgeChannel(before: string[] | null, after: string[] | null, ti
     return true
   })
 
-  if (before === null) {
-    const busy = after.find(inFlight)
-    if (busy) return { kind: 'processing', words: busy }
-    return { kind: 'no-baseline', titled: after.some(titled) }
-  }
+  const broken = fresh.find((c) => titled(c) && failed(c))
+  if (broken) return { kind: 'upload-error', words: broken }
   // More cells with this title than before, and the one that is new is not still processing.
   if (after.filter(titled).length > before.filter(titled).length && fresh.some((cell) => titled(cell) && !inFlight(cell))) {
     return { kind: 'new' }
   }
-  const busy = fresh.find(inFlight)
-  if (busy) return { kind: 'processing', words: busy }
+  const busy = busiest(fresh)
+  if (busy) return { kind: 'processing', words: busy, titled: titled(busy) }
   if (fresh.length > 0 || after.length > before.length) return { kind: 'untitled-new' }
   return { kind: 'same' }
 }
 
+/**
+ * The farm's own keyboard (0.31.0). With a phone's Text input on `auto` the guest agent's IME is up, drawn as a strip
+ * ("Enkaku input — driven by the farm", "Switch keyboard") that a package-name test for keyboards never matches — the
+ * same rule `instagram-automation-pack` 0.4.5 added for its caption screen.
+ */
+export const FARM_KEYBOARD_PACKAGE = 'dev.enkaku.guestagent'
+
 const isKeyboardNode = (tree: UiNode): ((n: UiNode) => boolean) => {
   const visible = onScreenIn(tree)
-  return (n) => /inputmethod|honeyboard|swiftkey|keyboard/i.test(n.packageName) && visible(n)
+  return (n) => (/inputmethod|honeyboard|swiftkey|keyboard/i.test(n.packageName) || n.packageName === FARM_KEYBOARD_PACKAGE) && visible(n)
 }
 
 /** A soft keyboard's window is in the tree, on screen. On the details screen it usually is not even when up (Android withholds it with the rest), so its absence here proves nothing. */
@@ -481,7 +560,7 @@ const TOOLBAR_BOTTOM = 154
  * YouTube label above the keys and NOT part of anything tappable smaller than
  * a page-sized container. The lowest wins. Null when the keyboard is not in the
  * tree or there is no such label (always, on the hidden details screen); the
- * caller then taps `DETAILS_BLANK`. The same reading as
+ * caller then taps `detailsGeometry`'s `blank`. The same reading as
  * `instagram-automation-pack`'s `keyboardDismissPoint`.
  */
 export function keyboardDismissPoint(tree: UiNode): { x: number; y: number; label: string } | null {
@@ -524,25 +603,130 @@ async function waitForId(ctx: ScriptContext<unknown>, shortId: string, budgetMs:
   return { node: rowsById(got.tree, shortId)[0] ?? null, tree: got.tree }
 }
 
+const area = (n: UiNode): number => (n.bounds.right - n.bounds.left) * (n.bounds.bottom - n.bounds.top)
+
+const contains = (n: UiNode, p: { x: number; y: number }): boolean => n.bounds.left <= p.x && p.x <= n.bounds.right && n.bounds.top <= p.y && p.y <= n.bounds.bottom
+
+/** The nodes from `root` down to `target`, both included; null when it is not in the tree. */
+function pathTo(root: UiNode, target: UiNode): UiNode[] | null {
+  if (root === target) return [root]
+  for (const child of root.children) {
+    const below = pathTo(child, target)
+    if (below) return [root, ...below]
+  }
+  return null
+}
+
+/** The channel page's header is on screen — the only screen `readChannelCells` reads. */
+export function channelHeaderShown(tree: UiNode): boolean {
+  return shown(tree, 'Edit channel').length > 0 || shown(tree, 'Edit saluran').length > 0
+}
+
+function accountTab(tree: UiNode): UiNode | null {
+  return shown(tree, 'Anda').find((n) => n.clickable) ?? shown(tree, 'You').find((n) => n.clickable) ?? null
+}
+
+const VIEW_CHANNEL = ['Lihat channel', 'View channel'] as const
+
+/**
+ * Where to tap for "Lihat channel" on the You page (0.31.0), and the point to tap.
+ *
+ * The walked build made the label itself clickable (`screen-you.json`). The production Samsung build does not: the
+ * "Lihat channel" text is `clickable=false` inside the unlabelled header row `[23,154][697,335]` that takes the tap
+ * (f32d8f38 `ui/00027` → `screen-you-label-row.json`, and 72395efa `ui/00066`) — and 0.30.0, requiring a clickable
+ * label, read every production channel as "unreadable". So: a clickable label; else its nearest clickable ancestor;
+ * else the smallest clickable node whose bounds hold the label. Never a page-sized container. The point is the
+ * label's own centre either way — inside the node that takes the tap, and on the words a person would press.
+ */
+export function viewChannelTarget(tree: UiNode): { node: UiNode; point: { x: number; y: number } } | null {
+  const visible = onScreenIn(tree)
+  const frame = frameOf(tree)
+  const tappable = (n: UiNode): boolean => fromYouTube(n) && n.clickable && visible(n) && area(n) < frame.width * frame.height * 0.4
+  const labels = VIEW_CHANNEL.flatMap((l) => shown(tree, l)).filter(fromYouTube)
+  const own = labels.find((n) => n.clickable)
+  if (own) return { node: own, point: centre(own) }
+  for (const label of labels) {
+    const point = centre(label)
+    const ancestor = (pathTo(tree, label) ?? []).slice(0, -1).reverse().find((n) => tappable(n) && contains(n, point))
+    const holder = ancestor ?? all(tree, (n) => tappable(n) && contains(n, point)).sort((a, b) => area(a) - area(b))[0]
+    if (holder) return { node: holder, point }
+  }
+  return null
+}
+
+const PREMIUM_PAGE_TITLES: readonly string[] = ['Dapatkan YouTube Premium', 'Get YouTube Premium']
+const PREMIUM_PAGE_LOGOS: readonly string[] = ['Logo YouTube Premium', 'YouTube Premium logo']
+
+/**
+ * YouTube's full-page "Dapatkan YouTube Premium" offer (0.31.0) — what "Lihat channel" opened on ea9736fe
+ * (`ui/00032`, `screen-premium-page.json`). Not the popup `popups.ts` closes: this page has no close control, only
+ * the toolbar's back arrow, so the member leaves it with BACK. Nothing on it is ever tapped.
+ */
+export function premiumPage(tree: UiNode): boolean {
+  if (channelHeaderShown(tree)) return false
+  const visible = onScreenIn(tree)
+  return all(tree, (n) => fromYouTube(n) && visible(n) && (PREMIUM_PAGE_TITLES.includes(n.text.trim()) || PREMIUM_PAGE_LOGOS.includes(n.desc.trim()))).length > 0
+}
+
+const UPLOADING = /\b(?:mengupload|uploading)\s+\d+\s+video|mengirim file|sending file/i
+
+/**
+ * YouTube is still sending a video (0.31.0): a channel cell reading "Mengirim file • 1%" (72395efa `ui/00064`), or
+ * the You page's "Video Anda — Mengupload 1 video" (`ui/00066`). A force-stop now would kill the upload.
+ */
+export function uploadInProgress(tree: UiNode): boolean {
+  const visible = onScreenIn(tree)
+  return all(tree, (n) => fromYouTube(n) && visible(n) && (UPLOADING.test(n.text) || UPLOADING.test(n.desc))).length > 0
+}
+
+/** Read the channel page that is on screen now. */
+async function readChannelHere(ctx: ScriptContext<unknown>, label: string): Promise<string[] | null> {
+  await sleep(1_500) // the cells arrive after the header
+  const tree = await capture(ctx, label)
+  return channelHeaderShown(tree) ? readChannelCells(tree, frameOf(tree).width) : null
+}
+
 /**
  * Open the own channel page and read its cells. Never throws: a failed reading
  * is not evidence about the post, and the caller words it as such.
+ *
+ * `readIfShown` reads a channel page already on screen instead of navigating —
+ * after Upload, YouTube opens the channel by itself with the new cell at the
+ * top (72395efa `ui/00064`), and that screen is the first evidence there is.
+ * Nothing here force-stops or relaunches YouTube (0.31.0).
  */
-async function readOwnChannel(ctx: ScriptContext<unknown>, label: string): Promise<string[] | null> {
+async function readOwnChannel(ctx: ScriptContext<unknown>, label: string, opts?: { readIfShown?: boolean }): Promise<string[] | null> {
   try {
-    const you = await waitForTree(ctx, (t) => shown(t, 'Anda').length > 0 || shown(t, 'You').length > 0, { budgetMs: 15_000 })
-    const tab = shown(you.tree, 'Anda').find((n) => n.clickable) ?? shown(you.tree, 'You').find((n) => n.clickable)
+    if (opts?.readIfShown) {
+      const here = await waitForTree(ctx, channelHeaderShown, { budgetMs: 8_000 })
+      if (here.ok) return await readChannelHere(ctx, label)
+    }
+    const you = await waitForTree(ctx, (t) => accountTab(t) !== null, { budgetMs: 15_000 })
+    const tab = accountTab(you.tree)
     if (!tab) return null
     await tapCentre(ctx, tab)
-    const page = await waitForTree(ctx, (t) => shown(t, 'Lihat channel').length > 0 || shown(t, 'View channel').length > 0 || isSignedOut(t), { budgetMs: 15_000 })
-    if (isSignedOut(page.tree)) fail('E_NOT_SIGNED_IN', 'YouTube on this phone is signed out. Sign in to the account that should post (and create its channel), then re-run.')
-    const view = shown(page.tree, 'Lihat channel').find((n) => n.clickable) ?? shown(page.tree, 'View channel').find((n) => n.clickable)
-    if (!view) return null
-    await tapCentre(ctx, view)
-    const channel = await waitForTree(ctx, (t) => shown(t, 'Edit channel').length > 0 || shown(t, 'Edit saluran').length > 0, { budgetMs: 15_000 })
-    await sleep(1_500) // the cells arrive after the header
-    const tree = await capture(ctx, label)
-    return channel.ok ? readChannelCells(tree, frameOf(tree).width) : null
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const page = await waitForTree(ctx, (t) => channelHeaderShown(t) || viewChannelTarget(t) !== null || isSignedOut(t), { budgetMs: 15_000 })
+      if (isSignedOut(page.tree)) fail('E_NOT_SIGNED_IN', 'YouTube on this phone is signed out. Sign in to the account that should post (and create its channel), then re-run.')
+      if (channelHeaderShown(page.tree)) return await readChannelHere(ctx, label)
+      const view = viewChannelTarget(page.tree)
+      if (!view) {
+        await capture(ctx, `${label}-you`, page.tree)
+        return null
+      }
+      await ctx.device.tap({ point: view.point })
+      const opened = await waitForTree(ctx, (t) => channelHeaderShown(t) || premiumPage(t), { budgetMs: 15_000 })
+      if (channelHeaderShown(opened.tree)) return await readChannelHere(ctx, label)
+      if (!premiumPage(opened.tree)) {
+        await capture(ctx, `${label}-not-channel`, opened.tree)
+        return null
+      }
+      await capture(ctx, `${label}-premium-page`, opened.tree)
+      ctx.log.warn('"Lihat channel" opened YouTube\'s "Dapatkan YouTube Premium" page instead of the channel — pressing BACK and reading again', { attempt })
+      await ctx.device.key('BACK')
+      await sleep(1_500)
+    }
+    return null
   } catch (err) {
     if ((err as { code?: string }).code === 'E_NOT_SIGNED_IN') throw err
     ctx.log.warn('could not read the own channel page', { error: String(err) })
@@ -607,10 +791,10 @@ export function onThumbnailEditor(tree: UiNode): boolean {
 }
 
 /** Poll screenshots until the Upload band matches `reference`, or the budget runs out. Returns the last comparison. */
-async function waitForUploadBandClear(ctx: ScriptContext<unknown>, reference: Uint8Array, budgetMs: number): Promise<'same' | 'different' | 'unreadable'> {
+async function waitForUploadBandClear(ctx: ScriptContext<unknown>, reference: Uint8Array, region: Region, budgetMs: number): Promise<'same' | 'different' | 'unreadable'> {
   const deadline = Date.now() + budgetMs
   for (;;) {
-    const band = compareShots(reference, await ctx.device.screenshot(), UPLOAD_BAND)
+    const band = compareShots(reference, await ctx.device.screenshot(), region)
     if (band === 'same' || Date.now() >= deadline) return band
     await sleep(700)
   }
@@ -628,15 +812,18 @@ async function waitForUploadBandClear(ctx: ScriptContext<unknown>, reference: Ui
  * those exact pixels (and no keyboard window is in the tree).
  *
  * If not: a tap on plain page, the way a person puts a keyboard away (a
- * readable spot above it, else `DETAILS_BLANK`); then BACK, and only while
- * there is evidence the keyboard is up — with the keyboard gone, BACK leaves
- * the details screen and throws the title away (0.26.1). Anything that leaves
- * the details screen, or a band that will not clear, throws: Upload has not
- * been pressed, so nothing can have been uploaded.
+ * readable spot above it, else the measured header); then BACK, and only while
+ * a keyboard window is IN THE TREE (0.31.0) — never on pixels alone. With the
+ * keyboard gone, BACK leaves the details screen and throws the title away
+ * (0.26.1), and 0.30.0 pressed it on pixels: the farm keyboard's strip under a
+ * band scaled from 1640 read as "a keyboard over Upload" (see
+ * `detailsGeometry`). Anything that leaves the details screen, or a band that
+ * will not clear, throws: Upload has not been pressed, so nothing can have been
+ * uploaded.
  */
-async function putKeyboardAway(ctx: ScriptContext<unknown>, reference: Uint8Array, frame: { width: number; height: number }): Promise<void> {
+async function putKeyboardAway(ctx: ScriptContext<unknown>, reference: Uint8Array, geometry: DetailsGeometry): Promise<void> {
   const check = async (budgetMs: number): Promise<{ band: 'same' | 'different' | 'unreadable'; tree: UiNode; keyboard: boolean; gone: boolean }> => {
-    const band = await waitForUploadBandClear(ctx, reference, budgetMs)
+    const band = await waitForUploadBandClear(ctx, reference, geometry.uploadBand, budgetMs)
     const tree = await ctx.device.dump()
     const keyboard = keyboardShowing(tree)
     return { band, tree, keyboard, gone: band === 'same' && !keyboard }
@@ -655,19 +842,22 @@ async function putKeyboardAway(ctx: ScriptContext<unknown>, reference: Uint8Arra
   }
 
   const readable = keyboardDismissPoint(state.tree)
-  const spot = readable ?? { x: Math.round(frame.width * DETAILS_BLANK.x), y: Math.round(frame.height * DETAILS_BLANK.y), label: 'the details header' }
+  const spot = readable ?? { ...geometry.blank, label: 'the details header' }
   ctx.log.info('the keyboard is still over Upload — tapping plain page above it', { label: spot.label, band: state.band, keyboardInTree: state.keyboard })
   await ctx.device.tap({ point: { x: spot.x, y: spot.y } }, { via: 'adb' })
   state = await check(4_000)
   await stillOnDetails(state, 'the tap meant to put the keyboard away')
   if (state.gone) return
 
-  if (state.keyboard || state.band === 'different') {
-    ctx.log.info('the keyboard stayed up after the tap — closing it with BACK', { band: state.band, keyboardInTree: state.keyboard })
+  const backPressed = state.keyboard
+  if (state.keyboard) {
+    ctx.log.info('a keyboard window is still in the tree after the tap — closing it with BACK', { band: state.band })
     await ctx.device.key('BACK')
     state = await check(4_000)
     await stillOnDetails(state, 'BACK, pressed to close the keyboard,')
     if (state.gone) return
+  } else {
+    ctx.log.warn('the Upload band still differs from before the title was tapped, but no keyboard window is in the tree — not pressing BACK, which on this screen can leave it', { band: state.band })
   }
 
   await ctx.artifact.screenshot('yt-09-keyboard')
@@ -675,7 +865,9 @@ async function putKeyboardAway(ctx: ScriptContext<unknown>, reference: Uint8Arra
     'E_KEYBOARD_OVER_UPLOAD',
     state.band === 'unreadable'
       ? 'the screenshots of the details screen could not be compared, so it could not be proven that no keyboard covers Upload — Upload was not pressed and nothing was uploaded. See artifact yt-09-keyboard.'
-      : 'something still covers where Upload is (most likely the keyboard) after a tap on the page and BACK — Upload was not pressed and nothing was uploaded. See artifact yt-09-keyboard.',
+      : backPressed
+        ? 'a keyboard still covers where Upload is after a tap on the page and BACK — Upload was not pressed and nothing was uploaded. See artifact yt-09-keyboard.'
+        : 'something still covers where Upload is on the screenshot, and no keyboard window is in the tree to close — BACK was not pressed, because on this screen it can leave the details and keep a draft. Upload was not pressed and nothing was uploaded. See artifact yt-09-keyboard.',
   )
 }
 
@@ -688,16 +880,69 @@ async function putKeyboardAway(ctx: ScriptContext<unknown>, reference: Uint8Arra
  * - `unchanged` — every screenshot's content region is pixel-for-pixel the one
  *   taken just before the tap. The ONLY state in which nothing was uploaded.
  */
-async function watchUploadTap(ctx: ScriptContext<unknown>, reference: Uint8Array, budgetMs: number): Promise<{ kind: 'left' | 'changed' | 'unchanged'; tree: UiNode }> {
+async function watchUploadTap(ctx: ScriptContext<unknown>, reference: Uint8Array, content: Region, budgetMs: number): Promise<{ kind: 'left' | 'changed' | 'unchanged'; tree: UiNode }> {
   const deadline = Date.now() + budgetMs
   let changed = false
   for (;;) {
     const tree = await ctx.device.dump()
     if (hiddenWindow(tree) !== 'details') return { kind: 'left', tree }
-    if (compareShots(reference, await ctx.device.screenshot(), DETAILS_CONTENT) !== 'same') changed = true
+    if (compareShots(reference, await ctx.device.screenshot(), content) !== 'same') changed = true
     if (Date.now() >= deadline) return { kind: changed ? 'changed' : 'unchanged', tree }
     await sleep(1_000)
   }
+}
+
+/** Labels a discard control may carry — the only labels `finish` taps (0.31.0). Exact matches only. */
+export const DISCARD_LABELS: readonly string[] = ['Buang', 'Hapus', 'Discard', 'Delete']
+
+/** Words a tapped discard control must never contain: keeping the draft, or going on with the post. */
+const NEVER_DISCARD = ['simpan', 'save', 'draf', 'draft', 'lanjut', 'continue', 'upload', 'posting', 'berikutnya', 'next'] as const
+
+/**
+ * A discard control on screen, found by exact label only (0.31.0). NOT MEASURED ON HARDWARE: no fixture of this pack
+ * shows the dialog YouTube raises when the creation flow is left with BACK, so this matches nothing it has not been
+ * told by name, and never "Simpan draf" — the details screen's own button — or anything else that keeps the Short.
+ */
+export function discardButton(tree: UiNode): UiNode | null {
+  const visible = onScreenIn(tree)
+  return (
+    all(tree, (n) => fromYouTube(n) && n.clickable && visible(n) && (DISCARD_LABELS.includes(n.text.trim()) || DISCARD_LABELS.includes(n.desc.trim()))).filter(
+      (n) => !NEVER_DISCARD.some((w) => `${n.text} ${n.desc}`.toLowerCase().includes(w)),
+    )[0] ?? null
+  )
+}
+
+/** Errors this member throws while the Short is open on the details screen (or a screen a mis-aimed tap there opened). */
+const DETAILS_ERRORS: readonly string[] = ['E_DETAILS_NOT_READY', 'E_DETAILS_LAYOUT', 'E_KEYBOARD_OVER_UPLOAD', 'E_UPLOAD_TAP_NOT_TAKEN']
+
+/**
+ * Leave the Shorts creation flow without keeping a draft (0.31.0), before `finish` force-stops YouTube.
+ *
+ * A force-stop on the details screen leaves the Short on the channel as a "Draf" cell (`screen-channel-draft.json`).
+ * So: BACK, one step at a time; a discard control matched by `discardButton` is tapped; stop once YouTube's bottom
+ * bar or the channel is back. Bounded, and every step is safe to repeat — `finish` may run again in a fresh process.
+ * If nothing here works the force-stop still follows, and the next run answers "Lanjutkan video draf Anda?" with its
+ * `unfinishedDraft` setting.
+ */
+async function backOutWithoutDraft(ctx: ScriptContext<unknown>): Promise<void> {
+  for (let step = 0; step < 5; step++) {
+    const tree = await ctx.device.dump()
+    const discard = discardButton(tree)
+    if (discard) {
+      await capture(ctx, `yt-finish-discard-${step + 1}`, tree)
+      await tapCentre(ctx, discard)
+      ctx.log.info(`discarded the unfinished Short with YouTube's "${(discard.text || discard.desc).trim()}" button`)
+      await sleep(1_500)
+      continue
+    }
+    if (step > 0 && (createButton(tree) !== null || channelHeaderShown(tree))) {
+      ctx.log.info('left the Shorts creation flow before closing YouTube', { steps: step })
+      return
+    }
+    await ctx.device.key('BACK')
+    await sleep(1_500)
+  }
+  ctx.log.warn('still inside the Shorts creation flow after BACK — closing YouTube anyway; it may keep this Short as a draft')
 }
 
 const script: PluginMemberScript<typeof params, typeof result> = {
@@ -779,7 +1024,12 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     await ctx.device.push({ artifactId: ctx.params.videoArtifactId, remotePath, mediaScan: 'auto' })
 
     // The baseline the confirmation compares against. A dry run posts nothing and skips it.
-    const before = ctx.params.dryRun ? null : await readOwnChannel(ctx, 'yt-02-channel-before')
+    let before = ctx.params.dryRun ? null : await readOwnChannel(ctx, 'yt-02-channel-before')
+    if (!ctx.params.dryRun && before === null) {
+      // Once more (0.31.0): with no baseline no later reading can prove the post new, and every production run of 0.30.0 had none.
+      ctx.log.warn('the channel could not be read before posting — trying once more')
+      before = await readOwnChannel(ctx, 'yt-02-channel-before-retry')
+    }
     ctx.log.info('read the channel before posting', { cells: before === null ? 'unreadable' : String(before.length) })
 
     /*
@@ -872,9 +1122,11 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     // The trim screen is OPTIONAL: the hand walk met it, and the first routed
     // run on the same phone, same video length, went straight to the editor
     // (2026-09-11). So wait for either, and trim only when it is there.
-    const next = await waitForTree(ctx, (t) => rowsById(t, 'creation_next_button').length > 0 || rowsById(t, 'shorts_post_bottom_button').length > 0, { budgetMs: 20_000 })
-    const trimButton = rowsById(next.tree, 'creation_next_button')[0]
+    // Its button changed id between two production runs 12 hours apart (`trimDoneButton`).
+    const next = await waitForTree(ctx, (t) => trimDoneButton(t) !== null || rowsById(t, 'shorts_post_bottom_button').length > 0, { budgetMs: 20_000 })
+    const trimButton = trimDoneButton(next.tree)
     if (trimButton && rowsById(next.tree, 'shorts_post_bottom_button').length === 0) {
+      ctx.log.info('the trim screen is up — tapping its "Selesai"', { id: trimButton.resourceId, text: trimButton.text, desc: trimButton.desc })
       await tapCentre(ctx, trimButton)
       screens.push('trim')
     } else if (!next.ok) {
@@ -901,13 +1153,28 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     if (!still.still) fail('E_DETAILS_NOT_READY', 'the details screen never stopped loading within 45s, so no tap was aimed at it — nothing was uploaded. See artifact yt-08-details.')
     const settled = await ctx.device.dump()
     if (hiddenWindow(settled) !== 'details') fail('E_ANCHOR_NOT_FOUND', 'the details screen closed while it loaded — nothing was uploaded. See artifact yt-08-details.')
+    /*
+      The orientation again, on the screen the taps are aimed at (0.31.0). The home check passes a
+      phone that turns on its side later in the walk, and every point below is measured in portrait.
+      Nothing has been typed or uploaded yet, so this is a clean failure. Both the tree's frame and
+      the screenshot's own size are asked: the hidden details window gives the reader little to go on.
+    */
+    const geometry = detailsGeometry(settled)
+    const shotSize = pngSize(still.shot)
+    const size = shotSize ?? geometry.frame
+    if (geometry.frame.width > geometry.frame.height || size.width > size.height) {
+      await capture(ctx, 'yt-08-details-landscape', settled)
+      fail(
+        'E_SCREEN_LANDSCAPE',
+        `the details screen is in landscape (${size.width}x${size.height}) — its taps are measured in portrait, so nothing was typed on it and nothing was uploaded. Check the device's rotation setting is "lock-portrait" (Devices → the phone → Settings), then re-run. See artifact yt-08-details-landscape.`,
+      )
+    }
     // The finished details screen with no keyboard and no title: what the Upload band must return to.
     const untouchedDetails = still.shot
     screens.push('details')
 
     // --- the blind part (see the header) ---------------------------------------
-    const frame = frameOf(details.tree)
-    const titlePoint = { x: Math.round(frame.width * DETAILS_TITLE.x), y: Math.round(frame.height * DETAILS_TITLE.y) }
+    const titlePoint = geometry.title
     /*
       Focus cannot be PROVEN on this screen, so it is not claimed.
 
@@ -932,6 +1199,15 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     */
     await ctx.device.tap({ point: titlePoint }, { via: 'adb' })
     await sleep(FOCUS_SETTLE_MS)
+    /*
+      A long title (0.31.0). A ~100-character spaced title is seconds of `input text` on a slow
+      SM-A075F — it can outlast the focus window. The adb driver now sends it in pieces of at most
+      20 characters cut at spaces (`packages/drivers/src/input/adb-input.ts`, `TEXT_CHUNK`), each a
+      short command. Focus is deliberately NOT re-checked between pieces: the only reading that could
+      say "still focused" is this hidden window, which says nothing, so a check would cost a dump per
+      piece and prove nothing. A title that outlasts the window uploads cut, and the channel check
+      then finds no cell carrying the whole title — `unverified`, never `posted`.
+    */
     const typed = await ctx.device.type(title, { via: 'adb', instant: true })
     ctx.log.info('typed the title', { via: typed.via })
     await sleep(1_500)
@@ -949,7 +1225,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       )
     }
 
-    await putKeyboardAway(ctx, untouchedDetails, frame)
+    await putKeyboardAway(ctx, untouchedDetails, geometry)
 
     if (ctx.params.dryRun) {
       return {
@@ -962,7 +1238,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       }
     }
 
-    const uploadPoint = { x: Math.round(frame.width * DETAILS_UPLOAD.x), y: Math.round(frame.height * DETAILS_UPLOAD.y) }
+    const uploadPoint = geometry.upload
     const beforeUpload = await ctx.device.screenshot()
     await ctx.device.tap({ point: uploadPoint }, { via: 'adb' })
     ctx.log.info('tapped Upload — confirming on the channel rather than trusting the tap')
@@ -976,11 +1252,11 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       every frame's content region identical to the one taken just before the
       tap. Only then is the tap tried once more, and only then may the run fail.
     */
-    let watched = await watchUploadTap(ctx, beforeUpload, 12_000)
+    let watched = await watchUploadTap(ctx, beforeUpload, geometry.content, 12_000)
     if (watched.kind === 'unchanged') {
       ctx.log.warn('Upload did not take: the details screen is pixel-for-pixel as it was before the tap — tapping once more')
       await ctx.device.tap({ point: uploadPoint }, { via: 'adb' })
-      watched = await watchUploadTap(ctx, beforeUpload, 15_000)
+      watched = await watchUploadTap(ctx, beforeUpload, geometry.content, 15_000)
     }
     if (watched.kind === 'unchanged') {
       await ctx.artifact.screenshot('yt-10-still-details')
@@ -1006,14 +1282,24 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       is never retried on its own.
     */
     let last: ChannelJudgement = { kind: 'unreadable' }
+    let seenUploading: number | undefined
     let confirmError: string | null = null
+    /*
+      No force-stop from here on (0.31.0). An upload in progress lives in YouTube's own process:
+      on 72395efa the new cell read "Mengirim file • 1%" and 0.27.0 then relaunched YouTube with a
+      force-stop five times while it was still sending. So the first reading is the screen YouTube
+      opens by itself after Upload — its channel, the new cell at the top (`ui/00064`) — and every
+      later one re-opens the channel through the Anda tab. An unreadable channel brings YouTube to
+      the front with a plain launch, which does not stop the app.
+    */
     try {
-      for (let round = 0; round < 6; round++) {
-        if (round > 0) {
-          await relaunch(ctx, { clearRecents: false })
+      for (let round = 0; round < CONFIRM_ROUNDS; round++) {
+        if (round > 0) await sleep(10_000)
+        const after = await readOwnChannel(ctx, `yt-11-channel-after-${round + 1}`, { readIfShown: round === 0 })
+        last = judgeChannel(before, after, title, { seenUploading })
+        if (last.kind === 'processing' && last.titled && after !== null) {
+          seenUploading = Math.max(seenUploading ?? 0, after.filter((cell) => cellShowsTitle(cell, title)).length)
         }
-        const after = await readOwnChannel(ctx, `yt-11-channel-after-${round + 1}`)
-        last = judgeChannel(before, after, title)
         if (last.kind === 'new') {
           return {
             outcome: 'posted' as const,
@@ -1021,13 +1307,20 @@ const script: PluginMemberScript<typeof params, typeof result> = {
             title,
             remotePath,
             screens,
-            reason: 'a new cell carrying this title appeared on the channel page',
+            reason:
+              before === null
+                ? 'a cell carrying this title was seen uploading on the channel after Upload, and then finished'
+                : 'a new cell carrying this title appeared on the channel page',
           }
         }
-        // With no reading from before, no later reading can prove a titled cell new.
-        if (last.kind === 'no-baseline' && last.titled) break
-        ctx.log.warn(`the channel does not show this Short yet (attempt ${round + 1}/6)`, { judged: JSON.stringify(last) })
-        await sleep(10_000)
+        // With no reading from before and no sight of it uploading, no later reading can prove a titled cell new.
+        if (last.kind === 'no-baseline' && last.titled && seenUploading === undefined) break
+        if (last.kind === 'upload-error') break
+        if (after === null) {
+          ctx.log.warn('the channel could not be read — bringing YouTube to the front without restarting it', { round: round + 1 })
+          await ctx.device.app.launch(YOUTUBE_PACKAGE).catch((err: unknown) => ctx.log.warn('could not bring YouTube to the front', { error: String(err) }))
+        }
+        ctx.log.warn(`the channel does not show this Short as live yet (attempt ${round + 1}/${CONFIRM_ROUNDS})`, { judged: JSON.stringify(last) })
       }
     } catch (err) {
       confirmError = err instanceof Error ? err.message : String(err)
@@ -1037,7 +1330,9 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       confirmError !== null
         ? `confirming it failed (${confirmError.slice(0, 160)}).`
         : last.kind === 'processing'
-          ? `it was still processing ("${last.words.slice(0, 80)}") — uploaded, not yet live.`
+          ? `a new video is still uploading or processing on YouTube ("${last.words.slice(0, 80)}"), and this title could not be read on it yet.`
+          : last.kind === 'upload-error'
+            ? `YouTube shows the upload of a cell carrying this title as failed ("${last.words.slice(0, 80)}").`
           : last.kind === 'untitled-new'
             ? 'a video appeared but its title was not confirmed — it does not carry this title (the title may not have been typed in full).'
             : last.kind === 'no-baseline'
@@ -1053,7 +1348,10 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       title,
       remotePath,
       screens,
-      reason: `${tapEvidence}, but ${saw} Reporting "unverified" rather than assuming it posted.`,
+      reason:
+        confirmError === null && last.kind === 'processing' && last.titled
+          ? `uploaded, still processing on YouTube: the new cell carrying this title reads "${last.words.slice(0, 80)}". Reporting "unverified" until the channel shows it finished.`
+          : `${tapEvidence}, but ${saw} Reporting "unverified" rather than assuming it posted.`,
     }
   },
 
@@ -1061,9 +1359,18 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     if (!ctx.error) return undefined
     await ctx.artifact.screenshot('yt-failed').catch(() => {})
     // A permission dialog is left on screen for the operator to answer; anything else is closed.
-    if (ctx.error.code !== 'E_PERMISSION_DIALOG_HIDDEN') {
-      await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: true }).catch(() => {})
+    if (ctx.error.code === 'E_PERMISSION_DIALOG_HIDDEN') return undefined
+    const tree = await ctx.device.dump().catch(() => null)
+    if (tree !== null && uploadInProgress(tree)) {
+      // A timeout while confirming: the Short is still sending, and a force-stop would kill it (0.31.0).
+      ctx.log.warn('YouTube is still uploading a video — leaving it open rather than force-stopping it')
+      return undefined
     }
+    if (tree !== null && (hiddenWindow(tree) === 'details' || onThumbnailEditor(tree) || DETAILS_ERRORS.includes(ctx.error.code))) {
+      // A force-stop on the details screen keeps the Short as a draft (0.31.0).
+      await backOutWithoutDraft(ctx).catch((err: unknown) => ctx.log.warn('could not back out of the Shorts creation flow', { error: String(err) }))
+    }
+    await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: true }).catch(() => {})
     return undefined
   },
 }

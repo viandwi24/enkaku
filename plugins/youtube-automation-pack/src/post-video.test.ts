@@ -4,7 +4,11 @@ import {
   asciiTitle,
   cellShowsTitle,
   cellTitleKey,
+  channelHeaderShown,
   createButton,
+  detailsGeometry,
+  discardButton,
+  FARM_KEYBOARD_PACKAGE,
   galleryCellFor,
   galleryOpen,
   hiddenDialogWatch,
@@ -15,10 +19,15 @@ import {
   keyboardDismissPoint,
   keyboardShowing,
   onThumbnailEditor,
+  premiumPage,
   readChannelCells,
   resumeDraftPrompt,
+  trimDoneButton,
+  uploadInProgress,
+  viewChannelTarget,
 } from './post-video'
-import { rowsById } from './tree'
+import { findPopup } from './popups'
+import { flatten, rowsById } from './tree'
 
 /**
  * `post-video`'s readings, against the screens of the 2026-09-11 hand walk on
@@ -304,5 +313,165 @@ describe('the gallery, in both of YouTube\'s pickers', () => {
     const sheet = await fixture('screen-gallery-sheet.json')
     expect(galleryCellFor(sheet, 'yt-1c0b1d4c-a3d8-440d-b410-249c6dc859c6-1.mp4')).not.toBeNull()
     expect(rowsById(sheet, 'multi_select_next_button')[0]?.text).toBe('Berikutnya')
+  })
+})
+
+/**
+ * 0.31.0 — the production SM-A075F exports of 2026-09-13/14 (720x1600, id-ID). Fixtures are ui trees only, with the
+ * status bar dropped and channel names replaced: `screen-trim-finish.json` (f32d8f38 ui/00046),
+ * `screen-you-label-row.json` (f32d8f38 ui/00027), `screen-premium-page.json` (ea9736fe ui/00032),
+ * `screen-channel-uploading.json` (72395efa ui/00064, the title replaced by "#enkakutest") and
+ * `screen-details-hidden-1600.json` (72395efa ui/00058).
+ */
+describe('trimDoneButton — the trim screen under either id (0.31.0)', () => {
+  test('the renamed shorts_trim_finish_trim_button is the trim button, and so is the older creation_next_button', async () => {
+    expect(trimDoneButton(await fixture('screen-trim-finish.json'))?.resourceId).toBe('com.google.android.youtube:id/shorts_trim_finish_trim_button')
+    expect(trimDoneButton(await fixture('screen-trim.json'))?.resourceId).toBe('com.google.android.youtube:id/creation_next_button')
+  })
+
+  test('with neither id, the clickable "Selesai" is still found', async () => {
+    const tree = await fixture('screen-trim-finish.json')
+    for (const n of flatten(tree)) if (n.resourceId.endsWith('shorts_trim_finish_trim_button')) n.resourceId = 'com.google.android.youtube:id/some_future_id'
+    expect(trimDoneButton(tree)?.text).toBe('Selesai')
+  })
+
+  test('the editor and the gallery have no trim button', async () => {
+    expect(trimDoneButton(await fixture('screen-shorts-editor.json'))).toBeNull()
+    expect(trimDoneButton(await fixture('screen-gallery-sheet.json'))).toBeNull()
+    expect(trimDoneButton(await fixture('screen-gallery-selected.json'))).toBeNull()
+  })
+})
+
+describe('viewChannelTarget — "Lihat channel" whether or not the label takes the tap (0.31.0)', () => {
+  test('a clickable label is tapped itself', async () => {
+    const target = viewChannelTarget(await fixture('screen-you.json'))
+    expect(target?.node.desc).toBe('Lihat channel')
+    expect(target?.node.clickable).toBe(true)
+    expect(target?.point).toEqual({ x: 191, y: 363 })
+  })
+
+  test('a label that is not clickable is tapped through the row holding it, on the label itself', async () => {
+    const target = viewChannelTarget(await fixture('screen-you-label-row.json'))
+    expect(target?.node.bounds).toEqual({ left: 23, top: 154, right: 697, bottom: 335 })
+    expect(target?.node.clickable).toBe(true)
+    expect(target?.point).toEqual({ x: 463, y: 273 })
+  })
+
+  test('a page-sized container is never the target', async () => {
+    const tree = await withNodes('screen-details-hidden-1600.json', [
+      node({ clickable: true, bounds: { left: 0, top: 0, right: 720, bottom: 1600 }, children: [node({ text: 'Lihat channel', bounds: { left: 300, top: 300, right: 440, bottom: 330 } })] }),
+    ])
+    expect(viewChannelTarget(tree)).toBeNull()
+  })
+
+  test('screens without the label have no target', async () => {
+    expect(viewChannelTarget(await fixture('screen-premium-page.json'))).toBeNull()
+    expect(viewChannelTarget(await fixture('screen-home.json'))).toBeNull()
+  })
+})
+
+describe('premiumPage — the full-page offer "Lihat channel" can open (0.31.0)', () => {
+  test('the page is recognised, and nothing else is', async () => {
+    expect(premiumPage(await fixture('screen-premium-page.json'))).toBe(true)
+    expect(premiumPage(await fixture('screen-you.json'))).toBe(false)
+    expect(premiumPage(await fixture('screen-you-label-row.json'))).toBe(false)
+    expect(premiumPage(await fixture('screen-channel-uploading.json'))).toBe(false)
+    expect(premiumPage(await fixture('screen-premium-upsell.json'))).toBe(false)
+  })
+
+  test('it is not the popup popups.ts closes — it has no close control, so it is left with BACK', async () => {
+    expect(findPopup(await fixture('screen-premium-page.json'))).toBeNull()
+  })
+})
+
+describe('the channel right after Upload (0.31.0)', () => {
+  const title = '#enkakutest'
+
+  test('YouTube opens the channel itself, with the new cell still sending', async () => {
+    const tree = await fixture('screen-channel-uploading.json')
+    expect(channelHeaderShown(tree)).toBe(true)
+    expect(uploadInProgress(tree)).toBe(true)
+    expect(readChannelCells(tree, 720)).toEqual(['#enkakutest, Mengirim file • 1% · Action menu · Mengirim file • 1%', 'Tindakan lainnya · Belum ditonton'])
+  })
+
+  test('the You page says "Mengupload 1 video" while one is sending; without it, nothing is in progress', async () => {
+    expect(uploadInProgress(await fixture('screen-you-label-row.json'))).toBe(false)
+    const tree = await withNodes('screen-you-label-row.json', [node({ text: 'Mengupload 1 video', bounds: { left: 135, top: 1187, right: 615, bottom: 1217 } })])
+    expect(uploadInProgress(tree)).toBe(true)
+  })
+
+  test('a titled cell still sending is processing, with a baseline or without — never new', async () => {
+    const cells = readChannelCells(await fixture('screen-channel-uploading.json'), 720)
+    const old = cells[1] as string
+    expect(judgeChannel(null, cells, title)).toEqual({ kind: 'processing', words: cells[0] as string, titled: true })
+    expect(judgeChannel([old], cells, title)).toEqual({ kind: 'processing', words: cells[0] as string, titled: true })
+  })
+
+  test('with no baseline, a titled cell this run saw uploading and now finished is new; unseen, it is not proof', () => {
+    const finished = ['#enkakutest · 0 x ditonton', 'Tindakan lainnya · Belum ditonton']
+    expect(judgeChannel(null, finished, title, { seenUploading: 1 })).toEqual({ kind: 'new' })
+    expect(judgeChannel(null, finished, title)).toEqual({ kind: 'no-baseline', titled: true })
+    expect(judgeChannel(null, ['Tindakan lainnya · Belum ditonton'], title, { seenUploading: 1 })).toEqual({ kind: 'no-baseline', titled: false })
+  })
+
+  test('a new titled cell YouTube shows as failed is an upload error, not a post', () => {
+    const old = 'Tindakan lainnya · Belum ditonton'
+    expect(judgeChannel([old], ['#enkakutest · Upload gagal', old], title)).toEqual({ kind: 'upload-error', words: '#enkakutest · Upload gagal' })
+  })
+})
+
+describe('detailsGeometry — measured from YouTube\'s content frame (0.31.0)', () => {
+  test('on the walked moto it gives exactly the points the walk measured', async () => {
+    const g = detailsGeometry(await fixture('screen-details-hidden.json'))
+    expect(g.title).toEqual({ x: 445, y: 224 })
+    expect(g.upload).toEqual({ x: 534, y: 1480 })
+    expect(g.blank).toEqual({ x: 200, y: 112 })
+    expect(Math.round(g.uploadBand.top * 1640)).toBe(1455)
+  })
+
+  test('on the 1600-tall Samsung, Upload and its band stay inside the button and above the farm keyboard strip (y≈1484)', async () => {
+    const g = detailsGeometry(await fixture('screen-details-hidden-1600.json'))
+    expect(g.frame).toEqual({ width: 720, height: 1600 })
+    expect(g.title).toEqual({ x: 445, y: 218 })
+    expect(g.upload).toEqual({ x: 534, y: 1434 })
+    // "Upload video Shorts" is drawn at about y 1413..1487 (72395efa frames/00048).
+    expect(Math.round(g.uploadBand.top * 1600)).toBe(1409)
+    expect(Math.round(g.uploadBand.bottom * 1600)).toBe(1474)
+    expect(Math.round(g.content.bottom * 1600)).toBe(1510)
+  })
+})
+
+describe('the farm keyboard counts as a keyboard (0.31.0)', () => {
+  const strip = (): UiNode =>
+    node({
+      packageName: FARM_KEYBOARD_PACKAGE,
+      bounds: { left: 0, top: 1484, right: 720, bottom: 1600 },
+      children: [node({ packageName: FARM_KEYBOARD_PACKAGE, clickable: true, text: 'Switch keyboard', bounds: { left: 420, top: 1508, right: 697, bottom: 1577 } })],
+    })
+
+  test('its strip in the tree is a keyboard showing', async () => {
+    expect(keyboardShowing(await fixture('screen-details-hidden-1600.json'))).toBe(false)
+    expect(keyboardShowing(await withNodes('screen-details-hidden-1600.json', [strip()]))).toBe(true)
+  })
+})
+
+describe('discardButton — only a discard control named exactly (0.31.0)', () => {
+  test('"Buang" is a discard control', async () => {
+    const tree = await withNodes('screen-details-hidden-1600.json', [node({ clickable: true, text: 'Buang', bounds: { left: 400, top: 900, right: 650, bottom: 980 } })])
+    expect(discardButton(tree)?.text).toBe('Buang')
+  })
+
+  test('"Simpan draf" and anything not named exactly are never tapped', async () => {
+    const tree = await withNodes('screen-details-hidden-1600.json', [
+      node({ clickable: true, text: 'Simpan draf', bounds: { left: 23, top: 1413, right: 347, bottom: 1487 } }),
+      node({ clickable: true, text: 'Buang draf', bounds: { left: 400, top: 900, right: 650, bottom: 980 } }),
+    ])
+    expect(discardButton(tree)).toBeNull()
+  })
+
+  test('the walked screens carry none — not the channel\'s "Draf" cell, not the resume prompt', async () => {
+    expect(discardButton(await fixture('screen-channel-draft.json'))).toBeNull()
+    expect(discardButton(await fixture('screen-resume-draft.json'))).toBeNull()
+    expect(discardButton(await fixture('screen-premium-page.json'))).toBeNull()
   })
 })

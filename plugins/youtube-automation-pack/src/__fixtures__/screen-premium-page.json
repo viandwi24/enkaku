@@ -1,0 +1,1446 @@
+{
+ "resourceId": "",
+ "text": "",
+ "desc": "",
+ "className": "hierarchy",
+ "packageName": "",
+ "bounds": {
+  "left": 0,
+  "top": 0,
+  "right": 0,
+  "bottom": 0
+ },
+ "clickable": false,
+ "enabled": true,
+ "focused": false,
+ "index": 0,
+ "children": [
+  {
+   "resourceId": "",
+   "text": "",
+   "desc": "",
+   "className": "android.widget.FrameLayout",
+   "packageName": "com.google.android.youtube",
+   "bounds": {
+    "left": 0,
+    "top": 0,
+    "right": 720,
+    "bottom": 1600
+   },
+   "clickable": false,
+   "enabled": true,
+   "focused": false,
+   "index": 0,
+   "children": [
+    {
+     "resourceId": "",
+     "text": "",
+     "desc": "",
+     "className": "android.widget.LinearLayout",
+     "packageName": "com.google.android.youtube",
+     "bounds": {
+      "left": 0,
+      "top": 0,
+      "right": 720,
+      "bottom": 1600
+     },
+     "clickable": false,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": [
+      {
+       "resourceId": "",
+       "text": "",
+       "desc": "",
+       "className": "android.widget.FrameLayout",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 0,
+        "top": 0,
+        "right": 720,
+        "bottom": 1600
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": [
+        {
+         "resourceId": "com.google.android.youtube:id/action_bar_root",
+         "text": "",
+         "desc": "",
+         "className": "android.widget.LinearLayout",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 0,
+          "top": 0,
+          "right": 720,
+          "bottom": 1600
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": [
+          {
+           "resourceId": "android:id/content",
+           "text": "",
+           "desc": "",
+           "className": "android.widget.FrameLayout",
+           "packageName": "com.google.android.youtube",
+           "bounds": {
+            "left": 0,
+            "top": 0,
+            "right": 720,
+            "bottom": 1600
+           },
+           "clickable": false,
+           "enabled": true,
+           "focused": false,
+           "index": 0,
+           "children": [
+            {
+             "resourceId": "com.google.android.youtube:id/more_drawer_container",
+             "text": "",
+             "desc": "",
+             "className": "androidx.drawerlayout.widget.DrawerLayout",
+             "packageName": "com.google.android.youtube",
+             "bounds": {
+              "left": 0,
+              "top": 0,
+              "right": 720,
+              "bottom": 1600
+             },
+             "clickable": false,
+             "enabled": true,
+             "focused": false,
+             "index": 0,
+             "children": [
+              {
+               "resourceId": "com.google.android.youtube:id/slim_status_bar_player_container",
+               "text": "",
+               "desc": "",
+               "className": "android.widget.FrameLayout",
+               "packageName": "com.google.android.youtube",
+               "bounds": {
+                "left": 0,
+                "top": 0,
+                "right": 720,
+                "bottom": 1600
+               },
+               "clickable": false,
+               "enabled": true,
+               "focused": false,
+               "index": 0,
+               "children": [
+                {
+                 "resourceId": "com.google.android.youtube:id/navigation_bar_divider_frame",
+                 "text": "",
+                 "desc": "",
+                 "className": "android.view.ViewGroup",
+                 "packageName": "com.google.android.youtube",
+                 "bounds": {
+                  "left": 0,
+                  "top": 0,
+                  "right": 720,
+                  "bottom": 1510
+                 },
+                 "clickable": false,
+                 "enabled": true,
+                 "focused": false,
+                 "index": 0,
+                 "children": [
+                  {
+                   "resourceId": "com.google.android.youtube:id/global_slim_status_bar_container",
+                   "text": "",
+                   "desc": "",
+                   "className": "android.widget.FrameLayout",
+                   "packageName": "com.google.android.youtube",
+                   "bounds": {
+                    "left": 0,
+                    "top": 0,
+                    "right": 720,
+                    "bottom": 1510
+                   },
+                   "clickable": false,
+                   "enabled": true,
+                   "focused": false,
+                   "index": 0,
+                   "children": []
+                  },
+                  {
+                   "resourceId": "com.google.android.youtube:id/accessibility_layer_container",
+                   "text": "",
+                   "desc": "",
+                   "className": "android.widget.FrameLayout",
+                   "packageName": "com.google.android.youtube",
+                   "bounds": {
+                    "left": 0,
+                    "top": 0,
+                    "right": 720,
+                    "bottom": 1510
+                   },
+                   "clickable": false,
+                   "enabled": true,
+                   "focused": false,
+                   "index": 1,
+                   "children": [
+                    {
+                     "resourceId": "com.google.android.youtube:id/fullscreen_mode_container",
+                     "text": "",
+                     "desc": "",
+                     "className": "android.widget.FrameLayout",
+                     "packageName": "com.google.android.youtube",
+                     "bounds": {
+                      "left": 0,
+                      "top": 0,
+                      "right": 720,
+                      "bottom": 0
+                     },
+                     "clickable": false,
+                     "enabled": true,
+                     "focused": false,
+                     "index": 0,
+                     "children": []
+                    },
+                    {
+                     "resourceId": "com.google.android.youtube:id/next_gen_watch_container_layout",
+                     "text": "",
+                     "desc": "",
+                     "className": "android.view.ViewGroup",
+                     "packageName": "com.google.android.youtube",
+                     "bounds": {
+                      "left": 0,
+                      "top": 0,
+                      "right": 720,
+                      "bottom": 1510
+                     },
+                     "clickable": false,
+                     "enabled": true,
+                     "focused": false,
+                     "index": 1,
+                     "children": [
+                      {
+                       "resourceId": "com.google.android.youtube:id/watch_while_layout_coordinator_layout",
+                       "text": "",
+                       "desc": "",
+                       "className": "android.view.ViewGroup",
+                       "packageName": "com.google.android.youtube",
+                       "bounds": {
+                        "left": 0,
+                        "top": 0,
+                        "right": 720,
+                        "bottom": 1510
+                       },
+                       "clickable": false,
+                       "enabled": true,
+                       "focused": false,
+                       "index": 0,
+                       "children": [
+                        {
+                         "resourceId": "com.google.android.youtube:id/fab_container",
+                         "text": "",
+                         "desc": "",
+                         "className": "android.widget.FrameLayout",
+                         "packageName": "com.google.android.youtube",
+                         "bounds": {
+                          "left": 0,
+                          "top": 0,
+                          "right": 720,
+                          "bottom": 1510
+                         },
+                         "clickable": false,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 0,
+                         "children": []
+                        },
+                        {
+                         "resourceId": "com.google.android.youtube:id/pane_fragment_container",
+                         "text": "",
+                         "desc": "",
+                         "className": "android.widget.FrameLayout",
+                         "packageName": "com.google.android.youtube",
+                         "bounds": {
+                          "left": 0,
+                          "top": 0,
+                          "right": 720,
+                          "bottom": 1510
+                         },
+                         "clickable": false,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 1,
+                         "children": [
+                          {
+                           "resourceId": "com.google.android.youtube:id/browse_fragment_layout_coordinator_layout",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.widget.ScrollView",
+                           "packageName": "com.google.android.youtube",
+                           "bounds": {
+                            "left": 0,
+                            "top": 58,
+                            "right": 720,
+                            "bottom": 1420
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 0,
+                           "children": [
+                            {
+                             "resourceId": "com.google.android.youtube:id/pane_fragment_background_container",
+                             "text": "",
+                             "desc": "",
+                             "className": "android.widget.FrameLayout",
+                             "packageName": "com.google.android.youtube",
+                             "bounds": {
+                              "left": 0,
+                              "top": 58,
+                              "right": 720,
+                              "bottom": 1420
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 0,
+                             "children": []
+                            },
+                            {
+                             "resourceId": "com.google.android.youtube:id/appbar_layout",
+                             "text": "",
+                             "desc": "",
+                             "className": "android.widget.LinearLayout",
+                             "packageName": "com.google.android.youtube",
+                             "bounds": {
+                              "left": 0,
+                              "top": 58,
+                              "right": 720,
+                              "bottom": 148
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 1,
+                             "children": [
+                              {
+                               "resourceId": "com.google.android.youtube:id/toolbar_container",
+                               "text": "",
+                               "desc": "",
+                               "className": "android.widget.FrameLayout",
+                               "packageName": "com.google.android.youtube",
+                               "bounds": {
+                                "left": 0,
+                                "top": 58,
+                                "right": 720,
+                                "bottom": 148
+                               },
+                               "clickable": false,
+                               "enabled": true,
+                               "focused": false,
+                               "index": 0,
+                               "children": [
+                                {
+                                 "resourceId": "com.google.android.youtube:id/collapsing_header_container",
+                                 "text": "",
+                                 "desc": "",
+                                 "className": "android.widget.FrameLayout",
+                                 "packageName": "com.google.android.youtube",
+                                 "bounds": {
+                                  "left": 0,
+                                  "top": 58,
+                                  "right": 720,
+                                  "bottom": 58
+                                 },
+                                 "clickable": false,
+                                 "enabled": true,
+                                 "focused": false,
+                                 "index": 0,
+                                 "children": []
+                                },
+                                {
+                                 "resourceId": "com.google.android.youtube:id/toolbar",
+                                 "text": "",
+                                 "desc": "",
+                                 "className": "android.view.ViewGroup",
+                                 "packageName": "com.google.android.youtube",
+                                 "bounds": {
+                                  "left": 0,
+                                  "top": 58,
+                                  "right": 720,
+                                  "bottom": 148
+                                 },
+                                 "clickable": false,
+                                 "enabled": true,
+                                 "focused": false,
+                                 "index": 1,
+                                 "children": [
+                                  {
+                                   "resourceId": "",
+                                   "text": "",
+                                   "desc": "Kembali ke atas",
+                                   "className": "android.widget.ImageButton",
+                                   "packageName": "com.google.android.youtube",
+                                   "bounds": {
+                                    "left": 0,
+                                    "top": 58,
+                                    "right": 105,
+                                    "bottom": 148
+                                   },
+                                   "clickable": true,
+                                   "enabled": true,
+                                   "focused": false,
+                                   "index": 0,
+                                   "children": []
+                                  },
+                                  {
+                                   "resourceId": "",
+                                   "text": "Dapatkan YouTube Premium",
+                                   "desc": "",
+                                   "className": "android.widget.TextView",
+                                   "packageName": "com.google.android.youtube",
+                                   "bounds": {
+                                    "left": 112,
+                                    "top": 77,
+                                    "right": 547,
+                                    "bottom": 129
+                                   },
+                                   "clickable": false,
+                                   "enabled": true,
+                                   "focused": false,
+                                   "index": 1,
+                                   "children": []
+                                  },
+                                  {
+                                   "resourceId": "",
+                                   "text": "",
+                                   "desc": "",
+                                   "className": "android.support.v7.widget.LinearLayoutCompat",
+                                   "packageName": "com.google.android.youtube",
+                                   "bounds": {
+                                    "left": 554,
+                                    "top": 58,
+                                    "right": 720,
+                                    "bottom": 148
+                                   },
+                                   "clickable": false,
+                                   "enabled": true,
+                                   "focused": false,
+                                   "index": 2,
+                                   "children": [
+                                    {
+                                     "resourceId": "com.google.android.youtube:id/menu_search",
+                                     "text": "",
+                                     "desc": "Telusuri",
+                                     "className": "android.widget.Button",
+                                     "packageName": "com.google.android.youtube",
+                                     "bounds": {
+                                      "left": 554,
+                                      "top": 58,
+                                      "right": 645,
+                                      "bottom": 148
+                                     },
+                                     "clickable": true,
+                                     "enabled": true,
+                                     "focused": false,
+                                     "index": 0,
+                                     "children": []
+                                    },
+                                    {
+                                     "resourceId": "",
+                                     "text": "",
+                                     "desc": "Opsi lainnya",
+                                     "className": "android.widget.ImageView",
+                                     "packageName": "com.google.android.youtube",
+                                     "bounds": {
+                                      "left": 645,
+                                      "top": 58,
+                                      "right": 720,
+                                      "bottom": 148
+                                     },
+                                     "clickable": true,
+                                     "enabled": true,
+                                     "focused": false,
+                                     "index": 1,
+                                     "children": []
+                                    }
+                                   ]
+                                  }
+                                 ]
+                                }
+                               ]
+                              }
+                             ]
+                            },
+                            {
+                             "resourceId": "com.google.android.youtube:id/pane_fragment_contents",
+                             "text": "",
+                             "desc": "",
+                             "className": "android.widget.FrameLayout",
+                             "packageName": "com.google.android.youtube",
+                             "bounds": {
+                              "left": 0,
+                              "top": 148,
+                              "right": 720,
+                              "bottom": 1420
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 2,
+                             "children": [
+                              {
+                               "resourceId": "com.google.android.youtube:id/loading_layout",
+                               "text": "",
+                               "desc": "",
+                               "className": "android.widget.FrameLayout",
+                               "packageName": "com.google.android.youtube",
+                               "bounds": {
+                                "left": 0,
+                                "top": 148,
+                                "right": 720,
+                                "bottom": 1420
+                               },
+                               "clickable": false,
+                               "enabled": true,
+                               "focused": false,
+                               "index": 0,
+                               "children": [
+                                {
+                                 "resourceId": "",
+                                 "text": "",
+                                 "desc": "",
+                                 "className": "android.view.ViewGroup",
+                                 "packageName": "com.google.android.youtube",
+                                 "bounds": {
+                                  "left": 0,
+                                  "top": 148,
+                                  "right": 720,
+                                  "bottom": 1420
+                                 },
+                                 "clickable": false,
+                                 "enabled": true,
+                                 "focused": false,
+                                 "index": 0,
+                                 "children": [
+                                  {
+                                   "resourceId": "com.google.android.youtube:id/results",
+                                   "text": "",
+                                   "desc": "",
+                                   "className": "android.support.v7.widget.RecyclerView",
+                                   "packageName": "com.google.android.youtube",
+                                   "bounds": {
+                                    "left": 0,
+                                    "top": 148,
+                                    "right": 720,
+                                    "bottom": 1420
+                                   },
+                                   "clickable": false,
+                                   "enabled": true,
+                                   "focused": false,
+                                   "index": 0,
+                                   "children": [
+                                    {
+                                     "resourceId": "",
+                                     "text": "",
+                                     "desc": "",
+                                     "className": "android.view.ViewGroup",
+                                     "packageName": "com.google.android.youtube",
+                                     "bounds": {
+                                      "left": 0,
+                                      "top": 148,
+                                      "right": 720,
+                                      "bottom": 1420
+                                     },
+                                     "clickable": false,
+                                     "enabled": true,
+                                     "focused": false,
+                                     "index": 0,
+                                     "children": [
+                                      {
+                                       "resourceId": "",
+                                       "text": "",
+                                       "desc": "",
+                                       "className": "android.view.ViewGroup",
+                                       "packageName": "com.google.android.youtube",
+                                       "bounds": {
+                                        "left": 0,
+                                        "top": 148,
+                                        "right": 720,
+                                        "bottom": 1420
+                                       },
+                                       "clickable": false,
+                                       "enabled": true,
+                                       "focused": false,
+                                       "index": 0,
+                                       "children": [
+                                        {
+                                         "resourceId": "",
+                                         "text": "",
+                                         "desc": "",
+                                         "className": "android.widget.ImageView",
+                                         "packageName": "com.google.android.youtube",
+                                         "bounds": {
+                                          "left": 0,
+                                          "top": 148,
+                                          "right": 720,
+                                          "bottom": 1420
+                                         },
+                                         "clickable": false,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 0,
+                                         "children": []
+                                        },
+                                        {
+                                         "resourceId": "",
+                                         "text": "",
+                                         "desc": "Logo YouTube Premium",
+                                         "className": "android.widget.ImageView",
+                                         "packageName": "com.google.android.youtube",
+                                         "bounds": {
+                                          "left": 128,
+                                          "top": 298,
+                                          "right": 591,
+                                          "bottom": 373
+                                         },
+                                         "clickable": false,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 1,
+                                         "children": []
+                                        },
+                                        {
+                                         "resourceId": "",
+                                         "text": "Seluruh YouTube. Tanpa gangguan.",
+                                         "desc": "Seluruh YouTube. Tanpa gangguan.",
+                                         "className": "android.view.ViewGroup",
+                                         "packageName": "com.google.android.youtube",
+                                         "bounds": {
+                                          "left": 30,
+                                          "top": 433,
+                                          "right": 690,
+                                          "bottom": 576
+                                         },
+                                         "clickable": false,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 2,
+                                         "children": []
+                                        },
+                                        {
+                                         "resourceId": "",
+                                         "text": "YouTube Music & YouTube bebas iklan, secara offline, dan di latar belakang",
+                                         "desc": "YouTube Music & YouTube bebas iklan, secara offline, dan di latar belakang",
+                                         "className": "android.view.ViewGroup",
+                                         "packageName": "com.google.android.youtube",
+                                         "bounds": {
+                                          "left": 30,
+                                          "top": 636,
+                                          "right": 690,
+                                          "bottom": 732
+                                         },
+                                         "clickable": false,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 3,
+                                         "children": []
+                                        },
+                                        {
+                                         "resourceId": "",
+                                         "text": "Uji coba selama 1 bulan seharga Rp 0 • Paket mulai dari Rp 39.900​/bulan • Manfaat yang tersedia berbeda-beda, tergantung paketnya • Batalkan kapan saja",
+                                         "desc": "Uji coba selama 1 bulan seharga Rp 0 • Paket mulai dari Rp 39.900​/bulan • Manfaat yang tersedia berbeda-beda, tergantung paketnya • Batalkan kapan saja",
+                                         "className": "android.view.ViewGroup",
+                                         "packageName": "com.google.android.youtube",
+                                         "bounds": {
+                                          "left": 30,
+                                          "top": 792,
+                                          "right": 690,
+                                          "bottom": 1020
+                                         },
+                                         "clickable": false,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 4,
+                                         "children": []
+                                        },
+                                        {
+                                         "resourceId": "",
+                                         "text": "",
+                                         "desc": "Coba 1 bulan seharga Rp 0",
+                                         "className": "android.widget.Button",
+                                         "packageName": "com.google.android.youtube",
+                                         "bounds": {
+                                          "left": 30,
+                                          "top": 1080,
+                                          "right": 690,
+                                          "bottom": 1170
+                                         },
+                                         "clickable": true,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 5,
+                                         "children": [
+                                          {
+                                           "resourceId": "",
+                                           "text": "Coba 1 bulan seharga Rp 0",
+                                           "desc": "Coba 1 bulan seharga Rp 0",
+                                           "className": "android.view.ViewGroup",
+                                           "packageName": "com.google.android.youtube",
+                                           "bounds": {
+                                            "left": 159,
+                                            "top": 1104,
+                                            "right": 561,
+                                            "bottom": 1145
+                                           },
+                                           "clickable": false,
+                                           "enabled": true,
+                                           "focused": false,
+                                           "index": 0,
+                                           "children": []
+                                          }
+                                         ]
+                                        },
+                                        {
+                                         "resourceId": "",
+                                         "text": "Atau hemat uang dengan paket keluarga atau pelajar ",
+                                         "desc": "Atau hemat uang dengan paket keluarga atau pelajar ",
+                                         "className": "android.view.ViewGroup",
+                                         "packageName": "com.google.android.youtube",
+                                         "bounds": {
+                                          "left": 54,
+                                          "top": 1200,
+                                          "right": 666,
+                                          "bottom": 1236
+                                         },
+                                         "clickable": false,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 6,
+                                         "children": [
+                                          {
+                                           "resourceId": "",
+                                           "text": "paket keluarga atau pelajar",
+                                           "desc": "",
+                                           "className": "android.widget.Button",
+                                           "packageName": "com.google.android.youtube",
+                                           "bounds": {
+                                            "left": 349,
+                                            "top": 1200,
+                                            "right": 660,
+                                            "bottom": 1236
+                                           },
+                                           "clickable": true,
+                                           "enabled": true,
+                                           "focused": false,
+                                           "index": 0,
+                                           "children": []
+                                          }
+                                         ]
+                                        },
+                                        {
+                                         "resourceId": "",
+                                         "text": "",
+                                         "desc": "",
+                                         "className": "android.view.ViewGroup",
+                                         "packageName": "com.google.android.youtube",
+                                         "bounds": {
+                                          "left": 30,
+                                          "top": 1296,
+                                          "right": 690,
+                                          "bottom": 1420
+                                         },
+                                         "clickable": false,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 7,
+                                         "children": [
+                                          {
+                                           "resourceId": "",
+                                           "text": "Anda akan menerima pengingat 7 hari sebelum uji coba berakhir Penagihan berulang. Dengan melanjutkan, Anda menyatakan bahwa Anda telah berusia minimal 18 tahun dan menyetujui persyaratan ini. Tidak ada pengembalian dana untuk periode penagihan sebagian. ",
+                                           "desc": "Anda akan menerima pengingat 7 hari sebelum uji coba berakhir Penagihan berulang. Dengan melanjutkan, Anda menyatakan bahwa Anda telah berusia minimal 18 tahun dan menyetujui persyaratan ini. Tidak ada pengembalian dana untuk periode penagihan sebagian. ",
+                                           "className": "android.view.ViewGroup",
+                                           "packageName": "com.google.android.youtube",
+                                           "bounds": {
+                                            "left": 30,
+                                            "top": 1296,
+                                            "right": 690,
+                                            "bottom": 1420
+                                           },
+                                           "clickable": false,
+                                           "enabled": true,
+                                           "focused": false,
+                                           "index": 0,
+                                           "children": [
+                                            {
+                                             "resourceId": "",
+                                             "text": "persyaratan ini",
+                                             "desc": "",
+                                             "className": "android.widget.Button",
+                                             "packageName": "com.google.android.youtube",
+                                             "bounds": {
+                                              "left": 179,
+                                              "top": 1381,
+                                              "right": 334,
+                                              "bottom": 1408
+                                             },
+                                             "clickable": true,
+                                             "enabled": true,
+                                             "focused": false,
+                                             "index": 0,
+                                             "children": []
+                                            }
+                                           ]
+                                          }
+                                         ]
+                                        }
+                                       ]
+                                      }
+                                     ]
+                                    }
+                                   ]
+                                  }
+                                 ]
+                                }
+                               ]
+                              }
+                             ]
+                            }
+                           ]
+                          }
+                         ]
+                        },
+                        {
+                         "resourceId": "com.google.android.youtube:id/root_pill_container",
+                         "text": "",
+                         "desc": "",
+                         "className": "android.widget.FrameLayout",
+                         "packageName": "com.google.android.youtube",
+                         "bounds": {
+                          "left": 0,
+                          "top": 1435,
+                          "right": 720,
+                          "bottom": 1435
+                         },
+                         "clickable": false,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 2,
+                         "children": []
+                        },
+                        {
+                         "resourceId": "com.google.android.youtube:id/pane_fragment_footer_container",
+                         "text": "",
+                         "desc": "",
+                         "className": "android.widget.FrameLayout",
+                         "packageName": "com.google.android.youtube",
+                         "bounds": {
+                          "left": 0,
+                          "top": 1510,
+                          "right": 720,
+                          "bottom": 1510
+                         },
+                         "clickable": false,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 3,
+                         "children": []
+                        }
+                       ]
+                      }
+                     ]
+                    },
+                    {
+                     "resourceId": "com.google.android.youtube:id/bottom_bar_container",
+                     "text": "",
+                     "desc": "",
+                     "className": "android.widget.LinearLayout",
+                     "packageName": "com.google.android.youtube",
+                     "bounds": {
+                      "left": 0,
+                      "top": 1420,
+                      "right": 720,
+                      "bottom": 1510
+                     },
+                     "clickable": false,
+                     "enabled": true,
+                     "focused": false,
+                     "index": 2,
+                     "children": [
+                      {
+                       "resourceId": "com.google.android.youtube:id/pivot_bar",
+                       "text": "",
+                       "desc": "",
+                       "className": "android.widget.HorizontalScrollView",
+                       "packageName": "com.google.android.youtube",
+                       "bounds": {
+                        "left": 0,
+                        "top": 1420,
+                        "right": 720,
+                        "bottom": 1510
+                       },
+                       "clickable": false,
+                       "enabled": true,
+                       "focused": false,
+                       "index": 0,
+                       "children": [
+                        {
+                         "resourceId": "",
+                         "text": "",
+                         "desc": "",
+                         "className": "android.widget.LinearLayout",
+                         "packageName": "com.google.android.youtube",
+                         "bounds": {
+                          "left": 0,
+                          "top": 1420,
+                          "right": 720,
+                          "bottom": 1510
+                         },
+                         "clickable": false,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 0,
+                         "children": [
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "Beranda",
+                           "className": "android.widget.Button",
+                           "packageName": "com.google.android.youtube",
+                           "bounds": {
+                            "left": 0,
+                            "top": 1420,
+                            "right": 144,
+                            "bottom": 1510
+                           },
+                           "clickable": true,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 0,
+                           "children": [
+                            {
+                             "resourceId": "com.google.android.youtube:id/thumbnail_layout",
+                             "text": "",
+                             "desc": "",
+                             "className": "android.widget.FrameLayout",
+                             "packageName": "com.google.android.youtube",
+                             "bounds": {
+                              "left": 50,
+                              "top": 1429,
+                              "right": 95,
+                              "bottom": 1474
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 0,
+                             "children": [
+                              {
+                               "resourceId": "com.google.android.youtube:id/image",
+                               "text": "",
+                               "desc": "",
+                               "className": "android.widget.ImageView",
+                               "packageName": "com.google.android.youtube",
+                               "bounds": {
+                                "left": 50,
+                                "top": 1429,
+                                "right": 95,
+                                "bottom": 1474
+                               },
+                               "clickable": false,
+                               "enabled": true,
+                               "focused": false,
+                               "index": 0,
+                               "children": []
+                              }
+                             ]
+                            },
+                            {
+                             "resourceId": "com.google.android.youtube:id/text",
+                             "text": "Beranda",
+                             "desc": "",
+                             "className": "android.widget.TextView",
+                             "packageName": "com.google.android.youtube",
+                             "bounds": {
+                              "left": 35,
+                              "top": 1478,
+                              "right": 109,
+                              "bottom": 1501
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 1,
+                             "children": []
+                            }
+                           ]
+                          },
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "Shorts",
+                           "className": "android.widget.Button",
+                           "packageName": "com.google.android.youtube",
+                           "bounds": {
+                            "left": 144,
+                            "top": 1420,
+                            "right": 288,
+                            "bottom": 1510
+                           },
+                           "clickable": true,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 1,
+                           "children": [
+                            {
+                             "resourceId": "com.google.android.youtube:id/thumbnail_layout",
+                             "text": "",
+                             "desc": "",
+                             "className": "android.widget.FrameLayout",
+                             "packageName": "com.google.android.youtube",
+                             "bounds": {
+                              "left": 194,
+                              "top": 1429,
+                              "right": 239,
+                              "bottom": 1474
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 0,
+                             "children": [
+                              {
+                               "resourceId": "com.google.android.youtube:id/image",
+                               "text": "",
+                               "desc": "",
+                               "className": "android.widget.ImageView",
+                               "packageName": "com.google.android.youtube",
+                               "bounds": {
+                                "left": 194,
+                                "top": 1429,
+                                "right": 239,
+                                "bottom": 1474
+                               },
+                               "clickable": false,
+                               "enabled": true,
+                               "focused": false,
+                               "index": 0,
+                               "children": []
+                              }
+                             ]
+                            },
+                            {
+                             "resourceId": "com.google.android.youtube:id/text",
+                             "text": "Shorts",
+                             "desc": "",
+                             "className": "android.widget.TextView",
+                             "packageName": "com.google.android.youtube",
+                             "bounds": {
+                              "left": 187,
+                              "top": 1478,
+                              "right": 246,
+                              "bottom": 1501
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 1,
+                             "children": []
+                            }
+                           ]
+                          },
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "Buat",
+                           "className": "android.widget.Button",
+                           "packageName": "com.google.android.youtube",
+                           "bounds": {
+                            "left": 288,
+                            "top": 1420,
+                            "right": 432,
+                            "bottom": 1510
+                           },
+                           "clickable": true,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 2,
+                           "children": [
+                            {
+                             "resourceId": "com.google.android.youtube:id/image",
+                             "text": "",
+                             "desc": "",
+                             "className": "android.widget.ImageView",
+                             "packageName": "com.google.android.youtube",
+                             "bounds": {
+                              "left": 326,
+                              "top": 1432,
+                              "right": 394,
+                              "bottom": 1500
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 0,
+                             "children": []
+                            }
+                           ]
+                          },
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "Subscription",
+                           "className": "android.widget.Button",
+                           "packageName": "com.google.android.youtube",
+                           "bounds": {
+                            "left": 432,
+                            "top": 1420,
+                            "right": 576,
+                            "bottom": 1510
+                           },
+                           "clickable": true,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 3,
+                           "children": [
+                            {
+                             "resourceId": "com.google.android.youtube:id/thumbnail_layout",
+                             "text": "",
+                             "desc": "",
+                             "className": "android.widget.FrameLayout",
+                             "packageName": "com.google.android.youtube",
+                             "bounds": {
+                              "left": 482,
+                              "top": 1429,
+                              "right": 527,
+                              "bottom": 1474
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 0,
+                             "children": [
+                              {
+                               "resourceId": "com.google.android.youtube:id/image",
+                               "text": "",
+                               "desc": "",
+                               "className": "android.widget.ImageView",
+                               "packageName": "com.google.android.youtube",
+                               "bounds": {
+                                "left": 482,
+                                "top": 1429,
+                                "right": 527,
+                                "bottom": 1474
+                               },
+                               "clickable": false,
+                               "enabled": true,
+                               "focused": false,
+                               "index": 0,
+                               "children": []
+                              }
+                             ]
+                            },
+                            {
+                             "resourceId": "com.google.android.youtube:id/text",
+                             "text": "Subscription",
+                             "desc": "",
+                             "className": "android.widget.TextView",
+                             "packageName": "com.google.android.youtube",
+                             "bounds": {
+                              "left": 449,
+                              "top": 1478,
+                              "right": 560,
+                              "bottom": 1501
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 1,
+                             "children": []
+                            }
+                           ]
+                          },
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "Anda",
+                           "className": "android.widget.Button",
+                           "packageName": "com.google.android.youtube",
+                           "bounds": {
+                            "left": 576,
+                            "top": 1420,
+                            "right": 720,
+                            "bottom": 1510
+                           },
+                           "clickable": true,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 4,
+                           "children": [
+                            {
+                             "resourceId": "com.google.android.youtube:id/thumbnail_layout",
+                             "text": "",
+                             "desc": "",
+                             "className": "android.widget.FrameLayout",
+                             "packageName": "com.google.android.youtube",
+                             "bounds": {
+                              "left": 592,
+                              "top": 1425,
+                              "right": 705,
+                              "bottom": 1478
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 0,
+                             "children": [
+                              {
+                               "resourceId": "com.google.android.youtube:id/pivot_bar_thumbnail_back_last_mask",
+                               "text": "",
+                               "desc": "",
+                               "className": "android.view.View",
+                               "packageName": "com.google.android.youtube",
+                               "bounds": {
+                                "left": 622,
+                                "top": 1425,
+                                "right": 675,
+                                "bottom": 1478
+                               },
+                               "clickable": false,
+                               "enabled": true,
+                               "focused": false,
+                               "index": 0,
+                               "children": []
+                              },
+                              {
+                               "resourceId": "com.google.android.youtube:id/pivot_bar_thumbnail_back_middle_mask",
+                               "text": "",
+                               "desc": "",
+                               "className": "android.view.View",
+                               "packageName": "com.google.android.youtube",
+                               "bounds": {
+                                "left": 622,
+                                "top": 1425,
+                                "right": 675,
+                                "bottom": 1478
+                               },
+                               "clickable": false,
+                               "enabled": true,
+                               "focused": false,
+                               "index": 1,
+                               "children": []
+                              },
+                              {
+                               "resourceId": "com.google.android.youtube:id/pivot_bar_thumbnail_back_last",
+                               "text": "",
+                               "desc": "",
+                               "className": "android.widget.ImageView",
+                               "packageName": "com.google.android.youtube",
+                               "bounds": {
+                                "left": 626,
+                                "top": 1429,
+                                "right": 671,
+                                "bottom": 1474
+                               },
+                               "clickable": false,
+                               "enabled": true,
+                               "focused": false,
+                               "index": 2,
+                               "children": []
+                              },
+                              {
+                               "resourceId": "com.google.android.youtube:id/pivot_bar_thumbnail_back_middle",
+                               "text": "",
+                               "desc": "",
+                               "className": "android.widget.ImageView",
+                               "packageName": "com.google.android.youtube",
+                               "bounds": {
+                                "left": 626,
+                                "top": 1429,
+                                "right": 671,
+                                "bottom": 1474
+                               },
+                               "clickable": false,
+                               "enabled": true,
+                               "focused": false,
+                               "index": 3,
+                               "children": []
+                              },
+                              {
+                               "resourceId": "",
+                               "text": "",
+                               "desc": "",
+                               "className": "android.widget.FrameLayout",
+                               "packageName": "com.google.android.youtube",
+                               "bounds": {
+                                "left": 626,
+                                "top": 1429,
+                                "right": 671,
+                                "bottom": 1474
+                               },
+                               "clickable": false,
+                               "enabled": true,
+                               "focused": false,
+                               "index": 4,
+                               "children": [
+                                {
+                                 "resourceId": "com.google.android.youtube:id/you_tab_border",
+                                 "text": "",
+                                 "desc": "",
+                                 "className": "android.widget.ImageView",
+                                 "packageName": "com.google.android.youtube",
+                                 "bounds": {
+                                  "left": 626,
+                                  "top": 1429,
+                                  "right": 671,
+                                  "bottom": 1474
+                                 },
+                                 "clickable": false,
+                                 "enabled": true,
+                                 "focused": false,
+                                 "index": 0,
+                                 "children": []
+                                },
+                                {
+                                 "resourceId": "com.google.android.youtube:id/pivot_bar_thumbnail",
+                                 "text": "",
+                                 "desc": "",
+                                 "className": "android.widget.ImageView",
+                                 "packageName": "com.google.android.youtube",
+                                 "bounds": {
+                                  "left": 632,
+                                  "top": 1435,
+                                  "right": 665,
+                                  "bottom": 1468
+                                 },
+                                 "clickable": false,
+                                 "enabled": true,
+                                 "focused": false,
+                                 "index": 1,
+                                 "children": []
+                                }
+                               ]
+                              }
+                             ]
+                            },
+                            {
+                             "resourceId": "com.google.android.youtube:id/text",
+                             "text": "Anda",
+                             "desc": "",
+                             "className": "android.widget.TextView",
+                             "packageName": "com.google.android.youtube",
+                             "bounds": {
+                              "left": 624,
+                              "top": 1482,
+                              "right": 672,
+                              "bottom": 1505
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 1,
+                             "children": []
+                            }
+                           ]
+                          }
+                         ]
+                        }
+                       ]
+                      }
+                     ]
+                    }
+                   ]
+                  }
+                 ]
+                },
+                {
+                 "resourceId": "",
+                 "text": "",
+                 "desc": "",
+                 "className": "android.widget.FrameLayout",
+                 "packageName": "com.google.android.youtube",
+                 "bounds": {
+                  "left": 0,
+                  "top": 0,
+                  "right": 720,
+                  "bottom": 58
+                 },
+                 "clickable": false,
+                 "enabled": true,
+                 "focused": false,
+                 "index": 1,
+                 "children": [
+                  {
+                   "resourceId": "com.google.android.youtube:id/global_status_bar_view",
+                   "text": "",
+                   "desc": "",
+                   "className": "android.view.View",
+                   "packageName": "com.google.android.youtube",
+                   "bounds": {
+                    "left": 0,
+                    "top": 0,
+                    "right": 720,
+                    "bottom": 58
+                   },
+                   "clickable": false,
+                   "enabled": true,
+                   "focused": false,
+                   "index": 0,
+                   "children": []
+                  }
+                 ]
+                },
+                {
+                 "resourceId": "",
+                 "text": "",
+                 "desc": "",
+                 "className": "android.view.View",
+                 "packageName": "com.google.android.youtube",
+                 "bounds": {
+                  "left": 0,
+                  "top": 0,
+                  "right": 2,
+                  "bottom": 2
+                 },
+                 "clickable": false,
+                 "enabled": true,
+                 "focused": false,
+                 "index": 2,
+                 "children": []
+                }
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "resourceId": "android:id/navigationBarBackground",
+     "text": "",
+     "desc": "",
+     "className": "android.view.View",
+     "packageName": "com.google.android.youtube",
+     "bounds": {
+      "left": 0,
+      "top": 1510,
+      "right": 720,
+      "bottom": 1600
+     },
+     "clickable": false,
+     "enabled": true,
+     "focused": false,
+     "index": 1,
+     "children": []
+    }
+   ]
+  }
+ ]
+}

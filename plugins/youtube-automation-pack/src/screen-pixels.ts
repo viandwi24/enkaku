@@ -34,6 +34,15 @@ function paeth(a: number, b: number, c: number): number {
   return pa <= pb && pa <= pc ? a : pb <= pc ? b : c
 }
 
+/** A PNG's size from its IHDR alone, without decoding (0.31.0 — the details screen's orientation). `null` for anything that is not a PNG. */
+export function pngSize(bytes: Uint8Array): { width: number; height: number } | null {
+  if (bytes.length < 24) return null
+  for (let i = 0; i < SIGNATURE.length; i++) if (bytes[i] !== SIGNATURE[i]) return null
+  if (String.fromCharCode(bytes[12] as number, bytes[13] as number, bytes[14] as number, bytes[15] as number) !== 'IHDR') return null
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  return { width: view.getUint32(16), height: view.getUint32(20) }
+}
+
 export function decodePng(bytes: Uint8Array): Raster | null {
   try {
     if (bytes.length < 33) return null

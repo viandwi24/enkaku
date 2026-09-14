@@ -1,11 +1,23 @@
 import { describe, expect, test } from 'bun:test'
 import { deflateSync } from 'node:zlib'
-import { compareShots, decodePng, sameRegion } from './screen-pixels'
+import { compareShots, decodePng, pngSize, sameRegion } from './screen-pixels'
 
 /**
  * `screen-pixels` against PNGs built here: every scanline filter PNG defines,
  * so a real `screencap -p` (which may use any of them) decodes the same.
  */
+
+describe('pngSize — the orientation of a screenshot without decoding it (0.31.0)', () => {
+  test('reads width and height from the header', () => {
+    expect(pngSize(encodeRgba(3, 2, new Uint8Array(3 * 2 * 4)))).toEqual({ width: 3, height: 2 })
+    expect(pngSize(encodeRgba(2, 5, new Uint8Array(2 * 5 * 4)))).toEqual({ width: 2, height: 5 })
+  })
+
+  test('anything that is not a PNG has no size', () => {
+    expect(pngSize(new Uint8Array(40))).toBeNull()
+    expect(pngSize(new Uint8Array([137, 80, 78, 71]))).toBeNull()
+  })
+})
 
 function crc32(bytes: Uint8Array): number {
   let c = 0xffffffff
