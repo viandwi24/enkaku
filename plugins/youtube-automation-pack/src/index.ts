@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.29.0',
+  version: '0.30.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,27 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.30.0 — `posted` means this title, and no "failed" once Upload was
+   * pressed.** An audit of `post-video` against the Social Media Manager's
+   * contract. `posted` now needs one more channel cell carrying the WHOLE title
+   * (or a start of it the channel visibly cut with an ellipsis); a count that
+   * went up with no such cell is `unverified` ("a video appeared but its title
+   * was not confirmed"), because a title that lost keys uploads under YouTube's
+   * default. Cells are compared by their title words, not their view counts,
+   * and read on screen only; the bottom bar is the lowest "Beranda", not a
+   * channel's own "Beranda" tab. After Upload, "the details frame is still
+   * empty" is no longer read as "nothing was uploaded" — a loading screen looks
+   * the same: the run throws `E_UPLOAD_TAP_NOT_TAKEN` (and taps a second time)
+   * only while the screen is pixel-for-pixel the one before the tap
+   * (`screen-pixels.ts`), and anything else is confirmed on the channel. Before
+   * Upload the keyboard is PROVEN gone — the Upload button's pixels back to how
+   * they were before the title was tapped — instead of waited out, which only
+   * worked while a scrcpy session was attached: a tap on plain page first, BACK
+   * only with evidence the keyboard is up, `E_KEYBOARD_OVER_UPLOAD` if neither
+   * clears it. A hidden permission dialog needs two readings in a row (one
+   * empty tree is a transition frame), and the unfinished-draft prompt is
+   * answered in every wait up to the gallery cell.
    *
    * **0.29.0 — the Premium offer is closed, not waited behind.** A full-screen
    * "Coba paket keluarga YouTube Premium" sheet appeared over the app on the
