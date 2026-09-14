@@ -6,8 +6,15 @@ import {
   captionLanded,
   captionPieces,
   captionTextToClear,
+  confirmDeleteButton,
   createButtonOnScreen,
   descNodeOnScreen,
+  draftCount,
+  draftsEntry,
+  draftsFolderControls,
+  draftsFolderCount,
+  draftsFolderShowing,
+  selectModeShowing,
   endsInTagToken,
   feedNavOnScreen,
   gridEmptyState,
@@ -489,5 +496,137 @@ describe('captionTextToClear', () => {
 
   test('an empty field is empty', () => {
     expect(captionTextToClear({ text: '   ' })).toBe('')
+  })
+})
+
+/*
+  Clearing drafts (1.36.0). No dump of these screens is checked in: the nodes below are transcribed from a
+  uiautomator dump of the owner's moto g06 (Android 15, TikTok id-ID, 720x1640) taken on 2026-09-15 — its ids,
+  labels, and the bounds that dump gave. Where the transcription carried no bounds (the folder's header texts,
+  the cells' own texts, "Menu profil") the bounds here are placeholders in the same region. The confirmation
+  dialog was NOT measured: its nodes are invented to the one shape `confirmDeleteButton` accepts, and say so.
+*/
+describe('clearing drafts — the profile entry, the Drafts folder, select mode, the confirmation (1.36.0)', () => {
+  const FRAME_DRAFTS = { width: 720, height: 1640 }
+  const rid = (short: string): string => `com.ss.android.ugc.trill:id/${short}`
+  const box = (left: number, top: number, right: number, bottom: number): UiNode['bounds'] => ({ left, top, right, bottom })
+  const screen = (children: UiNode[]): UiNode => node({ bounds: box(0, 0, 720, 1640), children })
+
+  const entry = (text = 'Draf: 2', dx = 0): UiNode =>
+    node({ resourceId: rid('tv_draft'), text, className: 'android.widget.TextView', bounds: box(11 + dx, 557, 227 + dx, 585) })
+  const profileWith = (extra: UiNode[]): UiNode =>
+    screen([
+      node({ desc: 'Menu profil', clickable: true, bounds: box(640, 70, 706, 140) }),
+      node({ resourceId: rid('k_r'), text: 'Postingan', bounds: box(0, 480, 180, 540) }),
+      ...extra,
+    ])
+
+  const header = (count = '2 draf'): UiNode[] => [
+    node({ resourceId: rid('gf0'), text: count, bounds: box(28, 180, 120, 215) }),
+    node({ resourceId: rid('gey'), text: ' · ', bounds: box(120, 180, 140, 215) }),
+    node({ resourceId: rid('gex'), text: '4,1MB', bounds: box(140, 180, 230, 215) }),
+    node({ resourceId: rid('gez'), text: 'Hanya Anda yang dapat melihat draf Anda. Terbitka…', bounds: box(28, 220, 692, 290) }),
+    node({ resourceId: rid('ge0'), text: 'Urutkan berdasarkan: Ukuran file', clickable: true, bounds: box(28, 300, 400, 340) }),
+  ]
+  const cells = (selecting: boolean): UiNode[] =>
+    [28, 271].map((left, i) =>
+      node({
+        clickable: true,
+        bounds: box(left, 346, left + 232, 740),
+        children: [
+          ...(selecting
+            ? [
+                node({ resourceId: rid('gec'), desc: '@2131827210', clickable: true, bounds: [box(178, 354, 220, 396), box(421, 354, 463, 396)][i] as UiNode['bounds'] }),
+                node({ resourceId: rid('geb'), text: '2,2MB', bounds: box(left + 10, 360, left + 90, 390) }),
+              ]
+            : []),
+          node({ resourceId: rid('get'), text: 'Sep', bounds: box(left + 10, 460, left + 60, 490) }),
+          node({ resourceId: rid('ges'), text: '15', bounds: box(left + 10, 490, left + 60, 530) }),
+          node({ resourceId: rid('ge8'), desc: 'Musik', bounds: box(left + 10, 690, left + 40, 720) }),
+          node({ resourceId: rid('ge9'), text: 'suara asli', bounds: box(left + 45, 690, left + 220, 720) }),
+        ],
+      }),
+    )
+
+  const pilih = node({ text: 'Pilih', desc: 'Pilih', clickable: true, bounds: box(623, 70, 706, 161) })
+  const folder = screen([pilih, ...header(), ...cells(false)])
+  const selectAll = node({ text: 'Pilih semua', desc: 'Pilih semua', clickable: true, bounds: box(14, 70, 190, 161) })
+  const batalkan = node({ text: 'Batalkan', desc: 'Batalkan', clickable: true, bounds: box(566, 70, 706, 161) })
+  const hapusBar = node({ resourceId: rid('cu1'), text: 'Hapus', clickable: true, bounds: box(28, 1465, 692, 1556) })
+  const selecting = screen([selectAll, batalkan, ...header(), ...cells(true), hapusBar])
+
+  /** UNMEASURED — no dump of what "Hapus" raises exists. A plain two-button dialog, the shape the reading accepts. */
+  const dialog = (confirmLabel = 'Hapus', withRefusal = true): UiNode =>
+    node({
+      bounds: box(60, 600, 660, 1000),
+      children: [
+        node({ text: 'Hapus 2 draf?', bounds: box(90, 640, 630, 700) }),
+        ...(withRefusal ? [node({ text: 'Batal', clickable: true, className: 'android.widget.Button', bounds: box(80, 880, 350, 960) })] : []),
+        node({ text: confirmLabel, clickable: true, className: 'android.widget.Button', bounds: box(370, 880, 640, 960) }),
+      ],
+    })
+
+  test('draftCount reads the profile\'s "Draf: 2"; no entry, one off to the side, or a caption is no count', () => {
+    expect(draftCount(profileWith([entry()]), 720)).toBe(2)
+    expect(draftsEntry(profileWith([entry()]), 720)?.node.bounds).toEqual(box(11, 557, 227, 585))
+    // English — a guess, not measured.
+    expect(draftCount(profileWith([entry('Drafts: 3')]), 720)).toBe(3)
+    expect(draftCount(profileWith([]), 720)).toBeNull()
+    expect(draftsEntry(profileWith([]), 720)).toBeNull()
+    expect(draftsEntry(profileWith([entry('Draf: 2', -1440)]), 720)).toBeNull()
+    expect(draftCount(profileWith([node({ text: 'Draf: 2 hari lagi', bounds: box(20, 900, 400, 940) })]), 720)).toBeNull()
+    expect(draftCount(profileWith([node({ text: 'Draf: 2', className: 'android.widget.EditText', bounds: box(20, 900, 400, 940) })]), 720)).toBeNull()
+  })
+
+  test('a tv_draft whose words cannot be read is still an entry, with no count', () => {
+    const unreadable = draftsEntry(profileWith([entry('Draf')]), 720)
+    expect(unreadable).not.toBeNull()
+    expect(unreadable?.count).toBeNull()
+  })
+
+  test('the Drafts folder: "2 draf" or "Pilih" in the title bar; the profile is not it', () => {
+    expect(draftsFolderShowing(folder, FRAME_DRAFTS)).toBe(true)
+    expect(draftsFolderCount(folder, 720)).toBe(2)
+    expect(draftsFolderShowing(screen([pilih, ...cells(false)]), FRAME_DRAFTS)).toBe(true)
+    expect(draftsFolderCount(screen([pilih]), 720)).toBeNull()
+    expect(draftsFolderShowing(profileWith([entry()]), FRAME_DRAFTS)).toBe(false)
+    // A "Pilih" lower on some other page is not the folder's own button.
+    expect(draftsFolderShowing(screen([node({ text: 'Pilih', clickable: true, bounds: box(300, 800, 420, 880) })]), FRAME_DRAFTS)).toBe(false)
+  })
+
+  test('select mode is "Pilih semua" with "Batalkan"; its controls are the measured ones, and "Pilih semua" is never "Pilih"', () => {
+    expect(selectModeShowing(folder, FRAME_DRAFTS)).toBe(false)
+    expect(selectModeShowing(selecting, FRAME_DRAFTS)).toBe(true)
+    expect(draftsFolderShowing(selecting, FRAME_DRAFTS)).toBe(true)
+
+    const inFolder = draftsFolderControls(folder, FRAME_DRAFTS)
+    expect(inFolder.select?.bounds).toEqual(box(623, 70, 706, 161))
+    expect(inFolder.selectAll).toBeNull()
+    expect(inFolder.delete).toBeNull()
+
+    const inSelect = draftsFolderControls(selecting, FRAME_DRAFTS)
+    expect(inSelect.select).toBeNull()
+    expect(inSelect.selectAll?.bounds).toEqual(box(14, 70, 190, 161))
+    expect(inSelect.cancel?.bounds).toEqual(box(566, 70, 706, 161))
+    expect(inSelect.delete?.bounds).toEqual(box(28, 1465, 692, 1556))
+    expect(inSelect.circles.map((c) => c.bounds)).toEqual([box(178, 354, 220, 396), box(421, 354, 463, 396)])
+  })
+
+  test('select mode alone has no confirmation: its own "Hapus" bar and "Batalkan" are never read as one', () => {
+    expect(confirmDeleteButton(selecting, FRAME_DRAFTS)).toBeNull()
+    // The same bar without its id is kept out by its bounds, and by sharing only the whole screen with "Batalkan".
+    const noId = screen([selectAll, batalkan, ...cells(true), node({ text: 'Hapus', clickable: true, bounds: box(28, 1465, 692, 1556) })])
+    expect(confirmDeleteButton(noId, FRAME_DRAFTS, [box(28, 1465, 692, 1556), box(566, 70, 706, 161)])).toBeNull()
+    expect(confirmDeleteButton(noId, FRAME_DRAFTS)).toBeNull()
+  })
+
+  test('a dialog\'s exact "Hapus" beside a refusal is the confirmation — never the refusal, never a longer label, never a lone "Hapus" (dialog UNMEASURED)', () => {
+    const exclude = [box(28, 1465, 692, 1556), box(566, 70, 706, 161), box(14, 70, 190, 161)]
+    const asked = screen([selectAll, batalkan, ...cells(true), hapusBar, dialog()])
+    expect(confirmDeleteButton(asked, FRAME_DRAFTS, exclude)?.bounds).toEqual(box(370, 880, 640, 960))
+    expect(confirmDeleteButton(asked, FRAME_DRAFTS, exclude)?.text).toBe('Hapus')
+    expect(confirmDeleteButton(screen([hapusBar, dialog('Delete')]), FRAME_DRAFTS)?.text).toBe('Delete')
+    expect(confirmDeleteButton(screen([hapusBar, dialog('Hapus semua')]), FRAME_DRAFTS, exclude)).toBeNull()
+    expect(confirmDeleteButton(screen([hapusBar, dialog('Hapus', false)]), FRAME_DRAFTS, exclude)).toBeNull()
   })
 })

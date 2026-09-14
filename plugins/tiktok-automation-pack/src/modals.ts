@@ -60,13 +60,18 @@ export interface ModalEntry {
   /**
    * When set, a match is never answered and `sweepModals` throws THIS code, whatever the caller's
    * policy — for a sheet an operator must see and act on by hand (`tt.security-check`), so `finish`
-   * can recognise it and leave it on screen instead of a generic `E_MODAL_UNHANDLED`; or for a dialog
-   * whose answer is a walk across screens that one tap cannot make (`tt.resume-edit`, walked by
-   * `post-video.ts`'s `discardResumedEdit`), so the caller that owns the walk can recognise it (1.35.0).
+   * can recognise it and leave it on screen instead of a generic `E_MODAL_UNHANDLED`.
    */
   abortCode?: string
   /** The operator-facing sentence thrown with `abortCode`. */
   abortMessage?: string
+  /**
+   * Only the declared action's own node is ever tapped — no locale fallback, no identity fallback (1.36.0).
+   * For an entry whose buttons sit side by side with another answer that must never be taken by accident:
+   * `tt.resume-edit`'s "Edit" beside "Simpan draf". A banner whose declared label is not on screen is
+   * `E_MODAL_UNHANDLED`, never a guess.
+   */
+  exactActionOnly?: boolean
   /**
    * What each policy taps. A policy absent here cannot be chosen for this entry — `sys.media` has
    * no `deny` key at all, so a caller that mistakenly asked for one gets `E_MODAL_UNHANDLED` from
@@ -229,17 +234,20 @@ export const TIKTOK_MODALS: ModalEntry[] = [
     // `screen-feed-resume-edit-banner.json`). No production bundle carries it, so which Samsung build raises it is
     // not known — only that a force-stop with an unposted edit open leaves one behind for the next launch.
     //
-    // 1.34.2 answered "Simpan draf", which turned every leftover edit into a saved draft on a real account. The
-    // owner does not want failed runs to leave drafts (2026-09-14), so 1.35.0 answers "Edit" and then leaves the
-    // editor through its exit dialog with "Buang" — a walk across screens one tap cannot make. The sweep therefore
-    // never taps this banner: it raises `E_RESUME_EDIT_BANNER` whatever the policy, and `post-video.ts`'s
-    // `discardResumedEdit` walks it. `ack` names the "Edit" that walk taps (`resumeEditTarget`), so
-    // `assertNeverList` judges it like every other answer.
+    // 1.34.2 answered "Simpan draf". 1.35.0 answered "Edit" and then expected the editor's "Buang" exit dialog —
+    // which, MEASURED on the owner's moto (Android 15, id-ID, 2026-09-15), never comes: "Edit" opens the editor,
+    // one BACK returns straight to the feed with no dialog, and TikTok keeps the edit as a draft by itself (an
+    // exported Samsung run with ids like `oju` showed the same). So 1.35.0 stopped on every run once a leftover
+    // edit existed.
+    //
+    // 1.36.0, the owner's decision: the farm clears ALL drafts on the account before posting (`post-video.ts`'s
+    // `clearDrafts`). The banner is answered "Simpan draf" again — the leftover becomes a draft, and the same run
+    // deletes it. That is the ONE draft-keeping answer `assertNeverList` and `resolveActionTarget` allow, carved
+    // out by this id, this policy and this exact label (`RESUME_EDIT_DRAFT_ANSWER`). `exactActionOnly`: if the
+    // label is not on screen (another locale), nothing else on the banner is tapped for it — "Edit" least of all.
     match: { textIncludes: ['Lanjut mengedit postingan ini', 'Continue editing this post'], onScreen: true },
-    actions: { ack: { text: 'Edit' } },
-    abortCode: 'E_RESUME_EDIT_BANNER',
-    abortMessage:
-      'TikTok is offering to resume an unfinished post ("Lanjut mengedit postingan ini?"). A sweep never answers it: the post-video walk opens it with "Edit" and discards it with "Buang".',
+    actions: { ack: { text: 'Simpan draf' } },
+    exactActionOnly: true,
     seen: { device: 'moto g06 power (ZP2222RMBS)', app: 'com.ss.android.ugc.trill', locale: 'id-ID', at: '2026-09-14' },
   },
   {
@@ -314,8 +322,8 @@ export const UPLOAD_MODAL_POLICIES: Record<string, ModalPolicy> = {
   'sys.media': 'allow',
   'tt.camera-wall': 'ignore',
   'tt.discard-draft': 'abort',
-  // Never tapped by a sweep, whatever this says — the entry's `abortCode` hands it to `discardResumedEdit` (1.35.0).
-  'tt.resume-edit': 'abort',
+  // "Simpan draf" (1.36.0): the leftover edit becomes a draft, which `post-video.ts`'s `clearDrafts` deletes.
+  'tt.resume-edit': 'ack',
   'tt.notice': 'ack',
   // Both observed on the 2026-08-18 posting run, both AFTER the Post tap — which is exactly why the
   // 2026-08-17 walk never met them, and why an unattended run that only knew the pre-post modals
@@ -420,13 +428,20 @@ function resolveActionTarget(nodes: UiNode[], entry: ModalEntry, policy: 'allow'
       return close && !keepsDraft(close) ? close : null
     }
   }
-  // Every lookup below reads only nodes that do not keep a draft (1.35.0) — see `keepsDraft`.
+  // Every lookup below reads only nodes that do not keep a draft (1.35.0) — see `keepsDraft`. The one exception
+  // is `tt.resume-edit`'s declared "Simpan draf" (1.36.0, `RESUME_EDIT_DRAFT_ANSWER`), for its direct lookup only,
+  // and only a node drawn on screen that is not a text field.
   const candidates = nodes.filter((n) => !keepsDraft(n))
   const sel = entry.actions[policy]
   if (sel) {
-    const direct = candidates.find((n) => selectorMatchesNode(n, sel))
+    const root = nodes[0]
+    const pool = isResumeEditDraftAnswer(entry.id, policy, sel)
+      ? nodes.filter((n) => !isEditableNode(n) && root !== undefined && drawnOnScreen(n, root))
+      : candidates
+    const direct = pool.find((n) => selectorMatchesNode(n, sel))
     if (direct) return direct
   }
+  if (entry.exactActionOnly) return null
   // Locale fallback, and the reason it reuses `dialogs.ts`'s own lists rather than inventing a
   // second vocabulary: every label in this register was read off an id-ID device, the only locale
   // this pack has ever run on. A farm's phones do not all share a language — an SKU sourced in
@@ -458,9 +473,10 @@ function resolveActionTarget(nodes: UiNode[], entry: ModalEntry, policy: 'allow'
 const DRAFT_TERMS = ['draf']
 
 /**
- * True when tapping `node` would keep a draft (1.35.0). The owner does not want failed runs to leave
- * drafts on an account, so nothing the register resolves — a declared action, the locale fallback or
- * the identity fallback — is ever such a node, and `assertNeverList` refuses one as a declared answer.
+ * True when tapping `node` would keep a draft (1.35.0). The owner does not want a failed run's back-out to
+ * leave drafts on an account, so nothing the register resolves — a declared action, the locale fallback or
+ * the identity fallback — is ever such a node, and `assertNeverList` refuses one as a declared answer. The
+ * single exception is `RESUME_EDIT_DRAFT_ANSWER` (1.36.0).
  */
 export function keepsDraft(node: Pick<UiNode, 'text' | 'desc'>): boolean {
   const label = `${node.text} ${node.desc}`.toLowerCase()
@@ -468,21 +484,17 @@ export function keepsDraft(node: Pick<UiNode, 'text' | 'desc'>): boolean {
 }
 
 /**
- * The resume-edit banner's own "Edit" button, or null (1.35.0) — what `discardResumedEdit` taps. Only a
- * node drawn on screen whose TEXT is exactly the entry's `ack` label counts (the editor's side button
- * carries "Edit" as a desc and is never this one), nearest below the banner's title; never an editable
- * field, never a draft-keeping label.
+ * The ONE draft-keeping answer the register may give (1.36.0): `tt.resume-edit`, policy `ack`, label exactly
+ * "Simpan draf". The owner's decision (2026-09-15) is that the farm deletes all drafts on the account before
+ * posting (`post-video.ts`'s `clearDrafts`), so keeping the leftover edit as a draft is safe — and it is the
+ * only answer that works, because the "Edit" → BACK → "Buang" walk 1.35.0 relied on was measured to raise no
+ * "Buang" dialog at all. Carved out by id AND policy AND label, so no other entry, policy or spelling can
+ * reuse it; the abandon walk (`ABANDON_MODAL_POLICIES`) never asks for it.
  */
-export function resumeEditTarget(root: UiNode): UiNode | null {
-  const entry = TIKTOK_MODALS.find((e) => e.id === 'tt.resume-edit')
-  const sel = entry?.actions.ack
-  if (!entry || !sel || !('text' in sel)) return null
-  const nodes = flatten(root)
-  const title = nodes.find((n) => matchesIdentity(n, entry.match) && drawnOnScreen(n, root))
-  if (!title) return null
-  const hits = nodes.filter((n) => !isEditableNode(n) && !keepsDraft(n) && n.text.trim() === sel.text && drawnOnScreen(n, root))
-  hits.sort((a, b) => Math.abs(a.bounds.top - title.bounds.bottom) - Math.abs(b.bounds.top - title.bounds.bottom))
-  return hits[0] ?? null
+export const RESUME_EDIT_DRAFT_ANSWER = { entryId: 'tt.resume-edit', policy: 'ack', label: 'Simpan draf' } as const
+
+function isResumeEditDraftAnswer(entryId: string, policy: 'allow' | 'deny' | 'ack', sel: Selector): boolean {
+  return entryId === RESUME_EDIT_DRAFT_ANSWER.entryId && policy === RESUME_EDIT_DRAFT_ANSWER.policy && 'text' in sel && sel.text === RESUME_EDIT_DRAFT_ANSWER.label
 }
 
 /**
@@ -525,8 +537,11 @@ export function assertNeverList(register: ModalEntry[]): void {
       if (label === null) continue
       if (entry.id === 'sys.media' && policy === 'allow' && label === 'Izinkan semua') continue
       const lower = label.toLowerCase()
-      // A draft-keeping label is refused for every policy (1.35.0): see `keepsDraft`.
-      const terms = policy === 'deny' ? [...OTHER_NEVER_TERMS, ...DRAFT_TERMS] : [...GRANT_TERMS, ...OTHER_NEVER_TERMS, ...DRAFT_TERMS]
+      // A draft-keeping label is refused for every policy (1.35.0): see `keepsDraft`. Waived for exactly one answer,
+      // the owner's decision (1.36.0): `tt.resume-edit` → `ack` → "Simpan draf" (`RESUME_EDIT_DRAFT_ANSWER`), because
+      // the run deletes every draft before posting. Only the draft term is waived; every other term still applies.
+      const draftTerms = isResumeEditDraftAnswer(entry.id, policy, sel) ? [] : DRAFT_TERMS
+      const terms = policy === 'deny' ? [...OTHER_NEVER_TERMS, ...draftTerms] : [...GRANT_TERMS, ...OTHER_NEVER_TERMS, ...draftTerms]
       const hit = terms.find((term) => lower.includes(term))
       if (hit) {
         throw Object.assign(

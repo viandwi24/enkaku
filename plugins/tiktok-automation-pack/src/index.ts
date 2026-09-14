@@ -829,6 +829,27 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.36.0 — post-video clears the account's drafts before it posts, and stops failing on the resume-edit banner.
+  //   The owner's decision (2026-09-15): the farm deletes ALL TikTok drafts on the account before posting.
+  //   Deleting a draft is PERMANENT — TikTok keeps no bin for drafts — so the new `clearDrafts` param (default
+  //   on) says so in its description, and a dry run never deletes: it opens the Drafts folder, reads the count,
+  //   taps "Pilih" to prove the controls, backs out with "Batalkan" and reports "would delete N drafts".
+  //   1. `clearDrafts` runs once per run before "+": own profile → "Draf: N" (`tv_draft`) → Drafts folder →
+  //      "Pilih" → "Pilih semua" → "Hapus" → the confirmation's own "Hapus", then checks the profile shows no
+  //      drafts. Anything it does not recognise backs out ("Batalkan", BACK) and stops the run with
+  //      E_DRAFTS_NOT_CLEARED before anything is posted, saving the tree and a screenshot.
+  //   2. 1.35.0's resume-edit walk is gone. MEASURED on the owner's moto g06 (Android 15, id-ID, 2026-09-15):
+  //      "Edit" on the banner opens the editor and one BACK returns straight to the feed with NO "Buang" dialog,
+  //      TikTok keeping the edit as a draft by itself; the editor's back arrow on a draft does the same, and an
+  //      exported Samsung run (ids like `oju`) showed no dialog either. So 1.35.0 stopped with
+  //      E_RESUME_EDIT_NO_EXIT_DIALOG on every run once a leftover edit existed. The banner is answered "Simpan
+  //      draf" again — the one narrow exception `assertNeverList` allows — and `clearDrafts` deletes that draft
+  //      in the same run. E_RESUME_EDIT_BANNER/UNREADABLE/NOT_OPENED/NO_EXIT_DIALOG/PERSISTS no longer exist.
+  //   3. A failed run's back-out (`backOutOfEditor`) still taps "Buang" on a build that shows it, never waits
+  //      on a dialog that does not come, never throws, and leaves a resume-edit banner unanswered.
+  //   Not measured: what "Hapus" raises, what a profile with no drafts shows, the English strings, and any
+  //   Samsung build's Drafts folder.
+  //
   // 1.35.0 — post-video stops misreading the Samsung feed, types long captions in pieces, and leaves no
   // drafts behind. From 20 production debug bundles (Samsung SM-A075F/A065F, Android 15/16, id-ID, 2026-09-14).
   //   1. The feed is no longer the post screen. Any EditText used to mean "post"; the Samsung feed carries two
@@ -1006,7 +1027,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.35.0',
+  version: '1.36.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

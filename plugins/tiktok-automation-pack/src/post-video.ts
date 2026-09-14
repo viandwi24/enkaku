@@ -1,11 +1,11 @@
 import { ui, type PluginMemberScript, type ScriptContext } from '@enkaku/sdk'
-import type { Selector, UiNode } from '@enkaku/protocol'
+import type { Bounds, Selector, UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { sleep } from './human'
 import { relaunch } from './gesture'
-import { all } from './tree'
+import { all, flatten } from './tree'
 import { centreOf, detectScreen, findNode, captionField, nextButtonIn, pickerCells, pickerSortLabel, POST_BUTTON_LABELS, type ScreenId } from './screens'
-import { isEditableNode, matchModals, resumeEditTarget, sweepModals, UPLOAD_MODAL_POLICIES, type ModalPolicy } from './modals'
+import { isEditableNode, matchModals, sweepModals, UPLOAD_MODAL_POLICIES, type ModalPolicy } from './modals'
 import { tiktokQueue, type TikTokQueueClaim } from './queue'
 import { readCaptionsFile, pickCaption } from './captions'
 import { resolveVideoFromFolder, recordVideoPosted } from './folder'
@@ -113,6 +113,9 @@ function labelIs(text: string, labels: string[]): boolean {
 const ABANDON_MODAL_POLICIES: Record<string, ModalPolicy> = {
   ...UPLOAD_MODAL_POLICIES,
   'tt.discard-draft': 'deny', // "Buang" — see the comment above.
+  // Never "Simpan draf" on the way out (1.36.0): a resume-edit banner is noted and left unanswered — `backOutOfEditor`
+  // stops at it — and the next run answers it and deletes the draft it makes (`clearDrafts`).
+  'tt.resume-edit': 'ignore',
 }
 
 /** Matches a `Selector`'s `{ id }` rule — the same short-id rule `screens.ts`'s own private `hasId` uses, duplicated here because it is not exported (this file needs it for `upload_hot_area`, which `screens.ts` has no export for). */
@@ -518,7 +521,7 @@ async function enterScreen(
   const retaps = new Map<number, number>()
   for (let round = 0; round < rounds; round += 1) {
     if (round > 0) await sleep(2_000)
-    const swept = await sweepUpload(ctx, policies)
+    const swept = await sweepModals(ctx, policies)
     for (const id of swept.cleared) if (!cleared.includes(id)) cleared.push(id)
     const read = await ctx.device.dump()
     tree = read
@@ -874,7 +877,7 @@ export function feedNavOnScreen(tree: UiNode, frameWidth: number): boolean {
  */
 async function clearOverFeed(ctx: ScriptContext<unknown>, before: string): Promise<void> {
   try {
-    const swept = await sweepUpload(ctx, UPLOAD_MODAL_POLICIES)
+    const swept = await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
     recordCleared(swept.cleared)
     if (swept.cleared.length > 0) {
       ctx.log.info(`cleared a modal over the feed before ${before}`, { cleared: swept.cleared.join(', ') })
@@ -883,153 +886,7 @@ async function clearOverFeed(ctx: ScriptContext<unknown>, before: string): Promi
   } catch (err) {
     const code = (err as { code?: string }).code
     if (code === 'E_SECURITY_CHECK' || code === 'E_MODAL_UNHANDLED' || code === 'E_MODAL_STUCK') throw err
-    // Every stop of the resume-edit walk is named and must reach the operator (1.35.0).
-    if (code?.startsWith('E_RESUME_EDIT')) throw err
     ctx.log.warn(`could not sweep the feed for modals before ${before} — continuing`, { error: String(err) })
-  }
-}
-
-/**
- * `sweepModals` for the upload walk's own screens, plus the one answer a sweep cannot give (1.35.0): the
- * resume-edit banner. The register raises it as `E_RESUME_EDIT_BANNER` instead of tapping it; this runs
- * `discardResumedEdit` and sweeps again. Used before Post only — clearing the feed and entering a
- * screen — so a walk through the editor can never start after a video has been submitted.
- */
-async function sweepUpload(ctx: ScriptContext<unknown>, policies: Record<string, ModalPolicy>): Promise<{ cleared: string[] }> {
-  try {
-    return await sweepModals(ctx, policies)
-  } catch (err) {
-    if ((err as { code?: string }).code !== 'E_RESUME_EDIT_BANNER') throw err
-  }
-  await discardResumedEdit(ctx)
-  try {
-    const again = await sweepModals(ctx, policies)
-    return { cleared: ['tt.resume-edit', ...again.cleared] }
-  } catch (err) {
-    // The banner back straight after a discard: `discardResumedEdit` stops the run by name rather than go round.
-    if ((err as { code?: string }).code === 'E_RESUME_EDIT_BANNER') await discardResumedEdit(ctx)
-    throw err
-  }
-}
-
-/** How long the unfinished post gets to open after "Edit" is tapped on the resume-edit banner (1.35.0). */
-const RESUME_EDIT_OPEN_MS = 10_000
-
-/** How long the exit dialog gets to appear after one BACK (1.35.0). The moto and bundle 04fe3367 drew it inside about a second. */
-const EXIT_DIALOG_WAIT_MS = 4_000
-
-/** What to do by hand when the resume-edit walk stops. */
-const RESUME_EDIT_BY_HAND =
-  'On the phone, open TikTok, tap "Edit" on the "Lanjut mengedit postingan ini?" banner (or open the unfinished post from the profile\'s drafts), go back and choose "Buang", then re-run.'
-
-/**
- * Throws away the unfinished post TikTok's resume-edit banner offers, without ever keeping it (1.35.0).
- *
- * 1.34.2 answered the banner "Simpan draf", which turned every leftover edit — a failed production run
- * leaves one — into a saved draft on the account. The owner does not want that. So: tap the banner's
- * "Edit", wait for the editor or post screen, press BACK until the exit dialog shows, and tap exactly
- * "Buang" (`tt.discard-draft`'s `deny`). Then TikTok is relaunched, so the walk continues from a clean
- * feed rather than from wherever "Buang" leaves the app (the picker, on bundle 04fe3367).
- *
- * What each build does after "Edit" is NOT known: no production bundle carries the banner, and the moto
- * fixture stops at the banner itself. What BACK does from the editor is known only from bundles: the
- * moto (E14) and the Samsung build with ids like `upu` (04fe3367) raise "Buang" / "Simpan draf"; the
- * Samsung build with ids like `oju` (4063f322) left the editor for the profile with no dialog. So when
- * the dialog does not come, this stops with a named error and says what to do by hand — it does not
- * guess whether TikTok kept the edit. Runs at most once per run: a banner back after a discard is
- * `E_RESUME_EDIT_PERSISTS`. Nothing here posts anything.
- */
-async function discardResumedEdit(ctx: ScriptContext<unknown>): Promise<void> {
-  if (attempt.resumeEditDiscarded) {
-    await capture(ctx, 'resume-edit-again')
-    throw Object.assign(
-      new Error(`TikTok offered to resume an unfinished post again after this run had already discarded one with "Buang" — the run stopped rather than go round, and nothing was posted. ${RESUME_EDIT_BY_HAND}`),
-      { code: 'E_RESUME_EDIT_PERSISTS' },
-    )
-  }
-  attempt.resumeEditDiscarded = true
-
-  const banner = await ctx.device.dump()
-  const edit = resumeEditTarget(banner)
-  if (!edit) {
-    await capture(ctx, 'resume-edit-unreadable', banner)
-    throw Object.assign(
-      new Error(`TikTok is offering to resume an unfinished post, but the banner's "Edit" button could not be read, so the run left it alone (it never answers "Simpan draf") — nothing was posted. ${RESUME_EDIT_BY_HAND}`),
-      { code: 'E_RESUME_EDIT_UNREADABLE' },
-    )
-  }
-  ctx.log.info('TikTok offered to resume an unfinished post — opening it with "Edit" to throw it away with "Buang", never "Simpan draf"')
-  await ctx.device.tap({ point: centreOf(edit) })
-  recordCleared(['tt.resume-edit'])
-
-  const opened = await waitForResumedEdit(ctx)
-  if (opened === 'not-opened') {
-    await capture(ctx, 'resume-edit-not-opened')
-    throw Object.assign(
-      new Error(`"Edit" was tapped on TikTok's resume banner, but neither the editor nor the post screen opened within ${RESUME_EDIT_OPEN_MS / 1000}s — nothing was discarded and nothing was posted. ${RESUME_EDIT_BY_HAND}`),
-      { code: 'E_RESUME_EDIT_NOT_OPENED' },
-    )
-  }
-  if (opened === 'unreadable') ctx.log.warn('the reopened post could not be confirmed by dump (a screen that plays video) — backing out of it blind')
-
-  // From the post screen BACK first returns to the editor, and with a keyboard up the first BACK only
-  // closes it (bundle 4063f322: post → post → editor) — so up to four presses, each followed by a bounded
-  // wait for the exit dialog. Once TikTok has left the upload flow without the dialog, nothing more is pressed.
-  for (let press = 1; press <= 4; press++) {
-    await ctx.device.key('BACK')
-    const seen = await waitForExitDialog(ctx)
-    if (seen === 'dialog') {
-      const swept = await sweepModals(ctx, ABANDON_MODAL_POLICIES, { maxRounds: 2 })
-      recordCleared(swept.cleared)
-      if (!swept.cleared.includes('tt.discard-draft')) break
-      ctx.log.info('threw the unfinished post away with "Buang" — relaunching TikTok onto a clean feed', { presses: press })
-      if (!(await relaunch(ctx))) await capture(ctx, 'feed-not-ready')
-      return
-    }
-    if (seen === 'left') break
-  }
-  await capture(ctx, 'resume-edit-no-exit-dialog')
-  throw Object.assign(
-    new Error(
-      `TikTok's unfinished post was opened to throw it away, but leaving the editor never showed the "Buang" / "Simpan draf" dialog, so the run stopped instead of guessing. Nothing was posted; the unfinished post may still be on this account (on one Samsung TikTok build, BACK has been seen to leave the editor with no dialog at all). ${RESUME_EDIT_BY_HAND}`,
-    ),
-    { code: 'E_RESUME_EDIT_NO_EXIT_DIALOG' },
-  )
-}
-
-/** After "Edit": `opened` once the editor or post screen reads; `unreadable` when the screen could not be read to say; `not-opened` when TikTok stayed on the feed or the banner. */
-async function waitForResumedEdit(ctx: ScriptContext<unknown>): Promise<'opened' | 'unreadable' | 'not-opened'> {
-  const deadline = Date.now() + RESUME_EDIT_OPEN_MS
-  let last: 'unreadable' | 'not-opened' = 'not-opened'
-  for (;;) {
-    await sleep(1_500)
-    try {
-      const tree = await ctx.device.dump()
-      const screen = detectScreen(tree)
-      if (screen === 'editor' || screen === 'post') return 'opened'
-      last = screen === 'unknown' && !matchModals(tree).some((e) => e.id === 'tt.resume-edit') ? 'unreadable' : 'not-opened'
-    } catch {
-      last = 'unreadable'
-    }
-    if (Date.now() >= deadline) return last
-  }
-}
-
-/** After one BACK: `dialog` when the exit dialog is up; otherwise, at the deadline, `in-flow` (still the editor, post screen, or unreadable) or `left`. */
-async function waitForExitDialog(ctx: ScriptContext<unknown>): Promise<'dialog' | 'in-flow' | 'left'> {
-  const deadline = Date.now() + EXIT_DIALOG_WAIT_MS
-  let last: 'in-flow' | 'left' = 'in-flow'
-  for (;;) {
-    await sleep(800)
-    try {
-      const tree = await ctx.device.dump()
-      if (matchModals(tree).some((e) => e.id === 'tt.discard-draft')) return 'dialog'
-      const screen = detectScreen(tree)
-      last = screen === 'editor' || screen === 'post' || screen === 'unknown' ? 'in-flow' : 'left'
-    } catch {
-      last = 'in-flow'
-    }
-    if (Date.now() >= deadline) return last
   }
 }
 
@@ -1071,17 +928,8 @@ async function readOwnGrid(ctx: ScriptContext<unknown>, frameWidth: number, opts
         ctx.log.warn('could not find the Home tab to re-open the profile — reading the profile from wherever TikTok is')
       }
     }
-    const profilNode = await waitForOnScreen(ctx, frameWidth, [descOf(PROFIL_TAB), 'Profile'], 10_000)
-    if (!profilNode) {
-      await capture(ctx, 'profil-tab-missing')
-      throw new Error('the Profil tab is not on screen')
-    }
-    await ctx.device.tap({ point: centreOf(profilNode) })
-    const menuNode = await waitForOnScreen(ctx, frameWidth, [descOf(MENU_PROFIL), 'Profile menu'], 10_000)
-    if (!menuNode) {
-      await capture(ctx, 'profile-not-open')
-      throw new Error('the own profile did not open (no on-screen "Menu profil")')
-    }
+    const menuNode = await openOwnProfile(ctx, frameWidth)
+    if (!menuNode) throw new Error('the own profile could not be opened (no on-screen Profil tab, or no "Menu profil" after tapping it)')
     // Swept AFTER arriving: `tt.contacts` is raised BY the profile screen (observed 2026-08-18).
     try {
       await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
@@ -1125,6 +973,397 @@ async function readOwnGrid(ctx: ScriptContext<unknown>, frameWidth: number, opts
     ctx.log.warn('could not read the own-profile grid', { error: String(err) })
     return null
   }
+}
+
+/**
+ * Opens the own profile from the bottom nav and returns its on-screen "Menu profil" node — or null, with the
+ * tree and a screenshot saved, when the Profil tab or the profile could not be found. Never throws. Shared by
+ * `readOwnGrid` and `clearDrafts` (1.36.0).
+ */
+async function openOwnProfile(ctx: ScriptContext<unknown>, frameWidth: number): Promise<UiNode | null> {
+  const profilNode = await waitForOnScreen(ctx, frameWidth, [descOf(PROFIL_TAB), 'Profile'], 10_000)
+  if (!profilNode) {
+    await capture(ctx, 'profil-tab-missing')
+    ctx.log.warn('the Profil tab is not on screen')
+    return null
+  }
+  await ctx.device.tap({ point: centreOf(profilNode) })
+  const menuNode = await waitForOnScreen(ctx, frameWidth, [descOf(MENU_PROFIL), 'Profile menu'], 10_000)
+  if (!menuNode) {
+    await capture(ctx, 'profile-not-open')
+    ctx.log.warn('the own profile did not open (no on-screen "Menu profil")')
+    return null
+  }
+  return menuNode
+}
+
+/*
+  Clearing the account's drafts before posting (1.36.0).
+
+  The owner's decision (2026-09-15): the farm deletes ALL TikTok drafts on the account before it posts. A
+  leftover edit reaches the drafts two ways — the resume-edit banner, answered "Simpan draf", and a build that
+  saves an abandoned edit by itself — and 1.35.0's way of throwing one away ("Edit", BACK, "Buang") was
+  measured never to see "Buang" on the moto. Deleting a draft is PERMANENT.
+
+  Every id, label and bound named below was transcribed from a uiautomator dump of the owner's moto g06
+  (Android 15, TikTok id-ID, 720x1640) on 2026-09-15. The English labels are guesses and say so. NOT measured:
+  what tapping "Hapus" raises, what a profile or a folder with no drafts shows, and any Samsung build.
+*/
+
+/** The own profile's drafts entry: `tv_draft` "Draf: 2" at [11,557][227,585] — a text, not clickable itself; its clickable parent is unknown, so its centre is tapped. */
+const DRAFTS_ENTRY_ID = 'tv_draft'
+/** "Draf: 2" is measured; "Drafts: 2" is the English spelling, UNMEASURED. */
+const DRAFTS_ENTRY_TEXT = /^\s*draf(?:ts?)?\s*:\s*(\d+)\s*$/i
+/** The Drafts folder's header, `gf0` "2 draf" (measured); "2 drafts" is UNMEASURED. */
+const DRAFTS_FOLDER_COUNT_TEXT = /^\s*(\d+)\s+draf(?:ts?)?\s*$/i
+/** The folder's "Pilih" at [623,70][706,161], text and desc, clickable. "Select" is UNMEASURED. */
+const DRAFTS_SELECT_LABELS = ['Pilih', 'Select']
+/** Select mode's "Pilih semua" at [14,70][190,161]. "Select all" is UNMEASURED. */
+const DRAFTS_SELECT_ALL_LABELS = ['Pilih semua', 'Select all']
+/** Select mode's "Batalkan" at [566,70][706,161]. "Cancel" is UNMEASURED. */
+const DRAFTS_CANCEL_LABELS = ['Batalkan', 'Cancel']
+/** Select mode's delete bar, `cu1` "Hapus" at [28,1465][692,1556]. "Delete" is UNMEASURED. */
+const DRAFTS_DELETE_ID = 'cu1'
+const DRAFTS_DELETE_LABELS = ['Hapus', 'Delete']
+/** Each draft cell's select circle, `gec`, desc "@2131827210" — an unresolved resource name. The tree carries no selected state, so a tick cannot be read from it. */
+const DRAFTS_SELECT_CIRCLE_ID = 'gec'
+/** The refusal that marks a confirmation dialog. Used only to RECOGNISE the dialog — `clearDrafts` never taps it. UNMEASURED. */
+const DIALOG_CANCEL_LABELS = ['Batalkan', 'Batal', 'Cancel']
+/** The folder's own buttons sit in its title bar: the top fifth of the frame (measured bottom 161 of 1640). */
+const DRAFTS_TOP_BAR_FRACTION = 0.2
+
+const DRAFTS_ENTRY_WAIT_MS = 8_000
+const DRAFTS_SCREEN_WAIT_MS = 8_000
+/** How long a confirmation gets to appear after "Hapus". */
+const DRAFTS_CONFIRM_WAIT_MS = 4_000
+const DRAFTS_GONE_WAIT_MS = 10_000
+const DRAFTS_PROFILE_CHECK_MS = 6_000
+
+const DRAFTS_BY_HAND =
+  'Nothing was posted. On the phone, open TikTok → Profil → "Draf", tap "Pilih" → "Pilih semua" → "Hapus" to delete the drafts by hand (or turn off "Clear drafts first"), then re-run.'
+
+function nodeLabel(n: UiNode): string {
+  return (n.text || n.desc).trim()
+}
+
+function sameBounds(a: Bounds, b: Bounds): boolean {
+  return a.left === b.left && a.top === b.top && a.right === b.right && a.bottom === b.bottom
+}
+
+/** A clickable, on-screen node that is not a text field, whose text or desc is exactly one of `labels`. */
+function buttonLabelled(n: UiNode, frameWidth: number, labels: string[]): boolean {
+  return n.clickable && !isEditableNode(n) && insideFrame(n, frameWidth) && (labelIs(n.text, labels) || labelIs(n.desc, labels))
+}
+
+/** The own profile's drafts entry on screen, with the count it reads (`null` when its words cannot be read); null when there is no entry. */
+export function draftsEntry(tree: UiNode, frameWidth: number): { node: UiNode; count: number | null } | null {
+  const hits = all(tree, (n) => !isEditableNode(n) && insideFrame(n, frameWidth) && (hasShortId(n, DRAFTS_ENTRY_ID) || DRAFTS_ENTRY_TEXT.test(nodeLabel(n))))
+  const node = hits.find((n) => DRAFTS_ENTRY_TEXT.test(nodeLabel(n))) ?? hits[0]
+  if (!node) return null
+  const m = nodeLabel(node).match(DRAFTS_ENTRY_TEXT)
+  return { node, count: m ? Number(m[1]) : null }
+}
+
+/** What the profile's drafts entry counts, or null when no readable entry is on screen. */
+export function draftCount(tree: UiNode, frameWidth: number): number | null {
+  return draftsEntry(tree, frameWidth)?.count ?? null
+}
+
+/** What the Drafts folder's header counts ("2 draf"), or null when no such header is on screen. */
+export function draftsFolderCount(tree: UiNode, frameWidth: number): number | null {
+  const node = all(tree, (n) => !isEditableNode(n) && insideFrame(n, frameWidth) && DRAFTS_FOLDER_COUNT_TEXT.test(nodeLabel(n)))[0]
+  const m = node ? nodeLabel(node).match(DRAFTS_FOLDER_COUNT_TEXT) : null
+  return m ? Number(m[1]) : null
+}
+
+export interface DraftsControls {
+  select: UiNode | null
+  selectAll: UiNode | null
+  cancel: UiNode | null
+  delete: UiNode | null
+  circles: UiNode[]
+}
+
+/**
+ * The Drafts folder's controls on screen. Title-bar buttons match their EXACT label in the top fifth of the
+ * frame, so "Pilih semua" is never read as "Pilih"; the delete bar is in the lower half, `cu1` first.
+ */
+export function draftsFolderControls(tree: UiNode, frame: { width: number; height: number }): DraftsControls {
+  const topBar = (labels: string[]): UiNode | null =>
+    all(tree, (n) => buttonLabelled(n, frame.width, labels) && n.bounds.bottom <= frame.height * DRAFTS_TOP_BAR_FRACTION)[0] ?? null
+  const deletes = all(
+    tree,
+    (n) =>
+      n.clickable &&
+      !isEditableNode(n) &&
+      insideFrame(n, frame.width) &&
+      n.bounds.top >= frame.height * 0.5 &&
+      (labelIs(nodeLabel(n), DRAFTS_DELETE_LABELS) || (hasShortId(n, DRAFTS_DELETE_ID) && DRAFTS_DELETE_LABELS.some((l) => labelMatches(nodeLabel(n), l)))),
+  )
+  return {
+    select: topBar(DRAFTS_SELECT_LABELS),
+    selectAll: topBar(DRAFTS_SELECT_ALL_LABELS),
+    cancel: topBar(DRAFTS_CANCEL_LABELS),
+    delete: deletes.find((n) => hasShortId(n, DRAFTS_DELETE_ID)) ?? deletes[0] ?? null,
+    circles: all(tree, (n) => hasShortId(n, DRAFTS_SELECT_CIRCLE_ID) && insideFrame(n, frame.width)),
+  }
+}
+
+/** Select mode: "Pilih semua" and "Batalkan" both in the title bar. */
+export function selectModeShowing(tree: UiNode, frame: { width: number; height: number }): boolean {
+  const c = draftsFolderControls(tree, frame)
+  return c.selectAll !== null && c.cancel !== null
+}
+
+/** The Drafts folder: its "N draf" header, its "Pilih" button, or select mode. */
+export function draftsFolderShowing(tree: UiNode, frame: { width: number; height: number }): boolean {
+  return draftsFolderCount(tree, frame.width) !== null || draftsFolderControls(tree, frame).select !== null || selectModeShowing(tree, frame)
+}
+
+/**
+ * The confirmation's own delete button after "Hapus" was tapped, or null. UNMEASURED, so only the one shape a
+ * confirmation can safely be recognised by counts: a clickable button whose label is EXACTLY "Hapus"/"Delete",
+ * that is not the select mode's own delete bar (`cu1`, or any bounds in `exclude`), sharing a container smaller
+ * than the screen with a refusal ("Batalkan"/"Batal"/"Cancel", again none in `exclude`). The refusal is never
+ * returned.
+ */
+export function confirmDeleteButton(tree: UiNode, frame: { width: number; height: number }, exclude: Bounds[] = []): UiNode | null {
+  const excluded = (n: UiNode): boolean => exclude.some((b) => sameBounds(b, n.bounds))
+  const isConfirm = (n: UiNode): boolean => buttonLabelled(n, frame.width, DRAFTS_DELETE_LABELS) && !hasShortId(n, DRAFTS_DELETE_ID) && !excluded(n)
+  const isRefusal = (n: UiNode): boolean => buttonLabelled(n, frame.width, DIALOG_CANCEL_LABELS) && !excluded(n)
+  const screenArea = frame.width * frame.height
+  // Deepest container first, so the answer comes from the smallest box holding both buttons.
+  const visit = (n: UiNode): UiNode | null => {
+    for (const c of n.children) {
+      const hit = visit(c)
+      if (hit) return hit
+    }
+    const inside = flatten(n).slice(1)
+    const confirm = inside.find(isConfirm)
+    if (!confirm || !inside.some(isRefusal)) return null
+    const area = boxArea(n)
+    return area > 0 && area < screenArea * 0.9 ? confirm : null
+  }
+  return visit(tree)
+}
+
+function profileShowing(tree: UiNode, frameWidth: number): boolean {
+  return descNodeOnScreen(tree, [descOf(MENU_PROFIL), 'Profile menu'], frameWidth) !== null
+}
+
+/** Dumps about once a second until `read` answers something other than null, or `timeoutMs` passes. A failed dump is a miss, not an answer. */
+async function pollTree<T>(ctx: ScriptContext<unknown>, timeoutMs: number, read: (tree: UiNode) => T | null): Promise<{ value: T | null; tree: UiNode | null }> {
+  const deadline = Date.now() + timeoutMs
+  let last: UiNode | null = null
+  for (;;) {
+    try {
+      const tree = await ctx.device.dump()
+      last = tree
+      const value = read(tree)
+      if (value !== null) return { value, tree }
+    } catch {
+      // Go round again.
+    }
+    if (Date.now() >= deadline) return { value: null, tree: last }
+    await sleep(1_000)
+  }
+}
+
+/**
+ * Backs out of the Drafts folder without deleting anything: "Batalkan" while select mode is up (and no dialog
+ * is), BACK otherwise, at most three steps, stopping once the profile or the bottom nav is back and the folder
+ * is not. Never taps "Hapus". Never throws.
+ */
+async function leaveDraftsFolder(ctx: ScriptContext<unknown>, frame: { width: number; height: number }): Promise<void> {
+  try {
+    for (let step = 0; step < 3; step++) {
+      const tree = await ctx.device.dump().catch(() => null)
+      if (tree && (profileShowing(tree, frame.width) || feedNavOnScreen(tree, frame.width)) && !draftsFolderShowing(tree, frame)) return
+      const cancel = tree && selectModeShowing(tree, frame) && !confirmDeleteButton(tree, frame) ? draftsFolderControls(tree, frame).cancel : null
+      if (cancel) await ctx.device.tap({ point: centreOf(cancel) })
+      else await ctx.device.key('BACK')
+      await sleep(1_200)
+    }
+  } catch (err) {
+    ctx.log.warn('could not back out of the Drafts folder', { error: String(err) })
+  }
+}
+
+export interface DraftsCleared {
+  /** How many drafts the account had; 0 when there were none, null when a count could not be read. */
+  found: number | null
+  /** How many were deleted — always 0 in a dry run. */
+  removed: number | null
+  dryRun: boolean
+}
+
+function draftsPhrase(count: number | null): string {
+  return count === null ? 'the drafts (count unreadable)' : `${count} draft${count === 1 ? '' : 's'}`
+}
+
+/**
+ * Deletes every TikTok draft on this account before anything is posted (1.36.0) — the owner's decision, and
+ * permanent. Own profile → "Draf: N" → the Drafts folder → "Pilih" → "Pilih semua" → "Hapus" → the
+ * confirmation's own "Hapus" (never "Batalkan"/"Batal") → back on the profile with no drafts left, or the
+ * folder reading 0.
+ *
+ * A dry run stops after "Pilih": it proves the controls, backs out with "Batalkan" and BACK, and reports the
+ * count it would delete. It never taps "Hapus".
+ *
+ * Anything not recognised backs out and stops the run with `E_DRAFTS_NOT_CLEARED`, saving the tree and a
+ * screenshot, before anything is posted. A profile that shows no drafts entry at all is taken as no drafts —
+ * what a profile with none shows is not measured, so that reading is logged as such.
+ */
+async function clearDrafts(ctx: ScriptContext<unknown>, opts: { frame: { width: number; height: number }; dryRun: boolean }): Promise<DraftsCleared> {
+  const { frame, dryRun } = opts
+  const fail = async (label: string, why: string, tree?: UiNode | null, leave = true): Promise<never> => {
+    await capture(ctx, `drafts-${label}`, tree)
+    if (leave) await leaveDraftsFolder(ctx, frame)
+    throw Object.assign(new Error(`The account's TikTok drafts could not be cleared before posting: ${why} ${DRAFTS_BY_HAND}`), { code: 'E_DRAFTS_NOT_CLEARED' })
+  }
+
+  const menu = await openOwnProfile(ctx, frame.width)
+  if (!menu) return fail('profile-not-open', 'the own profile could not be opened to look for drafts.', null, false)
+  try {
+    recordCleared((await sweepModals(ctx, UPLOAD_MODAL_POLICIES)).cleared)
+  } catch (err) {
+    if ((err as { code?: string }).code === 'E_SECURITY_CHECK') throw err
+    ctx.log.warn('the profile could not be swept for modals before looking for drafts — looking anyway', { error: String(err) })
+  }
+
+  // The entry, or a profile whose own content (a grid cell, or its empty state) has drawn twice without one.
+  let loadedReads = 0
+  const looked = await pollTree(ctx, DRAFTS_ENTRY_WAIT_MS, (tree): { entry: { node: UiNode; count: number | null } | null } | null => {
+    const entry = draftsEntry(tree, frame.width)
+    if (entry) return { entry }
+    const belowY = (descNodeOnScreen(tree, [descOf(MENU_PROFIL), 'Profile menu'], frame.width) ?? menu).bounds.bottom
+    if (readGrid(tree, belowY, frame.width).length > 0 || gridEmptyState(tree, belowY, frame.width)) loadedReads += 1
+    return loadedReads >= 2 ? { entry: null } : null
+  })
+  const entry = looked.value?.entry ?? null
+  if (!entry) {
+    if (looked.value) {
+      ctx.log.info('the own profile shows no drafts entry — no drafts to clear')
+    } else {
+      await capture(ctx, 'drafts-entry-unseen', looked.tree)
+      ctx.log.warn(`no drafts entry appeared on the own profile within ${DRAFTS_ENTRY_WAIT_MS / 1000}s — taking it as no drafts (what a profile with no drafts shows has not been measured)`)
+    }
+    return { found: 0, removed: 0, dryRun }
+  }
+  if (entry.count === 0) {
+    ctx.log.info('the own profile shows 0 drafts — nothing to clear')
+    return { found: 0, removed: 0, dryRun }
+  }
+  ctx.log.info(`the own profile shows ${draftsPhrase(entry.count)} — opening the Drafts folder`)
+  await ctx.device.tap({ point: centreOf(entry.node) })
+
+  const folder = await pollTree(ctx, DRAFTS_SCREEN_WAIT_MS, (tree) => (draftsFolderShowing(tree, frame) ? tree : null))
+  if (!folder.value) return fail('folder-not-open', `"${nodeLabel(entry.node)}" was tapped on the profile, but the Drafts folder ("N draf" or "Pilih") did not open within ${DRAFTS_SCREEN_WAIT_MS / 1000}s.`, folder.tree)
+  const selectRead = await pollTree(ctx, DRAFTS_SCREEN_WAIT_MS, (tree) => {
+    const select = draftsFolderControls(tree, frame).select
+    return select ? { select, tree } : null
+  })
+  if (!selectRead.value) return fail('select-missing', 'the Drafts folder opened, but its "Pilih" button was not found.', selectRead.tree)
+  const count = draftsFolderCount(selectRead.value.tree, frame.width) ?? draftsFolderCount(folder.value, frame.width) ?? entry.count
+  const drafts = draftsPhrase(count)
+  if (count === 0) {
+    ctx.log.info('the Drafts folder reads 0 drafts — nothing to clear')
+    await leaveDraftsFolder(ctx, frame)
+    return { found: 0, removed: 0, dryRun }
+  }
+
+  await ctx.device.tap({ point: centreOf(selectRead.value.select) })
+  const mode = await pollTree(ctx, DRAFTS_SCREEN_WAIT_MS, (tree) => (selectModeShowing(tree, frame) ? tree : null))
+  if (!mode.value) return fail('select-mode-not-open', '"Pilih" was tapped, but select mode ("Pilih semua" and "Batalkan") did not appear.', mode.tree)
+  const modeControls = draftsFolderControls(mode.value, frame)
+
+  if (dryRun) {
+    await leaveDraftsFolder(ctx, frame)
+    ctx.log.info(`dry run: would delete ${drafts} — opened the Drafts folder and its select mode, then backed out with "Batalkan" without deleting anything`)
+    return { found: count, removed: 0, dryRun }
+  }
+
+  const selectAll = modeControls.selectAll
+  if (!selectAll) return fail('select-all-missing', 'select mode opened, but "Pilih semua" was not found.', mode.value)
+  const circlesBefore = modeControls.circles.map((c) => c.desc)
+  await ctx.device.tap({ point: centreOf(selectAll) })
+  await sleep(1_000)
+
+  // The tree has no selected state. What CAN be read: "Hapus" is there and enabled after "Pilih semua".
+  const armed = await pollTree(ctx, 4_000, (tree) => {
+    const controls = draftsFolderControls(tree, frame)
+    return controls.delete && controls.delete.enabled ? { controls, deleteButton: controls.delete } : null
+  })
+  if (!armed.value) {
+    const missing = !armed.tree || draftsFolderControls(armed.tree, frame).delete === null
+    return fail(
+      missing ? 'delete-missing' : 'nothing-selected',
+      missing ? '"Pilih semua" was tapped, but the "Hapus" button was not found.' : '"Pilih semua" was tapped, but "Hapus" stayed disabled, so nothing reads as selected.',
+      armed.tree,
+    )
+  }
+  const { controls, deleteButton } = armed.value
+  const circlesAfter = controls.circles.map((c) => c.desc)
+  if (circlesAfter.length > 0 && circlesAfter.some((d, i) => d !== circlesBefore[i])) {
+    ctx.log.info('the select circles changed after "Pilih semua"', { before: circlesBefore.join(' | '), after: circlesAfter.join(' | ') })
+  } else {
+    ctx.log.info('whether each draft is ticked cannot be read from the tree — proceeding on the "Pilih semua" tap', { circles: circlesAfter.length })
+  }
+
+  // The screen's own buttons, so the confirmation is never mistaken for them.
+  const exclude = [deleteButton.bounds, ...[controls.cancel, controls.selectAll].flatMap((n) => (n ? [n.bounds] : []))]
+  ctx.log.warn(`deleting ${drafts} from this account before posting — permanent, as the owner decided`)
+  await ctx.device.tap({ point: centreOf(deleteButton) })
+
+  const asked = await pollTree(ctx, DRAFTS_CONFIRM_WAIT_MS, (tree): UiNode | 'gone' | null =>
+    confirmDeleteButton(tree, frame, exclude) ?? (draftsFolderCount(tree, frame.width) === 0 ? 'gone' : null),
+  )
+  let confirmed = false
+  if (asked.value !== null && asked.value !== 'gone') {
+    await ctx.device.tap({ point: centreOf(asked.value) })
+    confirmed = true
+    ctx.log.info(`confirmed the deletion with "${nodeLabel(asked.value)}"`)
+  } else if (asked.value === null) {
+    // Evidence for the one step no dump has shown yet.
+    await capture(ctx, 'drafts-no-confirmation', asked.tree)
+    ctx.log.warn(`no confirmation was recognised within ${DRAFTS_CONFIRM_WAIT_MS / 1000}s of "Hapus" — checking whether the drafts are gone`)
+  }
+
+  const gone = await pollTree(ctx, DRAFTS_GONE_WAIT_MS, (tree): 'folder-empty' | 'left-folder' | null => {
+    if (confirmDeleteButton(tree, frame, exclude)) return null
+    if (draftsFolderCount(tree, frame.width) === 0) return 'folder-empty'
+    return draftsFolderShowing(tree, frame) ? null : 'left-folder'
+  })
+  const tapped = `"Hapus" was tapped${confirmed ? ' and confirmed' : ' (no confirmation was recognised)'}`
+  if (!gone.value) {
+    const left = gone.tree ? draftsFolderCount(gone.tree, frame.width) : null
+    return fail('not-deleted', `${tapped}, but the Drafts folder still showed ${left === null ? 'its drafts' : draftsPhrase(left)} after ${DRAFTS_GONE_WAIT_MS / 1000}s.`, gone.tree)
+  }
+
+  await leaveDraftsFolder(ctx, frame)
+  const seen: { count: number | null } = { count: null }
+  let absentReads = 0
+  const back = await pollTree(ctx, DRAFTS_PROFILE_CHECK_MS, (tree): 'clear' | null => {
+    if (!profileShowing(tree, frame.width) || draftsFolderShowing(tree, frame)) return null
+    const onProfile = draftsEntry(tree, frame.width)
+    if (!onProfile) {
+      absentReads += 1
+      return absentReads >= 2 ? 'clear' : null
+    }
+    seen.count = onProfile.count
+    return onProfile.count === 0 ? 'clear' : null
+  })
+  if (!back.value) {
+    if (seen.count !== null && seen.count > 0) {
+      return fail('still-on-profile', `${tapped} and the Drafts folder ${gone.value === 'folder-empty' ? 'read 0 drafts' : 'closed'}, but the own profile still shows "Draf: ${seen.count}".`, back.tree)
+    }
+    if (gone.value !== 'folder-empty') {
+      return fail('unconfirmed', `${tapped} and the Drafts folder closed, but the own profile could not be read afterwards to prove the drafts are gone.`, back.tree)
+    }
+    ctx.log.warn('the Drafts folder read 0 drafts, but the own profile could not be read afterwards — carrying on, the folder is the evidence')
+  }
+  ctx.log.info(`deleted ${drafts} from this account before posting`, { confirmed })
+  return { found: count, removed: count, dryRun }
 }
 
 /** True when TikTok's security-check sheet is on screen (`tt.security-check` in the register). */
@@ -1479,8 +1718,11 @@ async function waitForTypingToStop(ctx: ScriptContext<unknown>): Promise<void> {
  * What each build does here is known only from the production bundles: the moto (E14) and the Samsung
  * build with ids like `upu` (04fe3367) raise "Buang" / "Simpan draf" on BACK from the editor, and "Buang"
  * lands on the picker; the Samsung build with ids like `oju` (4063f322) went from the editor straight to
- * the profile with no dialog. What that build keeps of the edit is not known. If it is left for the next
- * launch, the next run meets the resume-edit banner and throws it away there (`discardResumedEdit`).
+ * the profile with no dialog, and on the moto (MEASURED 2026-09-15) BACK from the editor also returns to the feed
+ * with no dialog, TikTok keeping the edit as a draft by itself. So a missing dialog is normal (1.36.0): the walk
+ * never waits on one, never throws, and leaves whatever TikTok kept to the next run, which answers the resume-edit
+ * banner "Simpan draf" and deletes every draft before posting (`clearDrafts`). A resume-edit banner met here is
+ * left unanswered.
  */
 async function backOutOfEditor(ctx: ScriptContext<unknown>): Promise<boolean> {
   let tree: UiNode | null = await ctx.device.dump().catch(() => null)
@@ -1505,21 +1747,27 @@ async function backOutOfEditor(ctx: ScriptContext<unknown>): Promise<boolean> {
         ctx.log.info('threw the unfinished post away with "Buang"', { presses: press })
         return false
       }
-    } catch (err) {
-      const code = (err as { code?: string }).code
-      if (code === 'E_SECURITY_CHECK') return true
-      if (code === 'E_RESUME_EDIT_BANNER') {
-        ctx.log.warn('TikTok offered to resume the unfinished post while backing out — left for the next run to throw away')
+      if (swept.cleared.includes('tt.resume-edit')) {
+        ctx.log.warn('TikTok offered to resume the unfinished post while backing out — left unanswered; the next run saves it as a draft and deletes it with the rest')
         return false
       }
-      throw err
+    } catch (err) {
+      if ((err as { code?: string }).code === 'E_SECURITY_CHECK') return true
+      ctx.log.warn('a modal could not be answered while backing out — stopping the walk; TikTok is force-stopped next', { error: String(err) })
+      return false
     }
     await ctx.device.key('BACK')
     await sleep(900)
   }
-  const last = await sweepModals(ctx, ABANDON_MODAL_POLICIES, { maxRounds: 2 })
-  recordCleared(last.cleared)
-  if (last.cleared.includes('tt.discard-draft')) ctx.log.info('threw the unfinished post away with "Buang"')
+  try {
+    const last = await sweepModals(ctx, ABANDON_MODAL_POLICIES, { maxRounds: 2 })
+    recordCleared(last.cleared)
+    if (last.cleared.includes('tt.discard-draft')) ctx.log.info('threw the unfinished post away with "Buang"')
+    else ctx.log.info('no exit dialog appeared while backing out — a build that shows none keeps the edit as a draft, which the next run deletes')
+  } catch (err) {
+    if ((err as { code?: string }).code === 'E_SECURITY_CHECK') return true
+    ctx.log.warn('the last sweep while backing out did not settle — TikTok is force-stopped next', { error: String(err) })
+  }
   return false
 }
 
@@ -1609,6 +1857,15 @@ const params = z.object({
     .default(false)
     .describe('Walk the whole flow and stop at the Post button without pressing it.')
     .meta(ui({ title: 'Dry run', group: 'Post' })),
+
+  // 1.36.0, the owner's decision (2026-09-15) — see `clearDrafts`.
+  clearDrafts: z
+    .boolean()
+    .default(true)
+    .describe(
+      'Before posting, delete ALL TikTok drafts on this account (Profil → Draf → Pilih semua → Hapus). Deleting drafts is permanent: they cannot be recovered. An unfinished post TikTok offers to resume is saved as a draft first and deleted with the rest. A dry run deletes nothing — it opens the Drafts folder and reports how many drafts it would delete.',
+    )
+    .meta(ui({ title: 'Clear drafts first', group: 'Post' })),
 })
 
 /** §4.1, verbatim — `outcome` is the four-state enum §3.6 needs, never a boolean. */
@@ -1646,12 +1903,10 @@ interface AttemptState {
   folderVideo: { hash: string; path: string } | null
   /** Set when TikTok's security check was seen after Post: `finish` then leaves TikTok open on it instead of force-stopping. */
   leaveOnScreen: boolean
-  /** Set once `discardResumedEdit` has run: a second resume-edit banner in the same run stops it by name (1.35.0). */
-  resumeEditDiscarded: boolean
 }
 
 function freshAttemptState(): AttemptState {
-  return { videoArtifactId: null, caption: null, queueClaim: null, remotePath: null, screens: [], modalsHandled: [], folderVideo: null, leaveOnScreen: false, resumeEditDiscarded: false }
+  return { videoArtifactId: null, caption: null, queueClaim: null, remotePath: null, screens: [], modalsHandled: [], folderVideo: null, leaveOnScreen: false }
 }
 
 /**
@@ -1914,6 +2169,21 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       }
     }
 
+    // Every draft on the account is deleted before anything is posted (1.36.0, the owner's decision) — after the
+    // baseline, so the run is already on the profile. A dry run only counts them. `E_DRAFTS_NOT_CLEARED` stops the run here.
+    let draftsNote = 'drafts were left alone (clearDrafts is off)'
+    if (ctx.params.clearDrafts) {
+      const drafts = await clearDrafts(ctx, { frame, dryRun: ctx.params.dryRun })
+      draftsNote =
+        drafts.found === 0
+          ? 'no drafts to delete'
+          : ctx.params.dryRun
+            ? `would delete ${draftsPhrase(drafts.found)}`
+            : `deleted ${draftsPhrase(drafts.removed)}`
+    } else {
+      ctx.log.info('clearDrafts is off — leaving the account\'s drafts alone')
+    }
+
     await clearOverFeed(ctx, 'tapping "+"')
     // Aimed where the tree draws "+" when it can be read, blind at the measured nav position otherwise (1.34.1).
     const tapCreate = async (tree: UiNode | null): Promise<void> => {
@@ -2069,7 +2339,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
         remotePath: attempt.remotePath,
         screens: attempt.screens,
         modalsHandled: attempt.modalsHandled,
-        reason: 'dry run: the flow reached the Post button and stopped without tapping it',
+        reason: `dry run: the flow reached the Post button and stopped without tapping it; ${draftsNote}`,
       }
     }
 
