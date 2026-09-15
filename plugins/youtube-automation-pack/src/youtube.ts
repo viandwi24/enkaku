@@ -163,6 +163,31 @@ export function isReady(tree: UiNode): boolean {
 const GMS_PACKAGE = 'com.google.android.gms'
 
 /**
+ * YouTube is only a picture-in-picture window (0.35.0): every YouTube node sits inside a box well under half the
+ * screen, and another app — the launcher — draws the rest.
+ *
+ * Measured on the owner's Samsung production phone #8 (2026-09-15, run a1bff0a5): right after a clean
+ * force-stop and launch, the dump held 57 `com.sec.android.app.launcher` nodes and all 36 YouTube nodes inside
+ * 467,1084–690,1480 of a 720x1600 screen (the watch player, `next_gen_watch_container_layout`), and the run
+ * failed "no Create button" after waiting 25 s for a bottom bar that PiP never draws.
+ */
+export function pictureInPictureOnly(tree: UiNode): boolean {
+  const nodes = flatten(tree)
+  const youtube = nodes.filter((n) => n.packageName === YOUTUBE_PACKAGE && n.bounds.right > n.bounds.left && n.bounds.bottom > n.bounds.top)
+  if (youtube.length === 0) return false
+  const width = Math.max(0, ...nodes.map((n) => n.bounds.right))
+  const height = Math.max(0, ...nodes.map((n) => n.bounds.bottom))
+  if (width === 0 || height === 0) return false
+  const left = Math.min(...youtube.map((n) => n.bounds.left))
+  const top = Math.min(...youtube.map((n) => n.bounds.top))
+  const right = Math.max(...youtube.map((n) => n.bounds.right))
+  const bottom = Math.max(...youtube.map((n) => n.bounds.bottom))
+  const small = right - left <= width * 0.6 && bottom - top <= height * 0.5
+  const otherApp = nodes.some((n) => n.packageName !== YOUTUBE_PACKAGE && n.packageName !== 'com.android.systemui' && n.packageName !== '' && n.bounds.right - n.bounds.left >= width * 0.9)
+  return small && otherApp
+}
+
+/**
  * A full-screen Google account page from Play services is on top of YouTube (0.32.0).
  *
  * Measured on the owner's Samsung production farm (2026-09-15, run c4a3bd07): right after a clean
@@ -238,13 +263,25 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
   await sleep(3_000)
   // A Google account page can open over YouTube at launch (`googleAccountPageOnTop`). BACK leaves it
   // without answering anything on it — its only buttons add a recovery phone or open settings.
-  const readyOrAccountPage = (t: UiNode): boolean => isReady(t) || googleAccountPageOnTop(t)
+  const readyOrAccountPage = (t: UiNode): boolean => isReady(t) || googleAccountPageOnTop(t) || pictureInPictureOnly(t)
   let nav = await waitForTree(ctx, readyOrAccountPage, { budgetMs: READY_TIMEOUT_MS })
   for (let round = 0; round < 3 && !isReady(nav.tree) && googleAccountPageOnTop(nav.tree); round++) {
     ctx.log.warn('a Google account page opened over YouTube at launch — leaving it with BACK; nothing on it is tapped')
     await ctx.device.key('BACK')
     await sleep(1_500)
     nav = await waitForTree(ctx, readyOrAccountPage, { budgetMs: 12_000 })
+  }
+  /*
+    YouTube came up as a picture-in-picture window over the launcher (0.35.0): launching it again brings its task
+    back full screen, and a force-stop and launch is the last resort. A video left playing in PiP also covers
+    whatever the run taps next.
+  */
+  for (let round = 0; round < 2 && !isReady(nav.tree) && pictureInPictureOnly(nav.tree); round++) {
+    ctx.log.warn('YouTube opened as a picture-in-picture window over the home screen — bringing it back full screen', { round: round + 1 })
+    if (round === 1) await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: true })
+    await ctx.device.app.launch(YOUTUBE_PACKAGE)
+    await sleep(3_000)
+    nav = await waitForTree(ctx, readyOrAccountPage, { budgetMs: 15_000 })
   }
   if (!isReady(nav.tree)) {
     ctx.log.warn(`youtube did not show its navigation within ${READY_TIMEOUT_MS / 1000}s — continuing, and the next anchor will say where the device is`)

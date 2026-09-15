@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.34.0',
+  version: '0.35.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,7 +93,34 @@ export default definePlugin({
   /**
    * ## Changelog
    *
-   * **0.34.0 — hashtags survive a long caption, and every upload is watched
+   * **Also in 0.35.0 — YouTube opened as a picture-in-picture window is brought
+   * back full screen.** The owner's production phone #8 (2026-09-15): right
+   * after a clean launch, YouTube's whole window was a small video box over the
+   * Samsung home screen, and the run failed "no Create button" after waiting
+   * 25 s for a bottom bar PiP never draws. `relaunch` now recognises that shape
+   * (`pictureInPictureOnly`: every YouTube node in a box under 60% wide and 50%
+   * tall, another app across the screen), launches YouTube again to bring its
+   * task back, and force-stops and launches once more if that does not work.
+   *
+   * **0.35.0 — the channel is pulled to refresh, and the looks after Upload
+   * vary like a person waiting.** The owner watched production phones
+   * (2026-09-15): re-opening the channel through the Anda tab does not refresh
+   * it — the uploading cell seen right after Upload disappeared from the
+   * re-opened channel and came back only once the upload had finished. Every
+   * look after the first now pulls the channel's video list down to refresh
+   * it (a slow drag inside the list, never a tap), and the rounds vary: usually
+   * a pull on the channel already open, sometimes a visit to Home first and
+   * back through Anda, at jittered 8–16 s gaps. The budgets (3 minutes, 5 once
+   * the upload was seen in flight), the early exit and the no-force-stop rule
+   * are unchanged. Also from the Samsung farm (#6, #7): after the trim
+   * screen's "Selesai", YouTube showed "Memproses — Mungkin perlu waktu
+   * beberapa saat" over the trim screen for longer than the 20 s the editor
+   * got, and the run failed "the Shorts editor's Berikutnya did not appear".
+   * While that processing overlay is on screen the run now keeps waiting for
+   * the editor, up to 3 minutes, without tapping "Selesai" again, and says it
+   * was still processing if it never finishes.
+   *
+   * **0.34.0 —hashtags survive a long caption, and every upload is watched
    * for at least three minutes.** The owner's production farm (2026-09-15):
    * a 224-character caption was cut at character 100, which dropped every
    * hashtag (the post puts them at the end) and could cut a word in half.

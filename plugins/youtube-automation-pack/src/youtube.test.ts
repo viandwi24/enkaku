@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readdirSync } from 'node:fs'
 import type { UiNode } from '@enkaku/protocol'
-import { googleAccountPageOnTop } from './youtube'
+import { googleAccountPageOnTop, pictureInPictureOnly } from './youtube'
 
 async function fixture(name: string): Promise<UiNode> {
   return (await Bun.file(new URL(`./__fixtures__/${name}`, import.meta.url)).json()) as UiNode
@@ -45,6 +45,40 @@ describe('googleAccountPageOnTop', () => {
     expect(names.length).toBeGreaterThan(10)
     for (const name of names) {
       expect({ name, page: googleAccountPageOnTop(await fixture(name)) }).toEqual({ name, page: false })
+    }
+  })
+})
+
+describe('pictureInPictureOnly', () => {
+  // The shape of production phone #8's dump (2026-09-15, run a1bff0a5): the launcher across the screen and
+  // every YouTube node inside the PiP box. Rebuilt by hand with only packages and bounds.
+  function pip(): UiNode {
+    const box = { left: 467, top: 1084, right: 690, bottom: 1480 }
+    const yt = (children: UiNode[] = []): UiNode => node({ packageName: 'com.google.android.youtube', bounds: box, children })
+    return node({
+      className: 'hierarchy',
+      children: [
+        node({ packageName: 'com.sec.android.app.launcher', bounds: { left: 0, top: 0, right: 720, bottom: 1600 }, children: [node({ packageName: 'com.sec.android.app.launcher', desc: 'YouTube', bounds: { left: 380, top: 590, right: 520, bottom: 740 } })] }),
+        yt([yt([yt()])]),
+        node({ packageName: 'com.android.systemui', text: '14.44', bounds: { left: 14, top: 20, right: 96, bottom: 50 } }),
+      ],
+    })
+  }
+
+  test('YouTube drawn only inside a small box over the launcher is picture-in-picture', () => {
+    expect(pictureInPictureOnly(pip())).toBe(true)
+  })
+
+  test('YouTube full screen is not, and neither is a tree with no YouTube at all', () => {
+    const full = node({ className: 'hierarchy', children: [node({ packageName: 'com.google.android.youtube', bounds: { left: 0, top: 0, right: 720, bottom: 1600 } })] })
+    expect(pictureInPictureOnly(full)).toBe(false)
+    expect(pictureInPictureOnly(accountPage())).toBe(false)
+  })
+
+  test('no screen this pack walks is mistaken for it', async () => {
+    const names = readdirSync(new URL('./__fixtures__/', import.meta.url)).filter((f) => f.endsWith('.json'))
+    for (const name of names) {
+      expect({ name, pip: pictureInPictureOnly(await fixture(name)) }).toEqual({ name, pip: false })
     }
   })
 })

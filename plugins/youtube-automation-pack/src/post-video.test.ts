@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import type { UiNode } from '@enkaku/protocol'
 import {
+  bottomHomeTab,
+  CONFIRM_PLAN,
   asciiTitle,
   youtubeTitle,
   cellShowsTitle,
@@ -21,6 +23,7 @@ import {
   keyboardShowing,
   onThumbnailEditor,
   premiumPage,
+  processingOverlay,
   readChannelCells,
   resumeDraftPrompt,
   trimDoneButton,
@@ -29,6 +32,8 @@ import {
 } from './post-video'
 import { findPopup } from './popups'
 import { flatten, rowsById } from './tree'
+import { CHANNEL_PULL_BAND, MAX_REFRESHES_IN_A_ROW, makeRng, planConfirmStep, pullToRefreshPath } from './behavior'
+import type { ConfirmMove, ConfirmStep } from './behavior'
 
 /**
  * `post-video`'s readings, against the screens of the 2026-09-11 hand walk on
@@ -39,6 +44,77 @@ import { flatten, rowsById } from './tree'
 async function fixture(name: string): Promise<UiNode> {
   return (await Bun.file(new URL(`./__fixtures__/${name}`, import.meta.url)).json()) as UiNode
 }
+
+describe('post-video — the looks after Upload (0.35.0)', () => {
+  const plan = (seed: number, rounds = 300): ConfirmStep[] => {
+    const rng = makeRng(seed)
+    const moves: ConfirmMove[] = []
+    return Array.from({ length: rounds }, () => {
+      const step = planConfirmStep(rng, moves, CONFIRM_PLAN)
+      moves.push(step.move)
+      return step
+    })
+  }
+
+  test('the same seed replays the same rounds', () => {
+    expect(plan(42, 30)).toEqual(plan(42, 30))
+  })
+
+  test('pulls and trips Home are mixed: never Home twice in a row, never more than three pulls in a row', () => {
+    for (const seed of [1, 7, 99, 2026]) {
+      const moves = plan(seed).map((s) => (s.move === 'home' ? 'H' : 'R')).join('')
+      expect(moves).toContain('H')
+      expect(moves).toContain('R')
+      expect(moves).not.toContain('HH')
+      expect(moves).not.toContain('R'.repeat(MAX_REFRESHES_IN_A_ROW + 1))
+    }
+  })
+
+  test('waits are jittered inside the plan, with the odd longer one', () => {
+    const [lo, hi] = CONFIRM_PLAN.waitMs
+    const waits = plan(11).map((s) => s.waitMs)
+    expect(Math.min(...waits)).toBeGreaterThanOrEqual(lo)
+    expect(Math.max(...waits)).toBeLessThanOrEqual(Math.ceil(hi * 1.7))
+    expect(waits.some((w) => w > hi)).toBe(true)
+    expect(new Set(waits).size).toBeGreaterThan(250)
+  })
+
+  test('every look pulls to refresh — also after a trip Home, since re-opening the channel does not refresh it', () => {
+    for (const s of plan(3)) {
+      expect(s.pull).toBe(true)
+      if (s.move === 'refresh') expect(s.lingerMs).toBe(0)
+      else {
+        expect(s.lingerMs).toBeGreaterThanOrEqual(1_500)
+        expect(s.lingerMs).toBeLessThanOrEqual(5_000)
+      }
+    }
+  })
+
+  test('the pull starts and ends inside the channel\'s video list, on both measured channel screens, off both side edges', async () => {
+    for (const name of ['screen-channel.json', 'screen-channel-uploading.json']) {
+      const tree = await fixture(name)
+      const root = rowsById(tree, 'action_bar_root')[0] as UiNode
+      const list = rowsById(tree, 'results').find((n) => n.bounds.right > n.bounds.left) as UiNode
+      const frame = { width: root.bounds.right, height: root.bounds.bottom }
+      const rng = makeRng(5)
+      for (let i = 0; i < 300; i++) {
+        const p = pullToRefreshPath(frame, rng, CHANNEL_PULL_BAND)
+        for (const pt of [p.from, p.to]) {
+          expect(pt.y).toBeGreaterThan(list.bounds.top)
+          expect(pt.y).toBeLessThan(list.bounds.bottom)
+          expect(pt.x).toBeGreaterThan(frame.width * 0.2)
+          expect(pt.x).toBeLessThan(frame.width * 0.8)
+        }
+        expect(p.to.y - p.from.y).toBeGreaterThanOrEqual(128)
+      }
+    }
+  })
+
+  test('the Home a round visits is the bottom bar\'s, never the channel\'s own "Beranda" tab', async () => {
+    expect(bottomHomeTab(await fixture('screen-channel.json'))?.bounds).toEqual({ left: 0, top: 1472, right: 180, bottom: 1556 })
+    expect(bottomHomeTab(await fixture('screen-channel-uploading.json'))?.bounds).toEqual({ left: 0, top: 1420, right: 144, bottom: 1510 })
+  })
+})
 
 const W = 720
 
@@ -139,6 +215,35 @@ describe('onThumbnailEditor — where a mis-aimed details tap lands', () => {
   test('the thumbnail editor under its processing overlay is recognised', async () => {
     expect(onThumbnailEditor(await fixture('screen-thumbnail-editor.json'))).toBe(true)
     expect(onThumbnailEditor(await fixture('screen-shorts-editor.json'))).toBe(false)
+  })
+})
+
+/*
+  The "Memproses" overlay after the trim screen's "Selesai" (0.35.0). No fixture is checked in: the nodes below are
+  only the ids and labels production runs #6 and #7 dumped (Samsung farm, 2026-09-15); their bounds are placeholders
+  in the centre of a 720x1600 screen.
+*/
+describe('processingOverlay — YouTube still working on the trimmed video', () => {
+  const rid = (short: string): string => `com.google.android.youtube:id/${short}`
+  const overlay = [
+    node({ resourceId: rid('processing_indicator_spinner'), className: 'android.widget.ProgressBar', bounds: { left: 320, top: 700, right: 400, bottom: 780 } }),
+    node({ resourceId: rid('processing_indicator_label'), className: 'android.widget.TextView', text: 'Memproses', bounds: { left: 280, top: 800, right: 440, bottom: 840 } }),
+    node({ resourceId: rid('processing_indicator_sub_label'), className: 'android.widget.TextView', text: 'Mungkin perlu waktu beberapa saat', bounds: { left: 160, top: 850, right: 560, bottom: 890 } }),
+  ]
+  const trimDone = node({ resourceId: rid('shorts_trim_finish_trim_button'), text: 'Selesai', clickable: true, bounds: { left: 560, top: 80, right: 700, bottom: 150 } })
+  const screen = (children: UiNode[]): UiNode => node({ bounds: { left: 0, top: 0, right: 720, bottom: 1600 }, children })
+
+  test('the spinner over the trim screen reads as processing, with its words', () => {
+    expect(processingOverlay(screen([trimDone, ...overlay]))).toBe('Memproses — Mungkin perlu waktu beberapa saat')
+    // The spinner alone still counts: the words are for the log, the ids are the evidence.
+    expect(processingOverlay(screen([trimDone, overlay[0] as UiNode]))).toBe('')
+  })
+
+  test('the trim screen without it, an off-screen overlay, or another app\'s node is not processing', () => {
+    expect(processingOverlay(screen([trimDone]))).toBeNull()
+    expect(processingOverlay(screen(overlay.map((n) => ({ ...n, bounds: { left: 0, top: 0, right: 0, bottom: 0 } }))))).toBeNull()
+    expect(processingOverlay(screen(overlay.map((n) => ({ ...n, packageName: 'com.android.systemui' }))))).toBeNull()
+    expect(processingOverlay(screen([node({ text: 'Memproses', bounds: { left: 280, top: 800, right: 440, bottom: 840 } })]))).toBeNull()
   })
 })
 

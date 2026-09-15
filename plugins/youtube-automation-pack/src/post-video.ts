@@ -6,6 +6,8 @@ import { compareShots, pngSize } from './screen-pixels'
 import type { Region } from './screen-pixels'
 import { all, flatten, rowsById } from './tree'
 import { YOUTUBE_PACKAGE, capture, centre, hasId, labelled, relaunch, sleep, waitForTree } from './youtube'
+import { between, makeRng, planConfirmStep, pullToRefresh } from './behavior'
+import type { ConfirmMove, ConfirmPlan } from './behavior'
 
 /**
  * `post-video` — upload one video as a YouTube Short, for the Social Media
@@ -167,6 +169,14 @@ const CONFIRM_ROUNDS = 6
 const CONFIRM_BUDGET_MS = 5 * 60_000
 /** How long every run keeps looking at the channel after Upload, even one that never saw its upload in flight (0.34.0). */
 const CONFIRM_MIN_MS = 3 * 60_000
+/**
+ * How the looks after the first one vary (0.35.0): jittered 8–16 s gaps, a trip to Home about a third of the time,
+ * and a pull to refresh on every look — also after a trip Home, because re-opening the channel through Anda does
+ * not refresh its list (the owner's production phones, 2026-09-15).
+ */
+export const CONFIRM_PLAN: ConfirmPlan = { waitMs: [8_000, 16_000], homeChance: 0.35, pullAfterHome: 1 }
+/** How long YouTube's "Memproses" overlay after the trim screen's "Selesai" is waited out for the editor (0.35.0). */
+const TRIM_PROCESSING_MS = 3 * 60_000
 
 /**
  * How long the title tap gets before the text is typed.
@@ -665,6 +675,21 @@ function accountTab(tree: UiNode): UiNode | null {
   return shown(tree, 'Anda').find((n) => n.clickable) ?? shown(tree, 'You').find((n) => n.clickable) ?? null
 }
 
+/**
+ * The bottom bar's Home tab (0.35.0): the lowest clickable on-screen "Beranda"/"Home" in the bottom fifth of the
+ * frame. A channel with videos also has a "Beranda" TAB under its header (`screen-channel.json`, y=705) — tapping
+ * that one would stay on the channel.
+ */
+export function bottomHomeTab(tree: UiNode): UiNode | null {
+  const visible = onScreenIn(tree)
+  const frame = frameOf(tree)
+  return (
+    [...shown(tree, 'Beranda'), ...shown(tree, 'Home')]
+      .filter((n) => n.clickable && fromYouTube(n) && visible(n) && n.bounds.top >= frame.height * 0.8)
+      .sort((a, b) => b.bounds.bottom - a.bounds.bottom)[0] ?? null
+  )
+}
+
 const VIEW_CHANNEL = ['Lihat channel', 'View channel'] as const
 
 /**
@@ -718,8 +743,38 @@ export function uploadInProgress(tree: UiNode): boolean {
   return all(tree, (n) => fromYouTube(n) && visible(n) && (UPLOADING.test(n.text) || UPLOADING.test(n.desc))).length > 0
 }
 
-/** Read the channel page that is on screen now. */
-async function readChannelHere(ctx: ScriptContext<unknown>, label: string): Promise<string[] | null> {
+const PROCESSING_INDICATOR_ID = /(?:^|\/)processing_indicator_/
+
+/**
+ * YouTube's "Memproses" overlay (0.35.0): the words it shows, `''` when it shows none, or null when it is not on
+ * screen. Production #6 and #7 (Samsung farm, 2026-09-15): after the trim screen's "Selesai" YouTube drew a centred
+ * spinner over the trim screen — `processing_indicator_spinner`, `processing_indicator_label` "Memproses",
+ * `processing_indicator_sub_label` "Mungkin perlu waktu beberapa saat" — for longer than the editor wait, and the
+ * run failed "Berikutnya did not appear" while YouTube was still working. Recognised by those ids alone.
+ */
+export function processingOverlay(tree: UiNode): string | null {
+  const visible = onScreenIn(tree)
+  const nodes = all(tree, (n) => fromYouTube(n) && visible(n) && PROCESSING_INDICATOR_ID.test(n.resourceId))
+  if (nodes.length === 0) return null
+  return nodes
+    .map((n) => n.text.trim())
+    .filter((s) => s !== '')
+    .join(' — ')
+}
+
+/**
+ * Read the channel page that is on screen now. With `pull` (0.35.0) the page is first pulled down to refresh it —
+ * the only thing that makes YouTube re-list the channel: re-opening it through Anda shows the list it already had
+ * (the owner's production phones, 2026-09-15). The pull is a drag inside the video list, never a tap.
+ */
+async function readChannelHere(ctx: ScriptContext<unknown>, label: string, pull?: () => number): Promise<string[] | null> {
+  if (pull) {
+    const onScreen = await ctx.device.dump()
+    if (channelHeaderShown(onScreen)) {
+      await pullToRefresh(ctx, frameOf(onScreen), pull)
+      await sleep(between(pull, 2_000, 3_500))
+    }
+  }
   await sleep(1_500) // the cells arrive after the header
   const tree = await capture(ctx, label)
   return channelHeaderShown(tree) ? readChannelCells(tree, frameOf(tree).width) : null
@@ -732,13 +787,14 @@ async function readChannelHere(ctx: ScriptContext<unknown>, label: string): Prom
  * `readIfShown` reads a channel page already on screen instead of navigating —
  * after Upload, YouTube opens the channel by itself with the new cell at the
  * top (72395efa `ui/00064`), and that screen is the first evidence there is.
- * Nothing here force-stops or relaunches YouTube (0.31.0).
+ * Nothing here force-stops or relaunches YouTube (0.31.0). `pull` pulls the
+ * channel down to refresh it once it is on screen, before it is read (0.35.0).
  */
-async function readOwnChannel(ctx: ScriptContext<unknown>, label: string, opts?: { readIfShown?: boolean }): Promise<string[] | null> {
+async function readOwnChannel(ctx: ScriptContext<unknown>, label: string, opts?: { readIfShown?: boolean; pull?: () => number }): Promise<string[] | null> {
   try {
     if (opts?.readIfShown) {
       const here = await waitForTree(ctx, channelHeaderShown, { budgetMs: 8_000 })
-      if (here.ok) return await readChannelHere(ctx, label)
+      if (here.ok) return await readChannelHere(ctx, label, opts?.pull)
     }
     const you = await waitForTree(ctx, (t) => accountTab(t) !== null, { budgetMs: 15_000 })
     const tab = accountTab(you.tree)
@@ -747,7 +803,7 @@ async function readOwnChannel(ctx: ScriptContext<unknown>, label: string, opts?:
     for (let attempt = 1; attempt <= 2; attempt++) {
       const page = await waitForTree(ctx, (t) => channelHeaderShown(t) || viewChannelTarget(t) !== null || isSignedOut(t), { budgetMs: 15_000 })
       if (isSignedOut(page.tree)) fail('E_NOT_SIGNED_IN', 'YouTube on this phone is signed out. Sign in to the account that should post (and create its channel), then re-run.')
-      if (channelHeaderShown(page.tree)) return await readChannelHere(ctx, label)
+      if (channelHeaderShown(page.tree)) return await readChannelHere(ctx, label, opts?.pull)
       const view = viewChannelTarget(page.tree)
       if (!view) {
         await capture(ctx, `${label}-you`, page.tree)
@@ -755,7 +811,7 @@ async function readOwnChannel(ctx: ScriptContext<unknown>, label: string, opts?:
       }
       await ctx.device.tap({ point: view.point })
       const opened = await waitForTree(ctx, (t) => channelHeaderShown(t) || premiumPage(t), { budgetMs: 15_000 })
-      if (channelHeaderShown(opened.tree)) return await readChannelHere(ctx, label)
+      if (channelHeaderShown(opened.tree)) return await readChannelHere(ctx, label, opts?.pull)
       if (!premiumPage(opened.tree)) {
         await capture(ctx, `${label}-not-channel`, opened.tree)
         return null
@@ -770,6 +826,26 @@ async function readOwnChannel(ctx: ScriptContext<unknown>, label: string, opts?:
     if ((err as { code?: string }).code === 'E_NOT_SIGNED_IN') throw err
     ctx.log.warn('could not read the own channel page', { error: String(err) })
     return null
+  }
+}
+
+/**
+ * Go Home from the bottom bar and stay a moment (0.35.0) — one of the moves a confirmation round makes. A tap on
+ * a tab, never a relaunch. Never throws: a Home tab that is not on screen only means the channel is re-opened from
+ * wherever YouTube is.
+ */
+async function visitHome(ctx: ScriptContext<unknown>, lingerMs: number): Promise<void> {
+  try {
+    const got = await waitForTree(ctx, (t) => bottomHomeTab(t) !== null, { budgetMs: 8_000 })
+    const home = bottomHomeTab(got.tree)
+    if (!home) {
+      ctx.log.warn('the bottom bar\'s Home tab is not on screen — re-opening the channel from wherever YouTube is')
+      return
+    }
+    await tapCentre(ctx, home)
+    await sleep(lingerMs)
+  } catch (err) {
+    ctx.log.warn('could not visit Home before re-opening the channel', { error: String(err) })
   }
 }
 
@@ -1192,7 +1268,34 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       fail('E_ANCHOR_NOT_FOUND', 'neither the trim screen ("Selesai") nor the Shorts editor appeared after the gallery — see artifact yt-06-trim.')
     }
 
-    const editor = await waitForId(ctx, 'shorts_post_bottom_button', 20_000)
+    let editor = await waitForId(ctx, 'shorts_post_bottom_button', 20_000)
+    const processing = editor.node ? null : processingOverlay(editor.tree)
+    if (processing !== null) {
+      /*
+        Still processing (0.35.0, production #6 and #7): YouTube is working on the trimmed video under a "Memproses"
+        spinner, and the editor opens when it is done. Wait it out — never tap "Selesai" again, which is under the
+        spinner and would only start the trim over — and name the state if it never finishes.
+      */
+      const words = processing || 'Memproses'
+      const waitStarted = Date.now()
+      await capture(ctx, 'yt-07-processing', editor.tree)
+      ctx.log.info(`YouTube is still processing the video ("${words}") — waiting up to ${TRIM_PROCESSING_MS / 60_000} min for the Shorts editor, without tapping "Selesai" again`)
+      const settled = await waitForTree(ctx, (t) => rowsById(t, 'shorts_post_bottom_button').length > 0 || processingOverlay(t) === null, { budgetMs: TRIM_PROCESSING_MS, intervalMs: 2_000 })
+      const opened = rowsById(settled.tree, 'shorts_post_bottom_button')[0]
+      if (opened) {
+        ctx.log.info('YouTube finished processing and opened the Shorts editor', { waitedMs: settled.waitedMs })
+        editor = { node: opened, tree: settled.tree }
+      } else if (processingOverlay(settled.tree) !== null) {
+        await capture(ctx, 'yt-07-still-processing', settled.tree)
+        fail(
+          'E_VIDEO_PROCESSING',
+          `YouTube was still processing the video ("${words}") ${Math.round((Date.now() - waitStarted) / 1000) + 20}s after the trim screen's "Selesai", and the Shorts editor never opened — nothing was uploaded. See artifact yt-07-still-processing.`,
+        )
+      } else {
+        ctx.log.info('the processing overlay went away — waiting for the Shorts editor', { waitedMs: settled.waitedMs })
+        editor = await waitForId(ctx, 'shorts_post_bottom_button', 20_000)
+      }
+    }
     if (!editor.node) {
       await capture(ctx, 'yt-07-editor', editor.tree)
       fail('E_ANCHOR_NOT_FOUND', 'the Shorts editor\'s "Berikutnya" did not appear — see artifact yt-07-editor.')
@@ -1361,13 +1464,33 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     */
     let inFlightWords: string | null = null
     const confirmStarted = Date.now()
+    /*
+      A real refresh, at a person's rhythm (0.35.0). The owner watched production phones (2026-09-15): re-opening the
+      channel through the Anda tab does not refresh its list — the uploading cell seen right after Upload vanished
+      from the re-opened channel and came back only once the upload had finished. So every look after the first
+      pulls the channel's video list down to refresh it, and `planConfirmStep` varies how it gets there: usually a
+      pull on the channel already open, sometimes a visit to Home first and back through Anda, at jittered gaps.
+      Neither move force-stops or relaunches YouTube, and the pull is a drag inside the list, never a tap.
+    */
+    const rng = makeRng((Date.now() ^ Number(ctx.job.attempt)) >>> 0)
+    const moves: ConfirmMove[] = []
     try {
       for (let round = 0; ; round++) {
         // At least `CONFIRM_MIN_MS` whatever was seen (0.34.0): the uploading cell vanishes from a re-opened
         // channel until YouTube finishes, so a run that never caught it in flight still waits a few minutes.
         if (round >= CONFIRM_ROUNDS && Date.now() - confirmStarted >= (inFlightWords === null ? CONFIRM_MIN_MS : CONFIRM_BUDGET_MS)) break
-        if (round > 0) await sleep(round >= CONFIRM_ROUNDS ? 15_000 : 10_000)
-        const after = await readOwnChannel(ctx, `yt-11-channel-after-${round + 1}`, { readIfShown: round === 0 })
+        let after: string[] | null
+        if (round === 0) {
+          // The screen YouTube opens by itself after Upload, read as it is: the uploading cell is on it.
+          after = await readOwnChannel(ctx, 'yt-11-channel-after-1', { readIfShown: true })
+        } else {
+          const step = planConfirmStep(rng, moves, CONFIRM_PLAN)
+          moves.push(step.move)
+          await sleep(step.waitMs)
+          if (step.move === 'home') await visitHome(ctx, step.lingerMs)
+          ctx.log.info(`looking at the channel again (attempt ${round + 1}) — ${step.move === 'home' ? 'back from Home through Anda' : 'on the channel already open'}${step.pull ? ', pulled to refresh' : ''}`, { waitedMs: step.waitMs })
+          after = await readOwnChannel(ctx, `yt-11-channel-after-${round + 1}`, { readIfShown: step.move === 'refresh', pull: step.pull ? rng : undefined })
+        }
         last = judgeChannel(before, after, title, { seenUploading })
         if (last.kind === 'processing') inFlightWords = last.words
         if (last.kind === 'processing' && last.titled && after !== null) {

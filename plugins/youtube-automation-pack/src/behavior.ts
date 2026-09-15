@@ -169,6 +169,98 @@ export async function scrollCommentsRandomised(ctx: ScriptContext<unknown>, fram
   }
 }
 
+/** Where a pull starts and ends, as fractions of the frame height (0.35.0). */
+export interface PullBand {
+  startY: readonly [number, number]
+  endY: readonly [number, number]
+}
+
+/**
+ * The own channel's pull band (0.35.0). The pull must start INSIDE the video list, below the collapsing header and
+ * its tabs bar, and end above the bottom bar. Measured on both channel screens this pack has:
+ *
+ * - `screen-channel.json` (a channel with videos, 720x1640): tabs bar to y=789, list `results` `[0,789][720,1472]`,
+ *   bottom bar from y=1472 — the list is 0.48–0.90h.
+ * - `screen-channel-uploading.json` (right after Upload, 720x1600): tabs bar to y=530, list `[0,530][720,1420]`,
+ *   bottom bar from y=1420 — the list is 0.33–0.89h.
+ *
+ * Start 0.50–0.56h and end 0.80–0.86h sit inside the list on both, far below the status bar and the notification
+ * shade's edge, and a drag of 0.24–0.36h is several times Android's swipe-refresh trigger distance.
+ */
+export const CHANNEL_PULL_BAND: PullBand = { startY: [0.5, 0.56], endY: [0.8, 0.86] }
+
+/**
+ * One pull-to-refresh drag, fully randomised and pure so its geometry is testable. The corridor x 0.28–0.66 keeps
+ * clear of both side edges (the system back gesture), and the slow `easeInOutCubic` release is a deliberate drag
+ * that holds the list at its top — a fast flick flings instead of refreshing. A drag, never a tap.
+ */
+export function pullToRefreshPath(
+  frame: Frame,
+  rng: () => number,
+  band: PullBand = CHANNEL_PULL_BAND,
+): { from: { x: number; y: number }; to: { x: number; y: number }; ms: number; curvature: number } {
+  const x = Math.round(between(rng, 0.28, 0.66) * frame.width)
+  const fromY = Math.round(between(rng, band.startY[0], band.startY[1]) * frame.height)
+  const toY = Math.round(between(rng, band.endY[0], band.endY[1]) * frame.height)
+  return {
+    from: { x, y: fromY },
+    to: { x: Math.round(x + between(rng, -18, 18)), y: toY },
+    ms: Math.round(between(rng, 420, 720)),
+    curvature: Number(between(rng, 0, 0.05).toFixed(3)),
+  }
+}
+
+export async function pullToRefresh(ctx: ScriptContext<unknown>, frame: Frame, rng: () => number, band: PullBand = CHANNEL_PULL_BAND): Promise<void> {
+  const p = pullToRefreshPath(frame, rng, band)
+  await ctx.device.swipe(p.from, p.to, p.ms, { easing: 'easeInOutCubic', curvature: p.curvature })
+}
+
+/**
+ * What a post-confirmation round does before it reads the channel again (0.35.0). `refresh` pulls the page on
+ * screen down; `home` visits Home first and comes back. The owner asked for this on 2026-09-15: a person waiting
+ * for an upload checks back at uneven intervals, and sometimes wanders off and returns, rather than re-reading one
+ * page on a fixed period.
+ */
+export type ConfirmMove = 'refresh' | 'home'
+
+export interface ConfirmStep {
+  move: ConfirmMove
+  /** How long to wait before this round's move. */
+  waitMs: number
+  /** How long to stay on Home before coming back (0 for `refresh`). */
+  lingerMs: number
+  /** Pull to refresh once back on the page. Always true for `refresh`. */
+  pull: boolean
+}
+
+export interface ConfirmPlan {
+  /** The usual wait between rounds; now and then one runs 1.3–1.7x longer. */
+  waitMs: readonly [number, number]
+  /** The chance a round visits Home first, when the rules below leave the choice open. */
+  homeChance: number
+  /** The chance a `home` round also pulls to refresh once back on the page. */
+  pullAfterHome: number
+}
+
+/** A run of pulls this long is broken by a trip Home, so the loop is never pull-only. */
+export const MAX_REFRESHES_IN_A_ROW = 3
+
+/**
+ * Plan the next round from the moves already made. Two rules keep it from reading as either mechanical or
+ * erratic: never two Home trips in a row, and never more than `MAX_REFRESHES_IN_A_ROW` pulls in a row. Pure and
+ * seeded, so a run replays exactly.
+ */
+export function planConfirmStep(rng: () => number, recent: readonly ConfirmMove[], plan: ConfirmPlan): ConfirmStep {
+  let refreshRun = 0
+  for (let i = recent.length - 1; i >= 0 && recent[i] === 'refresh'; i--) refreshRun++
+  const last = recent[recent.length - 1]
+  const move: ConfirmMove = last === 'home' ? 'refresh' : refreshRun >= MAX_REFRESHES_IN_A_ROW ? 'home' : rng() < plan.homeChance ? 'home' : 'refresh'
+  const [lo, hi] = plan.waitMs
+  const waitMs = Math.round(between(rng, lo, hi) * (rng() < 0.15 ? between(rng, 1.3, 1.7) : 1))
+  if (move === 'refresh') return { move, waitMs, lingerMs: 0, pull: true }
+  return { move, waitMs, lingerMs: Math.round(between(rng, 1_500, 5_000)), pull: rng() < plan.pullAfterHome }
+}
+
 const youtubeNodes = (tree: UiNode): UiNode[] =>
   flatten(tree).filter((n) => isVisible(n) && (n.packageName === '' || n.packageName === YOUTUBE_PACKAGE))
 
