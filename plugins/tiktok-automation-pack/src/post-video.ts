@@ -117,6 +117,7 @@ const ABANDON_MODAL_POLICIES: Record<string, ModalPolicy> = {
   // Never "Simpan draf" on the way out (1.36.0): a resume-edit banner is noted and left unanswered — `backOutOfEditor`
   // stops at it — and the next run answers it and deletes the draft it makes (`clearDrafts`).
   'tt.resume-edit': 'ignore',
+  'tt.resume-edit-en': 'ignore',
 }
 
 /** Matches a `Selector`'s `{ id }` rule — the same short-id rule `screens.ts`'s own private `hasId` uses, duplicated here because it is not exported (this file needs it for `upload_hot_area`, which `screens.ts` has no export for). */
@@ -1932,7 +1933,7 @@ async function backOutOfEditor(ctx: ScriptContext<unknown>): Promise<boolean> {
         ctx.log.info('threw the unfinished post away with "Buang"', { presses: press })
         return false
       }
-      if (swept.cleared.includes('tt.resume-edit')) {
+      if (swept.cleared.includes('tt.resume-edit') || swept.cleared.includes('tt.resume-edit-en')) {
         ctx.log.warn('TikTok offered to resume the unfinished post while backing out — left unanswered; the next run saves it as a draft and deletes it with the rest')
         return false
       }
@@ -2408,10 +2409,21 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       ],
     })
     recordCleared(camera.cleared)
+    // The gallery button is found by its id alone. It carries no text or desc in either id-ID camera fixture
+    // (`upload_hot_area`, an unlabelled FrameLayout at the bottom left), and the English production camera
+    // (Samsung SM-A075F, 2026-09-15) has every id obfuscated and no readable gallery label among the ones it showed
+    // (1.45.2). Since 1.45.2 that camera is recognised by its labels (`screens.ts`'s `cameraLabelsShowing`), so such
+    // a build now stops HERE, by name, instead of on "unknown screen". No label is guessed for it: a dump of the
+    // English camera showing that button's own text or desc is what a label anchor needs.
     const uploadButton = findNode(requireTree(camera, 'camera'), (n) => hasShortId(n, 'upload_hot_area'))
     if (!uploadButton) {
       await capture(ctx, 'missing-upload-hot-area', camera.tree)
-      throw Object.assign(new Error(`the camera screen's "upload_hot_area" (gallery) button was not found in the dump`), { code: 'E_ANCHOR_NOT_FOUND' })
+      throw Object.assign(
+        new Error(
+          `the camera screen's gallery button was not found in the dump — it is read only by its id "upload_hot_area", which this TikTok build does not carry (its ids are obfuscated), and the button has no known label yet`,
+        ),
+        { code: 'E_ANCHOR_NOT_FOUND' },
+      )
     }
     await ctx.device.tap({ point: centreOf(uploadButton) })
     attempt.screens.push('camera')

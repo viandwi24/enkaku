@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import { UiNodeSchema, type UiNode } from '@enkaku/protocol'
-import { captionField, detectScreen, feedNavShowing, findAll, nextButtonIn, pickerCells, pickerSortLabel, postScreenShowing, type ScreenId } from './screens'
+import { cameraLabelsShowing, captionField, detectScreen, feedNavShowing, findAll, nextButtonIn, pickerCells, pickerSortLabel, postScreenShowing, type ScreenId } from './screens'
 
 /**
  * `screens.ts` — the six-screen machine (plan 113 §5 step 113.2, §6 criteria 3, 6), tested against
@@ -146,6 +146,121 @@ describe('detectScreen — the 2026-09 camera', () => {
 })
 
 /**
+ * The English camera (1.45.2). Production, 2026-09-15, pack 1.45.1, English TikTok on the Samsung SM-A075F: a run
+ * failed "expected the camera screen but the dump reads unknown" on a camera whose ids are all obfuscated. No dump of
+ * it is checked in, so this tree is SYNTHETIC: its labels are the ones that dump carried, its ids are obfuscated ones
+ * of the same kind, and its bounds are invented (720x1600, placed where the id-ID cameras draw the same controls).
+ */
+describe('detectScreen — the English camera, by its labels (1.45.2)', () => {
+  const node = (partial: Partial<UiNode>): UiNode => ({
+    resourceId: '',
+    text: '',
+    desc: '',
+    className: 'android.widget.TextView',
+    packageName: 'com.ss.android.ugc.trill',
+    bounds: { left: 0, top: 0, right: 1, bottom: 1 },
+    clickable: false,
+    enabled: true,
+    focused: false,
+    index: 0,
+    children: [],
+    ...partial,
+  })
+  /** The screen's controls sit in one 720-wide container, so the frame width is the container's, not the widest control's. */
+  const controls = (tree: UiNode): UiNode => tree.children[0] as UiNode
+  const englishCamera = (): UiNode =>
+    node({
+      className: 'android.widget.FrameLayout',
+      bounds: { left: 0, top: 0, right: 720, bottom: 1600 },
+      children: [
+        node({
+          resourceId: 'com.ss.android.ugc.trill:id/content',
+          className: 'android.widget.FrameLayout',
+          bounds: { left: 0, top: 0, right: 720, bottom: 1600 },
+          children: [
+            node({ resourceId: 'com.ss.android.ugc.trill:id/p0c', desc: 'Close', className: 'android.widget.ImageView', clickable: true, bounds: { left: 21, top: 148, right: 98, bottom: 225 } }),
+            node({ resourceId: 'com.ss.android.ugc.trill:id/l9x', desc: 'Add sound', className: 'android.widget.Button', bounds: { left: 225, top: 153, right: 494, bottom: 229 } }),
+            node({ resourceId: 'com.ss.android.ugc.trill:id/uwi', desc: 'Music', className: 'android.widget.ImageView', bounds: { left: 250, top: 175, right: 278, bottom: 203 } }),
+            node({ desc: 'Flip', className: 'android.widget.Button', clickable: true, bounds: { left: 622, top: 148, right: 720, bottom: 239 } }),
+            node({ desc: 'Flash', className: 'android.widget.Button', clickable: true, bounds: { left: 622, top: 239, right: 720, bottom: 330 } }),
+            node({ resourceId: 'com.ss.android.ugc.trill:id/b66', text: '10m', bounds: { left: 0, top: 1124, right: 19, bottom: 1182 } }),
+            node({ resourceId: 'com.ss.android.ugc.trill:id/b66', text: '60s', bounds: { left: 19, top: 1124, right: 164, bottom: 1182 } }),
+            node({ resourceId: 'com.ss.android.ugc.trill:id/b66', text: '15s', bounds: { left: 164, top: 1124, right: 304, bottom: 1182 } }),
+            node({ resourceId: 'com.ss.android.ugc.trill:id/b66', text: 'PHOTO', bounds: { left: 304, top: 1124, right: 416, bottom: 1182 } }),
+            node({ resourceId: 'com.ss.android.ugc.trill:id/b66', text: 'TEXT', bounds: { left: 416, top: 1124, right: 524, bottom: 1182 } }),
+            node({ resourceId: 'com.ss.android.ugc.trill:id/jaa', desc: 'Record video', className: 'android.widget.Button', clickable: true, bounds: { left: 263, top: 1186, right: 456, bottom: 1379 } }),
+            node({ resourceId: 'com.ss.android.ugc.trill:id/b66', text: 'POST', bounds: { left: 278, top: 1429, right: 443, bottom: 1508 } }),
+            node({ resourceId: 'com.ss.android.ugc.trill:id/b66', text: 'CREATE', bounds: { left: 443, top: 1429, right: 557, bottom: 1508 } }),
+            node({ resourceId: 'com.ss.android.ugc.trill:id/o6g', className: 'android.widget.FrameLayout', clickable: true, bounds: { left: 0, top: 1407, right: 140, bottom: 1512 } }),
+          ],
+        }),
+      ],
+    })
+
+  test('reads camera, with neither video_record_new_scene_root nor upload_hot_area on the tree', () => {
+    const tree = englishCamera()
+    // Not vacuous: the ids the id rule keys on really are absent.
+    expect(findAll(tree, (n) => /video_record_new_scene_root|upload_hot_area/.test(n.resourceId))).toEqual([])
+    expect(cameraLabelsShowing(tree)).toBe(true)
+    expect(detectScreen(tree)).toBe('camera')
+  })
+
+  test('"Record video" as text instead of desc reads camera too', () => {
+    const tree = englishCamera()
+    const record = findAll(tree, (n) => n.desc === 'Record video')[0] as UiNode
+    record.desc = ''
+    record.text = 'Record video'
+    expect(detectScreen(tree)).toBe('camera')
+  })
+
+  test('without the record button, or with fewer than two capture modes, it is not the camera', () => {
+    const noRecord = englishCamera()
+    controls(noRecord).children = controls(noRecord).children.filter((c) => c.desc !== 'Record video')
+    expect(detectScreen(noRecord)).toBe('unknown')
+
+    const oneMode = englishCamera()
+    controls(oneMode).children = controls(oneMode).children.filter((c) => !['PHOTO', 'TEXT', 'CREATE'].includes(c.text))
+    expect(detectScreen(oneMode)).toBe('unknown')
+  })
+
+  test('a record button drawn off the frame does not count', () => {
+    const tree = englishCamera()
+    const record = findAll(tree, (n) => n.desc === 'Record video')[0] as UiNode
+    record.bounds = { left: 983, top: 1186, right: 1176, bottom: 1379 }
+    expect(cameraLabelsShowing(tree)).toBe(false)
+    expect(detectScreen(tree)).toBe('unknown')
+  })
+
+  test('with a Next button in the tree — the picker, preview or editor over a still-mounted camera — it is not the camera', () => {
+    for (const label of ['Next', 'Berikutnya']) {
+      const tree = englishCamera()
+      controls(tree).children.push(node({ text: label, className: 'android.widget.Button', clickable: true, bounds: { left: 480, top: 1420, right: 700, bottom: 1500 } }))
+      expect({ label, camera: cameraLabelsShowing(tree) }).toEqual({ label, camera: false })
+    }
+  })
+
+  test('the camera wins over a feed nav still mounted underneath it; lower-case "Post"/"Create" are not capture modes', () => {
+    const withNav = englishCamera()
+    for (const [i, label] of ['Home', 'Create', 'Profile'].entries()) {
+      controls(withNav).children.push(node({ desc: label, className: 'android.widget.FrameLayout', clickable: true, bounds: { left: i * 240, top: 1520, right: i * 240 + 240, bottom: 1600 } }))
+    }
+    expect(feedNavShowing(withNav)).toBe(true)
+    expect(detectScreen(withNav)).toBe('camera')
+
+    const lower = englishCamera()
+    for (const c of controls(lower).children) if (['PHOTO', 'TEXT', 'POST', 'CREATE'].includes(c.text)) c.text = c.text.charAt(0) + c.text.slice(1).toLowerCase()
+    expect(cameraLabelsShowing(lower)).toBe(false)
+  })
+
+  test('the id-ID camera fixtures carry no "Record video", so they are still read by their ids alone', () => {
+    for (const name of ['screen-camera-wall.json', 'screen-camera-2026-09.json']) {
+      const tree = loadFixture(name)
+      expect({ name, labels: cameraLabelsShowing(tree), screen: detectScreen(tree) }).toEqual({ name, labels: false, screen: 'camera' })
+    }
+  })
+})
+
+/**
  * The Samsung fleet (production debug bundles, SM-A075F, TikTok id-ID, 2026-09-14; 1.35.0).
  *
  * "Any EditText means the post screen" read the For You feed as `'post'` — the feed carries two
@@ -178,6 +293,21 @@ describe('detectScreen — the Samsung fleet (1.35.0)', () => {
   test('the moto is read as before: its post screen is post, and its feed under the resume-edit banner is feed', () => {
     expect(detectScreen(loadFixture('screen-post.json'))).toBe('post')
     expect(detectScreen(loadFixture('screen-feed-resume-edit-banner.json'))).toBe('feed')
+  })
+
+  test('the id-free English camera rule reads none of the checked-in non-camera screens as camera', () => {
+    const others = [
+      'screen-editor.json',
+      'screen-exit-modal.json',
+      'screen-picker.json',
+      'screen-preview.json',
+      'screen-post.json',
+      'screen-post-samsung.json',
+      'screen-feed-samsung-player-edittext.json',
+      'screen-feed-samsung-phone-sheet.json',
+      'screen-feed-resume-edit-banner.json',
+    ]
+    for (const name of others) expect({ name, camera: cameraLabelsShowing(loadFixture(name)) }).toEqual({ name, camera: false })
   })
 
   test('a caption field with no "Posting" on screen is not the post screen', () => {

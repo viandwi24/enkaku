@@ -864,6 +864,18 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.45.2 — the English camera is recognised, and the English resume-edit banner has its own answer. Production,
+  //   2026-09-15, pack 1.45.1, English TikTok builds on Samsung SM-A075F. A post-video run failed "expected the camera
+  //   screen but the dump reads unknown after 5 settle rounds (no modal matched)" (artifact
+  //   post-video-unexpected-screen-unknown): that camera carries neither `video_record_new_scene_root` nor
+  //   `upload_hot_area`, every id on it obfuscated. `detectScreen` now also reads a camera from its labels — "Record
+  //   video" drawn on screen, two capture modes ("POST", "CREATE", "PHOTO", "TEXT"), and no Next button — after the
+  //   post screen. The gallery button is still found only by `upload_hot_area`, which that build lacks and for which no
+  //   label was read, so such a run now stops on the camera by name ("gallery button was not found") until a dump of
+  //   the English camera shows the button's label. Another run failed `"tt.resume-edit" matched with policy "ack" but
+  //   no on-screen node satisfied its "ack" action`: the English banner text matched, and its only answer was "Simpan
+  //   draf". The banner is now two entries — `tt.resume-edit` (id-ID, "Simpan draf") and `tt.resume-edit-en` ("Save
+  //   draft", UNVERIFIED) — with the same policies and the same exact-label-only rule.
   // 1.45.1 — the English wording of two dialogs, measured. Production session g-1789475048-2bac (2026-09-15, 1.45.0):
   //   5 of 6 TikTok failures were "the own profile could not be opened", all on English builds, under a sheet reading
   //   "Viewer history turned on" (#41 #44 #50) or a dialog reading "Save login for next time" with "Save login" and
@@ -1142,7 +1154,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.45.1',
+  version: '1.45.2',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

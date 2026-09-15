@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import { UiNodeSchema, type UiNode } from '@enkaku/protocol'
 import type { ArtifactApi, DeviceApi, FarmApi, JobsApi, KvApi, PluginStorage, ScriptContext, ScriptLogger } from '@enkaku/sdk'
-import { RESUME_EDIT_DRAFT_ANSWER, TIKTOK_MODALS, UPLOAD_MODAL_POLICIES, assertNeverList, keepsDraft, matchModals, sweepModals, type ModalEntry } from './modals'
+import { RESUME_EDIT_DRAFT_ANSWER, RESUME_EDIT_DRAFT_ANSWER_EN, TIKTOK_MODALS, UPLOAD_MODAL_POLICIES, assertNeverList, keepsDraft, matchModals, sweepModals, type ModalEntry } from './modals'
 
 /**
  * `modals.ts` — the register, the never-list guard, and `sweepModals` (plan 113 §5 step 113.1,
@@ -137,6 +137,25 @@ describe('TIKTOK_MODALS — matched against the real device dumps they were writ
     expect(RESUME_EDIT_DRAFT_ANSWER).toEqual({ entryId: 'tt.resume-edit', policy: 'ack', label: 'Simpan draf' })
   })
 
+  /*
+    1.45.2: production, 2026-09-15, English TikTok on Samsung SM-A075F — the English banner text matched the shared
+    entry, whose only answer "Simpan draf" is not on an English banner: `"tt.resume-edit" matched with policy "ack" but
+    no on-screen node satisfied its "ack" action`. The English banner is its own entry now; its "Save draft" is unverified.
+  */
+  test('the English banner is tt.resume-edit-en, answered "Save draft" with no fallback, under the same policies (1.45.2)', () => {
+    const id = TIKTOK_MODALS.find((e) => e.id === 'tt.resume-edit')
+    const en = TIKTOK_MODALS.find((e) => e.id === 'tt.resume-edit-en')
+    expect(id?.match.textIncludes).toEqual(['Lanjut mengedit postingan ini'])
+    expect(en?.match).toEqual({ textIncludes: ['Continue editing this post'], onScreen: true })
+    expect(en?.actions).toEqual({ ack: { text: 'Save draft' } })
+    expect(en?.exactActionOnly).toBe(true)
+    expect(en?.abortCode).toBeUndefined()
+    expect(UPLOAD_MODAL_POLICIES['tt.resume-edit-en']).toBe('ack')
+    expect(RESUME_EDIT_DRAFT_ANSWER_EN).toEqual({ entryId: 'tt.resume-edit-en', policy: 'ack', label: 'Save draft' })
+    // tt.discard-draft still stands aside for both banners.
+    expect(TIKTOK_MODALS.find((e) => e.id === 'tt.discard-draft')?.match.notWith).toEqual(['Lanjut mengedit postingan ini', 'Continue editing this post'])
+  })
+
   test('tt.discard-draft offers only "Buang" (1.35.0)', () => {
     expect(TIKTOK_MODALS.find((e) => e.id === 'tt.discard-draft')?.actions).toEqual({ deny: { text: 'Buang' } })
   })
@@ -234,10 +253,16 @@ describe('assertNeverList — the safety guard, promoted from a comment to somet
     expect(keepsDraft({ text: '', desc: 'Simpan draf' })).toBe(true)
   })
 
-  test('allows exactly one draft-keeping answer — tt.resume-edit → ack → "Simpan draf", the owner\'s decision (1.36.0) — and nothing beside it', () => {
+  test('allows exactly one draft-keeping answer per resume-edit banner — tt.resume-edit → ack → "Simpan draf" (1.36.0), tt.resume-edit-en → ack → "Save draft" (1.45.2) — and nothing beside them', () => {
     const seen = (TIKTOK_MODALS[0] as ModalEntry).seen
     const banner = { id: 'tt.resume-edit', match: { textIncludes: ['Lanjut mengedit postingan ini'] }, seen }
     expect(() => assertNeverList([{ ...banner, actions: { ack: { text: 'Simpan draf' } } }])).not.toThrow()
+    const en = { id: 'tt.resume-edit-en', match: { textIncludes: ['Continue editing this post'] }, seen }
+    expect(() => assertNeverList([{ ...en, actions: { ack: { text: 'Save draft' } } }])).not.toThrow()
+    // Neither banner may borrow the other's label, or the carve-out under another policy or selector.
+    for (const actions of [{ ack: { text: 'Simpan draf' } }, { deny: { text: 'Save draft' } }, { ack: { desc: 'Save draft' } }, { ack: { text: 'Save drafts' } }] as ModalEntry['actions'][]) {
+      expect(() => assertNeverList([{ ...en, actions }])).toThrow()
+    }
     const near: ModalEntry['actions'][] = [
       { deny: { text: 'Simpan draf' } },
       { allow: { text: 'Simpan draf' } },
@@ -384,6 +409,46 @@ describe('sweepModals — the looping sweep over a fake ctx (plan 113 §4.2)', (
     // The abandon walk's answer: noted, never tapped.
     const abandon = fakeCtx([banner])
     expect((await sweepModals(abandon.ctx, { 'tt.resume-edit': 'ignore' })).cleared).toEqual(['tt.resume-edit'])
+    expect(abandon.taps).toEqual([])
+  })
+
+  // Synthetic (1.45.2): the id-ID fixture with the English banner text. Only the banner text was read in production
+  // (2026-09-15); "Save draft" is the unverified label, placed where "Simpan draf" sits.
+  test('the English banner is answered "Save draft" (1.45.2); with that label gone nothing is tapped and the error names tt.resume-edit-en', async () => {
+    const english = structuredClone(loadFixture('screen-feed-resume-edit-banner.json'))
+    const translate = (n: UiNode): void => {
+      if (n.text === 'Lanjut mengedit postingan ini?') n.text = 'Continue editing this post?'
+      if (n.text === 'Simpan draf') n.text = 'Save draft'
+      for (const c of n.children) translate(c)
+    }
+    translate(english)
+    expect(matchModals(english).map((e) => e.id)).toEqual(['tt.resume-edit-en'])
+
+    const done = fakeCtx([english, loadFixture('screen-editor.json')])
+    expect((await sweepModals(done.ctx, UPLOAD_MODAL_POLICIES)).cleared).toEqual(['tt.resume-edit-en'])
+    // "Save draft" carries "Simpan draf"'s bounds, [140,163][405,219].
+    expect(done.taps).toEqual([{ point: { x: 273, y: 191 } }])
+
+    // The production failure's shape: the English banner with no "Save draft" on it.
+    const noSave = structuredClone(english)
+    const strip = (n: UiNode): void => {
+      n.children = n.children.filter((c) => c.text !== 'Save draft')
+      for (const c of n.children) strip(c)
+    }
+    strip(noSave)
+    const refused = fakeCtx([noSave])
+    let caught: unknown
+    try {
+      await sweepModals(refused.ctx, UPLOAD_MODAL_POLICIES)
+    } catch (err) {
+      caught = err
+    }
+    expect((caught as { code?: string } | undefined)?.code).toBe('E_MODAL_UNHANDLED')
+    expect(String((caught as Error | undefined)?.message)).toContain('"tt.resume-edit-en"')
+    expect(refused.taps).toEqual([])
+
+    const abandon = fakeCtx([english])
+    expect((await sweepModals(abandon.ctx, { 'tt.resume-edit-en': 'ignore' })).cleared).toEqual(['tt.resume-edit-en'])
     expect(abandon.taps).toEqual([])
   })
 

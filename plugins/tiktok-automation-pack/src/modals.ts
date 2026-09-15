@@ -262,10 +262,27 @@ export const TIKTOK_MODALS: ModalEntry[] = [
     // deletes it. That is the ONE draft-keeping answer `assertNeverList` and `resolveActionTarget` allow, carved
     // out by this id, this policy and this exact label (`RESUME_EDIT_DRAFT_ANSWER`). `exactActionOnly`: if the
     // label is not on screen (another locale), nothing else on the banner is tapped for it — "Edit" least of all.
-    match: { textIncludes: ['Lanjut mengedit postingan ini', 'Continue editing this post'], onScreen: true },
+    //
+    // 1.45.2: Indonesian only. The English banner is `tt.resume-edit-en`, because one entry has one "ack" selector
+    // and the English banner has no "Simpan draf" to take it.
+    match: { textIncludes: ['Lanjut mengedit postingan ini'], onScreen: true },
     actions: { ack: { text: 'Simpan draf' } },
     exactActionOnly: true,
     seen: { device: 'moto g06 power (ZP2222RMBS)', app: 'com.ss.android.ugc.trill', locale: 'id-ID', at: '2026-09-14' },
+  },
+  {
+    id: 'tt.resume-edit-en',
+    // The same banner on English TikTok builds (1.45.2). Production, 2026-09-15, pack 1.45.1, Samsung SM-A075F: a run
+    // failed `"tt.resume-edit" matched with policy "ack" but no on-screen node satisfied its "ack" action` — the
+    // English text matched the shared entry, whose only answer was "Simpan draf", which an English banner does not
+    // show. So the English text is MEASURED (it matched); the answer's label "Save draft" is UNVERIFIED — no dump of
+    // this banner in English exists. It is TikTok's likeliest wording (Instagram's English share screen reads "Save
+    // draft"). `exactActionOnly` as for the Indonesian entry: if "Save draft" is not the label, the run stops
+    // `E_MODAL_UNHANDLED` naming this entry, and "Edit" is never tapped in its place.
+    match: { textIncludes: ['Continue editing this post'], onScreen: true },
+    actions: { ack: { text: 'Save draft' } },
+    exactActionOnly: true,
+    seen: { device: 'Samsung SM-A075F (production; banner text only, answer unverified)', app: 'com.ss.android.ugc.trill', locale: 'en', at: '2026-09-15' },
   },
   {
     id: 'tt.discard-draft',
@@ -341,6 +358,8 @@ export const UPLOAD_MODAL_POLICIES: Record<string, ModalPolicy> = {
   'tt.discard-draft': 'abort',
   // "Simpan draf" (1.36.0): the leftover edit becomes a draft, which `post-video.ts`'s `clearDrafts` deletes.
   'tt.resume-edit': 'ack',
+  // "Save draft" (1.45.2, label unverified): the English banner, answered the same way.
+  'tt.resume-edit-en': 'ack',
   'tt.notice': 'ack',
   // Both observed on the 2026-08-18 posting run, both AFTER the Post tap — which is exactly why the
   // 2026-08-17 walk never met them, and why an unattended run that only knew the pre-post modals
@@ -447,7 +466,8 @@ function resolveActionTarget(nodes: UiNode[], entry: ModalEntry, policy: 'allow'
     }
   }
   // Every lookup below reads only nodes that do not keep a draft (1.35.0) — see `keepsDraft`. The one exception
-  // is `tt.resume-edit`'s declared "Simpan draf" (1.36.0, `RESUME_EDIT_DRAFT_ANSWER`), for its direct lookup only,
+  // is a resume-edit banner's declared answer — `tt.resume-edit`'s "Simpan draf" (1.36.0, `RESUME_EDIT_DRAFT_ANSWER`)
+  // or `tt.resume-edit-en`'s "Save draft" (1.45.2, `RESUME_EDIT_DRAFT_ANSWER_EN`) — for its direct lookup only,
   // and only a node drawn on screen that is not a text field.
   const candidates = nodes.filter((n) => !keepsDraft(n))
   const sel = entry.actions[policy]
@@ -494,7 +514,8 @@ const DRAFT_TERMS = ['draf']
  * True when tapping `node` would keep a draft (1.35.0). The owner does not want a failed run's back-out to
  * leave drafts on an account, so nothing the register resolves — a declared action, the locale fallback or
  * the identity fallback — is ever such a node, and `assertNeverList` refuses one as a declared answer. The
- * single exception is `RESUME_EDIT_DRAFT_ANSWER` (1.36.0).
+ * single exception is the resume-edit banner's answer, `RESUME_EDIT_DRAFT_ANSWER` (1.36.0) and its English twin
+ * `RESUME_EDIT_DRAFT_ANSWER_EN` (1.45.2).
  */
 export function keepsDraft(node: Pick<UiNode, 'text' | 'desc'>): boolean {
   const label = `${node.text} ${node.desc}`.toLowerCase()
@@ -507,12 +528,22 @@ export function keepsDraft(node: Pick<UiNode, 'text' | 'desc'>): boolean {
  * posting (`post-video.ts`'s `clearDrafts`), so keeping the leftover edit as a draft is safe — and it is the
  * only answer that works, because the "Edit" → BACK → "Buang" walk 1.35.0 relied on was measured to raise no
  * "Buang" dialog at all. Carved out by id AND policy AND label, so no other entry, policy or spelling can
- * reuse it; the abandon walk (`ABANDON_MODAL_POLICIES`) never asks for it.
+ * reuse it; the abandon walk (`ABANDON_MODAL_POLICIES`) never asks for it. The English banner has its own triple,
+ * `RESUME_EDIT_DRAFT_ANSWER_EN` (1.45.2), below.
  */
 export const RESUME_EDIT_DRAFT_ANSWER = { entryId: 'tt.resume-edit', policy: 'ack', label: 'Simpan draf' } as const
 
+/**
+ * The same answer on the English banner (1.45.2): `tt.resume-edit-en`, policy `ack`, label exactly "Save draft" — the
+ * label UNVERIFIED (see the entry). Carved out as its own id-policy-label triple, so neither banner's label can be
+ * borrowed by the other entry, and nothing else gains a draft-keeping answer.
+ */
+export const RESUME_EDIT_DRAFT_ANSWER_EN = { entryId: 'tt.resume-edit-en', policy: 'ack', label: 'Save draft' } as const
+
+const RESUME_EDIT_DRAFT_ANSWERS = [RESUME_EDIT_DRAFT_ANSWER, RESUME_EDIT_DRAFT_ANSWER_EN]
+
 function isResumeEditDraftAnswer(entryId: string, policy: 'allow' | 'deny' | 'ack', sel: Selector): boolean {
-  return entryId === RESUME_EDIT_DRAFT_ANSWER.entryId && policy === RESUME_EDIT_DRAFT_ANSWER.policy && 'text' in sel && sel.text === RESUME_EDIT_DRAFT_ANSWER.label
+  return RESUME_EDIT_DRAFT_ANSWERS.some((a) => entryId === a.entryId && policy === a.policy && 'text' in sel && sel.text === a.label)
 }
 
 /**
@@ -555,7 +586,7 @@ export function assertNeverList(register: ModalEntry[]): void {
       if (label === null) continue
       if (entry.id === 'sys.media' && policy === 'allow' && label === 'Izinkan semua') continue
       const lower = label.toLowerCase()
-      // A draft-keeping label is refused for every policy (1.35.0): see `keepsDraft`. Waived for exactly one answer,
+      // A draft-keeping label is refused for every policy (1.35.0): see `keepsDraft`. Waived for exactly one answer per resume-edit banner (the English one since 1.45.2, `RESUME_EDIT_DRAFT_ANSWER_EN`),
       // the owner's decision (1.36.0): `tt.resume-edit` → `ack` → "Simpan draf" (`RESUME_EDIT_DRAFT_ANSWER`), because
       // the run deletes every draft before posting. Only the draft term is waived; every other term still applies.
       const draftTerms = isResumeEditDraftAnswer(entry.id, policy, sel) ? [] : DRAFT_TERMS

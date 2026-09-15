@@ -147,6 +147,15 @@ export function detectScreen(root: UiNode): ScreenId {
   // matched by its label, never by those ids.
   if (postScreenShowing(root)) return 'post'
 
+  // The English camera, read from its labels (1.45.2). Production, 2026-09-15, pack 1.45.1, English TikTok on the
+  // Samsung SM-A075F fleet: a post-video run failed "expected the camera screen but the dump reads unknown after 5
+  // settle rounds (no modal matched)" (artifact post-video-unexpected-screen-unknown). That dump carries neither
+  // `video_record_new_scene_root` nor `upload_hot_area` — every trill id on it is obfuscated (`u_`, `p0c`, `l9x`,
+  // `uwi`, …) — and its readable labels are "Record video" (clickable), "Add sound", "Music", "Close", "Flip",
+  // "Flash", the durations "10m"/"60s"/"15s" and the capture modes "PHOTO", "TEXT", "POST", "CREATE". See
+  // `cameraLabelsShowing` for why this rule runs HERE, after the post screen, and what keeps it off every other screen.
+  if (cameraLabelsShowing(root)) return 'camera'
+
   // The feed's own bottom nav, all three tabs drawn on screen (1.35.0). The inspector usually cannot
   // read an autoplaying feed (E3), but the Samsung fleet's dumps of it are complete, and a feed that
   // reads `'unknown'` cannot be told apart from a screen that has not arrived. The own profile carries
@@ -184,6 +193,45 @@ export function postScreenShowing(root: UiNode): boolean {
   const field = findNode(root, (n) => n.className === 'android.widget.EditText' && !player.has(n) && onFrame(n, width))
   if (!field) return false
   return findNode(root, (n) => !/EditText|AutoCompleteTextView/.test(n.className) && matchesLabel(n.text, POST_BUTTON_LABELS) && onFrame(n, width)) !== null
+}
+
+/**
+ * The camera's record button, by text or desc. "Record video" was read off the English production dump (2026-09-15).
+ * The id-ID camera fixtures carry no readable label on it (`desc: '@2131823324'`, an unresolved resource), so there is
+ * no Indonesian spelling here — the id rule above already recognises those cameras.
+ */
+const CAMERA_RECORD_LABELS = ['Record video']
+
+/**
+ * The camera's capture-mode strip, matched in its own upper case. The English four were read off the production dump
+ * (2026-09-15); "POSTING"/"BUAT"/"FOTO"/"TEKS" are the same strip in `screen-camera-wall.json` and
+ * `screen-camera-2026-09.json`. Case matters here, unlike the other label lists in this file: the post screen's button
+ * reads "Post" and the feed's nav tab "Create", and neither is written in capitals.
+ */
+const CAMERA_MODE_LABELS = ['POST', 'CREATE', 'PHOTO', 'TEXT', 'POSTING', 'BUAT', 'FOTO', 'TEKS']
+
+/**
+ * The camera, from what it shows rather than its ids (1.45.2): a record button drawn on the frame, at least two
+ * capture-mode labels, and no Next button anywhere in the tree. Exported for the tests.
+ *
+ * What keeps it off every other screen:
+ * - the feed carries no "Record video" (the feed fixtures carry none of these labels);
+ * - the picker, the preview and the editor each carry a Next button (`NEXT_BUTTON_LABELS`, confirmed in
+ *   screen-picker/preview/editor.json), which the camera does not — and that holds even on a build whose
+ *   `viewpager_choose_media`/`tv_quick_publish` ids are obfuscated too, where the camera subtree may stay mounted
+ *   underneath them exactly as it does on the moto (E9);
+ * - the post screen is decided by `postScreenShowing` before this runs, so a camera kept mounted under it cannot win.
+ */
+export function cameraLabelsShowing(root: UiNode): boolean {
+  const width = frameWidthOf(root)
+  const record = findNode(root, (n) => (matchesLabel(n.text, CAMERA_RECORD_LABELS) || matchesLabel(n.desc, CAMERA_RECORD_LABELS)) && onFrame(n, width))
+  if (!record) return false
+  const modes = new Set<string>()
+  walk(root, (n) => {
+    for (const t of [n.text.trim(), n.desc.trim()]) if (CAMERA_MODE_LABELS.includes(t)) modes.add(t)
+  })
+  if (modes.size < 2) return false
+  return findNode(root, isNextButton) === null
 }
 
 /** The bottom nav's three tabs, by desc (or text), in id-ID and en. */
