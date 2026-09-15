@@ -635,4 +635,62 @@ describe('clearing drafts — the profile entry, the Drafts folder, select mode,
     expect(confirmDeleteButton(screen([hapusBar, dialog('Hapus semua')]), FRAME_DRAFTS, exclude)).toBeNull()
     expect(confirmDeleteButton(screen([hapusBar, dialog('Hapus', false)]), FRAME_DRAFTS, exclude)).toBeNull()
   })
+
+  /*
+    MEASURED (1.42.0): the confirmation TikTok raised on the owner's Samsung SM-A075F (720x1600, id-ID), production
+    run #17 on 2026-09-15, transcribed from its `drafts-no-confirmation` dump — the ids, texts, desc, clickable and
+    bounds that dump gave. The dump's intermediate containers (depths 9–11 and the buttons' parent) are collapsed
+    into one placeholder with the dialog's bounds, and the folder's own "Hapus" bar is placed lower on the screen.
+  */
+  const FRAME_SAMSUNG = { width: 720, height: 1600 }
+  const measuredTitle = node({ resourceId: rid('yxo'), text: 'Hapus 1 draf?', className: 'android.widget.TextView', bounds: box(238, 656, 480, 703) })
+  const measuredBody = node({
+    resourceId: rid('f43'),
+    text: 'Ini akan menghapus draf yang dipilih secara permanen dan menghemat 105,0 MB.',
+    className: 'android.widget.TextView',
+    bounds: box(135, 726, 576, 834),
+  })
+  const measuredHapus = node({ text: 'Hapus', clickable: true, className: 'android.widget.Button', bounds: box(360, 873, 622, 962) })
+  const measuredKeep = node({ text: 'Pertahankan', clickable: true, className: 'android.widget.Button', bounds: box(97, 873, 359, 962) })
+  const samsungBar = node({ resourceId: rid('cu1'), text: 'Hapus', clickable: true, bounds: box(28, 1425, 692, 1516) })
+  const samsungAsked = (buttons: UiNode[]): UiNode =>
+    node({
+      bounds: box(0, 0, 720, 1600),
+      children: [
+        samsungBar,
+        node({
+          className: 'android.widget.FrameLayout',
+          clickable: true,
+          bounds: box(0, 0, 720, 1600),
+          children: [
+            node({
+              resourceId: rid('visual_area'),
+              className: 'android.widget.FrameLayout',
+              desc: 'Dialog',
+              clickable: true,
+              bounds: box(97, 611, 622, 962),
+              children: [measuredTitle, node({ bounds: box(97, 611, 622, 962), children: [measuredBody, ...buttons] })],
+            }),
+          ],
+        }),
+      ],
+    })
+
+  test('the measured "Hapus 1 draf?" dialog (#17): its "Hapus" is the confirmation, beside "Pertahankan"', () => {
+    const hit = confirmDeleteButton(samsungAsked([measuredHapus, measuredKeep]), FRAME_SAMSUNG, [samsungBar.bounds])
+    expect(hit?.bounds).toEqual(box(360, 873, 622, 962))
+    expect(hit?.text).toBe('Hapus')
+    // Without the exclusion the folder's own bar is still kept out, by its `cu1` id.
+    expect(confirmDeleteButton(samsungAsked([measuredHapus, measuredKeep]), FRAME_SAMSUNG)?.bounds).toEqual(box(360, 873, 622, 962))
+  })
+
+  test('"Pertahankan" is never the confirmation: not alone, not beside an inexact "Hapus", and a lone "Hapus" is no dialog', () => {
+    const exclude = [samsungBar.bounds]
+    expect(confirmDeleteButton(samsungAsked([measuredKeep]), FRAME_SAMSUNG, exclude)).toBeNull()
+    expect(confirmDeleteButton(samsungAsked([{ ...measuredHapus, text: 'Hapus semua' }, measuredKeep]), FRAME_SAMSUNG, exclude)).toBeNull()
+    expect(confirmDeleteButton(samsungAsked([measuredHapus]), FRAME_SAMSUNG, exclude)).toBeNull()
+    for (const buttons of [[measuredHapus, measuredKeep], [measuredKeep, measuredHapus]]) {
+      expect(confirmDeleteButton(samsungAsked(buttons), FRAME_SAMSUNG, exclude)?.text).not.toBe('Pertahankan')
+    }
+  })
 })

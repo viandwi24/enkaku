@@ -25,6 +25,52 @@ export function between(rng: () => number, lo: number, hi: number): number {
 }
 
 /**
+ * What a post-confirmation round does before it reads the profile again (1.42.0). `refresh` pulls the profile on
+ * screen down; `home` goes Home first and comes back to Profil. The owner asked for this on 2026-09-15: a person
+ * waiting for an upload checks back at uneven intervals, and sometimes wanders off and returns, rather than
+ * re-reading one page on a fixed period.
+ */
+export type ConfirmMove = 'refresh' | 'home'
+
+export interface ConfirmStep {
+  move: ConfirmMove
+  /** How long to wait before this round's move. */
+  waitMs: number
+  /** How long to stay on Home before coming back (0 for `refresh`). */
+  lingerMs: number
+  /** Pull to refresh once on the profile. Always true for `refresh`. */
+  pull: boolean
+}
+
+export interface ConfirmPlan {
+  /** The usual wait between rounds; now and then one runs 1.3–1.7x longer. */
+  waitMs: readonly [number, number]
+  /** The chance a round visits Home first, when the rules below leave the choice open. */
+  homeChance: number
+  /** The chance a `home` round also pulls to refresh once back on the profile. */
+  pullAfterHome: number
+}
+
+/** A run of pulls this long is broken by a trip Home, so the loop is never pull-only. */
+export const MAX_REFRESHES_IN_A_ROW = 3
+
+/**
+ * Plan the next round from the moves already made. Two rules keep it from reading as either mechanical or
+ * erratic: never two Home trips in a row, and never more than `MAX_REFRESHES_IN_A_ROW` pulls in a row. Pure and
+ * seeded, so a run replays exactly.
+ */
+export function planConfirmStep(rng: () => number, recent: readonly ConfirmMove[], plan: ConfirmPlan): ConfirmStep {
+  let refreshRun = 0
+  for (let i = recent.length - 1; i >= 0 && recent[i] === 'refresh'; i--) refreshRun++
+  const last = recent[recent.length - 1]
+  const move: ConfirmMove = last === 'home' ? 'refresh' : refreshRun >= MAX_REFRESHES_IN_A_ROW ? 'home' : rng() < plan.homeChance ? 'home' : 'refresh'
+  const [lo, hi] = plan.waitMs
+  const waitMs = Math.round(between(rng, lo, hi) * (rng() < 0.15 ? between(rng, 1.3, 1.7) : 1))
+  if (move === 'refresh') return { move, waitMs, lingerMs: 0, pull: true }
+  return { move, waitMs, lingerMs: Math.round(between(rng, 1_500, 5_000)), pull: rng() < plan.pullAfterHome }
+}
+
+/**
  * How long a person leaves one video on screen.
  *
  * A single uniform range is the tell: real watch times are heavy-tailed and lumpy. Most clips get a

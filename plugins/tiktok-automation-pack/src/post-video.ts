@@ -1,8 +1,8 @@
 import { ui, type PluginMemberScript, type ScriptContext } from '@enkaku/sdk'
 import type { Bounds, Selector, UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
-import { sleep } from './human'
-import { relaunch } from './gesture'
+import { between, makeRng, planConfirmStep, sleep, type ConfirmMove, type ConfirmPlan, type ConfirmStep } from './human'
+import { pullToRefresh, relaunch } from './gesture'
 import { all, flatten } from './tree'
 import { centreOf, detectScreen, findNode, captionField, nextButtonIn, pickerCells, pickerSortLabel, POST_BUTTON_LABELS, type ScreenId } from './screens'
 import { isEditableNode, matchModals, sweepModals, UPLOAD_MODAL_POLICIES, type ModalPolicy } from './modals'
@@ -920,25 +920,40 @@ async function waitForOnScreen(ctx: ScriptContext<unknown>, frameWidth: number, 
  * labelled cell or a clear "no videos" state, and reports `null` when neither
  * arrives. `reopen` goes Home first, so a confirmation round reads a freshly
  * drawn profile rather than the page the previous round left open.
+ *
+ * 1.42.0: `lingerMs` is how long a `reopen` stays on Home; `stay` reads the
+ * profile already on screen instead of tapping Profil again; `pull` pulls the
+ * profile down to refresh it before the grid is read — a drag inside the grid,
+ * after the modal sweep, never a tap.
  */
-async function readOwnGrid(ctx: ScriptContext<unknown>, frameWidth: number, opts: { reopen?: boolean } = {}): Promise<string[] | null> {
+async function readOwnGrid(
+  ctx: ScriptContext<unknown>,
+  frame: { width: number; height: number },
+  opts: { reopen?: boolean; lingerMs?: number; stay?: boolean; pull?: () => number } = {},
+): Promise<string[] | null> {
+  const frameWidth = frame.width
   try {
     if (opts.reopen) {
       const home = await waitForOnScreen(ctx, frameWidth, HOME_TAB_DESCS, 6_000)
       if (home) {
         await ctx.device.tap({ point: centreOf(home) })
-        await sleep(1_500)
+        await sleep(opts.lingerMs ?? 1_500)
       } else {
         ctx.log.warn('could not find the Home tab to re-open the profile — reading the profile from wherever TikTok is')
       }
     }
-    const menuNode = await openOwnProfile(ctx, frameWidth)
+    const here = opts.stay ? await waitForOnScreen(ctx, frameWidth, [descOf(MENU_PROFIL), 'Profile menu'], 2_000) : null
+    const menuNode = here ?? (await openOwnProfile(ctx, frameWidth))
     if (!menuNode) throw new Error('the own profile could not be opened (no on-screen Profil tab, or no "Menu profil" after tapping it)')
     // Swept AFTER arriving: `tt.contacts` is raised BY the profile screen (observed 2026-08-18).
     try {
       await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
     } catch {
       // Reported by the caller's own check if it matters; a reading is still worth attempting.
+    }
+    if (opts.pull) {
+      await pullToRefresh(ctx, frame, opts.pull)
+      await sleep(between(opts.pull, 2_000, 3_500))
     }
 
     const deadline = Date.now() + GRID_LOAD_MS
@@ -1125,16 +1140,24 @@ export function draftsFolderShowing(tree: UiNode, frame: { width: number; height
 }
 
 /**
- * The confirmation's own delete button after "Hapus" was tapped, or null. UNMEASURED, so only the one shape a
- * confirmation can safely be recognised by counts: a clickable button whose label is EXACTLY "Hapus"/"Delete",
- * that is not the select mode's own delete bar (`cu1`, or any bounds in `exclude`), sharing a container smaller
- * than the screen with a refusal ("Batalkan"/"Batal"/"Cancel", again none in `exclude`). The refusal is never
- * returned.
+ * What refuses the drafts confirmation (1.42.0). The dialog measured on the owner's Samsung SM-A075F (720x1600,
+ * TikTok id-ID, production run #17, 2026-09-15) asks "Hapus 1 draf?" with "Hapus" beside "Pertahankan" — keep, not
+ * a cancel. Only the cancel words counted before, so that dialog, on screen, read as no confirmation at all and the
+ * drafts stayed. The refusal is only ever the evidence that this is a dialog; it is never tapped.
+ */
+const DRAFTS_CONFIRM_REFUSAL_LABELS = [...DIALOG_CANCEL_LABELS, 'Pertahankan', 'Keep']
+
+/**
+ * The confirmation's own delete button after "Hapus" was tapped, or null. Only the one shape a confirmation can
+ * safely be recognised by counts: a clickable button whose label is EXACTLY "Hapus"/"Delete", that is not the
+ * select mode's own delete bar (`cu1`, or any bounds in `exclude`), sharing a container smaller than the screen
+ * with a refusal ("Pertahankan"/"Keep" — measured on #17 — or "Batalkan"/"Batal"/"Cancel", again none in
+ * `exclude`). The refusal is never returned.
  */
 export function confirmDeleteButton(tree: UiNode, frame: { width: number; height: number }, exclude: Bounds[] = []): UiNode | null {
   const excluded = (n: UiNode): boolean => exclude.some((b) => sameBounds(b, n.bounds))
   const isConfirm = (n: UiNode): boolean => buttonLabelled(n, frame.width, DRAFTS_DELETE_LABELS) && !hasShortId(n, DRAFTS_DELETE_ID) && !excluded(n)
-  const isRefusal = (n: UiNode): boolean => buttonLabelled(n, frame.width, DIALOG_CANCEL_LABELS) && !excluded(n)
+  const isRefusal = (n: UiNode): boolean => buttonLabelled(n, frame.width, DRAFTS_CONFIRM_REFUSAL_LABELS) && !excluded(n)
   const screenArea = frame.width * frame.height
   // Deepest container first, so the answer comes from the smallest box holding both buttons.
   const visit = (n: UiNode): UiNode | null => {
@@ -1386,6 +1409,12 @@ const SECURITY_CHECK_DETAIL =
 const CONFIRM_MIN_MS = 3 * 60_000
 /** …and while the newest cell still reads an upload percentage (1.41.0). */
 const CONFIRM_UPLOADING_MS = 5 * 60_000
+/**
+ * How the looks after the first one vary (1.42.0): jittered 4–10 s gaps (the fixed 5 s before), a trip Home and
+ * back to Profil about 40% of the time, and a pull to refresh on every other look — half the Home trips pull too,
+ * since a profile re-opened from Home is already redrawn (1.34.0).
+ */
+export const CONFIRM_PLAN: ConfirmPlan = { waitMs: [4_000, 10_000], homeChance: 0.4, pullAfterHome: 0.5 }
 
 /**
  * The confirmation §3.6 exists for (step 113.6, §9 Q1's recommendation): after Post is tapped, open
@@ -1409,7 +1438,7 @@ const CONFIRM_UPLOADING_MS = 5 * 60_000
  */
 async function confirmPosted(
   ctx: ScriptContext<unknown>,
-  frameWidth: number,
+  frame: { width: number; height: number },
   before: string[] | null,
 ): Promise<{ confirmed: boolean; detail: string; securityCheck: boolean }> {
   const attempts = 6
@@ -1419,8 +1448,16 @@ async function confirmPosted(
     stopped looking before then closed TikTok and said "unverified". So at least `CONFIRM_MIN_MS` of looks, and
     `CONFIRM_UPLOADING_MS` while the newest cell still reads an upload percentage.
   */
-  const intervalMs = 5_000
   const startedAt = Date.now()
+  /*
+    A real refresh, at a person's rhythm (1.42.0). The owner asked (2026-09-15) for the looks after Post to stop
+    being one mechanical loop: each round after the first is planned by `planConfirmStep` — a pull to refresh on the
+    profile already open, or a trip Home and back to Profil — after a jittered wait. Neither move force-stops or
+    relaunches TikTok, which could kill an upload in flight.
+  */
+  const rng = makeRng((Date.now() ^ Number(ctx.job.attempt)) >>> 0)
+  const moves: ConfirmMove[] = []
+  let step: ConfirmStep | null = null
 
   let lastSeen: NewestCell = { kind: 'none' }
   const keepLooking = (round: number): boolean =>
@@ -1437,10 +1474,18 @@ async function confirmPosted(
       if ((err as { code?: string }).code === 'E_SECURITY_CHECK') return { confirmed: false, detail: SECURITY_CHECK_DETAIL, securityCheck: true }
       ctx.log.warn('confirmPosted: modal sweep did not settle this attempt', { round, error: String(err) })
     }
-    // Every round after the first goes Home and back to the profile (1.34.0): tapping Profil on a
-    // profile that is already open can leave the grid exactly as the previous round read it, and a
-    // stale page is not evidence. Not a relaunch — force-stopping TikTok could kill an upload in flight.
-    const after = await readOwnGrid(ctx, frameWidth, { reopen: round > 0 })
+    // Never re-reads a stale page (1.34.0): tapping Profil on a profile that is already open can leave the grid
+    // exactly as the previous round read it. So a later round either goes Home and back, or stays and pulls the
+    // profile to refresh it (1.42.0). Not a relaunch — force-stopping TikTok could kill an upload in flight.
+    const after = await readOwnGrid(
+      ctx,
+      frame,
+      step === null
+        ? {}
+        : step.move === 'home'
+          ? { reopen: true, lingerMs: step.lingerMs, pull: step.pull ? rng : undefined }
+          : { stay: true, pull: rng },
+    )
     if (after !== null) {
       const judged = judgeGrid(before, after)
       if (judged.kind === 'new') {
@@ -1455,7 +1500,12 @@ async function confirmPosted(
       if (judged.kind === 'no-baseline') break
       ctx.log.warn(`confirmPosted: the grid does not show this post yet (attempt ${round + 1})`, { judged: JSON.stringify(judged) })
     }
-    if (keepLooking(round + 1)) await sleep(intervalMs)
+    if (keepLooking(round + 1)) {
+      step = planConfirmStep(rng, moves, CONFIRM_PLAN)
+      moves.push(step.move)
+      ctx.log.info(`confirmPosted: next look in ${Math.round(step.waitMs / 1000)}s — ${step.move === 'home' ? 'via Home' : 'on the open profile'}${step.pull ? ', pulled to refresh' : ''}`)
+      await sleep(step.waitMs)
+    }
   }
 
   await capture(ctx, 'unverified')
@@ -2171,7 +2221,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     // The profile carries the same bottom nav as the feed, so the "Buat" tap below lands the same
     // from either. A dry run posts nothing and has nothing to confirm, so it skips the detour.
     await clearOverFeed(ctx, 'reading the profile')
-    const gridBefore = ctx.params.dryRun ? null : await readOwnGrid(ctx, frame.width)
+    const gridBefore = ctx.params.dryRun ? null : await readOwnGrid(ctx, frame)
     if (!ctx.params.dryRun) {
       ctx.log.info('read the own-profile grid before posting', { cells: gridBefore === null ? 'unreadable' : String(gridBefore.length) })
       if (gridBefore === null || gridBefore.length === 0) {
@@ -2429,7 +2479,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
 
     let confirmation: { confirmed: boolean; detail: string; securityCheck: boolean }
     try {
-      confirmation = await confirmPosted(ctx, frame.width, gridBefore)
+      confirmation = await confirmPosted(ctx, frame, gridBefore)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       ctx.log.warn('confirming the post failed after Post was tapped — reporting unverified, never failed', { error: message })

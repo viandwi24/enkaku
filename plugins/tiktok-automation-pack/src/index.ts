@@ -864,6 +864,15 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.42.0 — the profile is pulled to refresh after Post, at a person's rhythm; and TikTok's drafts dialog is
+  //   recognised. The owner asked (2026-09-15) for a real refresh and less of a mechanical loop: every look after
+  //   the first either pulls the open profile down to refresh it (a slow drag inside the grid, never a tap) or goes
+  //   Home and back to Profil (half the time pulling there too), at jittered 4–10 s gaps, never Home twice in a row
+  //   and never more than three pulls in a row. The 3/5-minute watch and "unverified, never failed" are unchanged,
+  //   and nothing force-stops TikTok meanwhile. Production #17 (Samsung SM-A075F): "Clear drafts first" tapped
+  //   "Hapus", TikTok asked "Hapus 1 draf?" with "Hapus" and "Pertahankan", and the run reported no confirmation
+  //   and "Draf: 1" left — only "Batal"/"Batalkan"/"Cancel" counted as a dialog's refusal. "Pertahankan"/"Keep"
+  //   count now, so its "Hapus" is tapped; "Pertahankan" is never tapped.
   // 1.41.0 — the profile is watched by time: at least 3 minutes after Post, 5 while the newest cell still shows an
   //   upload percentage. The owner watched production phones (2026-09-15): a new video shows on the profile only
   //   once its upload finishes, minutes after Post on a slow phone, and a run that stopped looking earlier closed
@@ -1093,7 +1102,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.41.0',
+  version: '1.42.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

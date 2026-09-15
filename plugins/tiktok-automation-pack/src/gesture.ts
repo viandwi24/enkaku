@@ -284,3 +284,44 @@ export async function verifiedPageDown(ctx: ScriptContext<unknown>, frame: Frame
   }
   return false
 }
+
+/** Where a pull starts and ends, as fractions of the frame height (1.42.0). */
+export interface PullBand {
+  startY: readonly [number, number]
+  endY: readonly [number, number]
+}
+
+/**
+ * The own profile's pull band (1.42.0) — UNVERIFIED on a profile dump: this pack has no fixture of TikTok's own
+ * profile. What is measured is the bottom nav, from y=1470 of 1640 (0.90h, this file's header). So the pull starts
+ * at 0.50–0.58h, low enough to be in the video grid under the profile header rather than on the header's buttons
+ * and far below the status bar and the notification shade's edge, and ends at 0.76–0.84h, above the nav. A drag of
+ * 0.18–0.34h is several times Android's swipe-refresh trigger distance.
+ */
+export const PROFILE_PULL_BAND: PullBand = { startY: [0.5, 0.58], endY: [0.76, 0.84] }
+
+/**
+ * One pull-to-refresh drag, fully randomised and pure so its geometry is testable. The corridor x 0.28–0.66 keeps
+ * clear of both side edges (the system back gesture), and the slow `easeInOutCubic` release is a deliberate drag
+ * that holds the list at its top — a fast flick flings instead of refreshing. A drag, never a tap.
+ */
+export function pullToRefreshPath(
+  frame: Frame,
+  rng: () => number,
+  band: PullBand = PROFILE_PULL_BAND,
+): { from: { x: number; y: number }; to: { x: number; y: number }; ms: number; curvature: number } {
+  const x = Math.round(between(rng, 0.28, 0.66) * frame.width)
+  const fromY = Math.round(between(rng, band.startY[0], band.startY[1]) * frame.height)
+  const toY = Math.round(between(rng, band.endY[0], band.endY[1]) * frame.height)
+  return {
+    from: { x, y: fromY },
+    to: { x: Math.round(x + between(rng, -18, 18)), y: toY },
+    ms: Math.round(between(rng, 420, 720)),
+    curvature: Number(between(rng, 0, 0.05).toFixed(3)),
+  }
+}
+
+export async function pullToRefresh(ctx: ScriptContext<unknown>, frame: Frame, rng: () => number, band: PullBand = PROFILE_PULL_BAND): Promise<void> {
+  const p = pullToRefreshPath(frame, rng, band)
+  await ctx.device.swipe(p.from, p.to, p.ms, { easing: 'easeInOutCubic', curvature: p.curvature })
+}

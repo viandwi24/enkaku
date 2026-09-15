@@ -4,7 +4,9 @@ import { PluginSurfaceSchema, validatePluginSurface } from '@enkaku/protocol'
 import type { z } from 'zod'
 import { toJSONSchema } from 'zod'
 import plugin, { AutoPostSettingsSchema, autoScrollScript, isAutoPostEligible, matches, scoreContent } from './index'
-import { makeRng, pickWatchMs, pngSize } from './human'
+import { MAX_REFRESHES_IN_A_ROW, makeRng, pickWatchMs, planConfirmStep, pngSize, type ConfirmMove, type ConfirmStep } from './human'
+import { PROFILE_PULL_BAND, pullToRefreshPath } from './gesture'
+import { CONFIRM_PLAN } from './post-video'
 import { ACK_SELECTORS, DENY_SELECTORS, nextDialogAction } from './dialogs'
 import { ACCOUNTS_KEY } from './accounts'
 import switchAccount from './switch-account'
@@ -22,7 +24,7 @@ import notificationActivity from './notification-activity'
 describe('tiktok-automation-pack manifest', () => {
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('1.41.0')
+    expect(plugin.version).toBe('1.42.0')
     expect(plugin.version).toBe(pkg.version)
   })
 })
@@ -380,6 +382,73 @@ describe('watch-time tilt', () => {
     const a = makeRng(7)
     const b = makeRng(7)
     expect([pickWatchMs(a).ms, pickWatchMs(a).ms]).toEqual([pickWatchMs(b).ms, pickWatchMs(b).ms])
+  })
+})
+
+describe('post-video — the looks after Post (1.42.0)', () => {
+  const plan = (seed: number, rounds = 300): ConfirmStep[] => {
+    const rng = makeRng(seed)
+    const moves: ConfirmMove[] = []
+    return Array.from({ length: rounds }, () => {
+      const step = planConfirmStep(rng, moves, CONFIRM_PLAN)
+      moves.push(step.move)
+      return step
+    })
+  }
+
+  test('the same seed replays the same rounds', () => {
+    expect(plan(42, 30)).toEqual(plan(42, 30))
+  })
+
+  test('pulls and trips Home are mixed: never Home twice in a row, never more than three pulls in a row', () => {
+    for (const seed of [1, 7, 99, 2026]) {
+      const moves = plan(seed).map((s) => (s.move === 'home' ? 'H' : 'R')).join('')
+      expect(moves).toContain('H')
+      expect(moves).toContain('R')
+      expect(moves).not.toContain('HH')
+      expect(moves).not.toContain('R'.repeat(MAX_REFRESHES_IN_A_ROW + 1))
+    }
+  })
+
+  test('waits are jittered inside the plan, with the odd longer one', () => {
+    const [lo, hi] = CONFIRM_PLAN.waitMs
+    const waits = plan(11).map((s) => s.waitMs)
+    expect(Math.min(...waits)).toBeGreaterThanOrEqual(lo)
+    expect(Math.max(...waits)).toBeLessThanOrEqual(Math.ceil(hi * 1.7))
+    expect(waits.some((w) => w > hi)).toBe(true)
+    expect(new Set(waits).size).toBeGreaterThan(250)
+  })
+
+  test('a pull round always pulls and lingers nowhere; a trip Home lingers 1.5–5 s and sometimes pulls', () => {
+    const steps = plan(3)
+    for (const s of steps) {
+      if (s.move === 'refresh') {
+        expect(s.pull).toBe(true)
+        expect(s.lingerMs).toBe(0)
+      } else {
+        expect(s.lingerMs).toBeGreaterThanOrEqual(1_500)
+        expect(s.lingerMs).toBeLessThanOrEqual(5_000)
+      }
+    }
+    const home = steps.filter((s) => s.move === 'home')
+    expect(home.some((s) => s.pull)).toBe(true)
+    expect(home.some((s) => !s.pull)).toBe(true)
+  })
+
+  test('the pull is a downward drag inside the page: below the top bar, above the measured bottom nav, off both side edges', () => {
+    const frame = { width: 720, height: 1640 }
+    const rng = makeRng(5)
+    for (let i = 0; i < 300; i++) {
+      const p = pullToRefreshPath(frame, rng, PROFILE_PULL_BAND)
+      expect(p.from.y).toBeGreaterThan(frame.height * 0.45)
+      expect(p.to.y).toBeLessThan(1470)
+      expect(p.to.y - p.from.y).toBeGreaterThanOrEqual(128)
+      for (const pt of [p.from, p.to]) {
+        expect(pt.x).toBeGreaterThan(frame.width * 0.2)
+        expect(pt.x).toBeLessThan(frame.width * 0.8)
+      }
+      expect(p.ms).toBeGreaterThanOrEqual(420)
+    }
   })
 })
 
