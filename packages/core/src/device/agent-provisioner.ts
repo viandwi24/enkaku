@@ -541,8 +541,13 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     // A forced call (an explicit retry, or the fleet-wide action) always
     // bypasses this — that IS the "explicit retry" the bound exists to wait
     // for.
-    // A reconnect is a fresh start for the budget too (see `ensure`'s own doc) — not for the provision mode above.
-    if (!opts?.force && !opts?.reconnect && prior.state === 'failed') {
+    // A reconnect is a fresh start for the budget ONLY when the stored failure was the phone being unreachable
+    // (see `ensure`'s own doc). A reconnect after a real install failure keeps the budget and the backoff: a phone
+    // whose adb transport flaps would otherwise re-run a full install on every reconnect — the install storm the
+    // bound above exists to prevent, and on an 80-phone farm enough to knock adb itself over (owner, 2026-09-15:
+    // "adb sering crash / ga mendeteksi device terus reconnecting").
+    const freshStartOnReconnect = !!opts?.reconnect && prior.state === 'failed' && isDeviceUnreachableReason(prior.reason ?? '')
+    if (!opts?.force && !freshStartOnReconnect && prior.state === 'failed') {
       if (hasExhaustedRetryBudget(prior, retryBackoffS)) {
         deps.log.debug(`agent-provisioner: device ${row.id} has exhausted its ${retryBackoffS.length} automatic attempts — waiting for an explicit retry`)
         return prior
@@ -622,7 +627,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
       priorAttempts: prior.attempts,
       checkedAt,
       retryBackoffS,
-      forced: !!opts?.force || !!opts?.reconnect,
+      forced: !!opts?.force || freshStartOnReconnect,
     })
 
     // A pass that did not install keeps the stored fingerprint: only an

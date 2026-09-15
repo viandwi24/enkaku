@@ -396,7 +396,7 @@ describe('createAgentProvisioner (plan 90 §3.8, §4.3, fixes F7, F9, F10)', () 
       expect((await provisioner.ensure('dev-1')).state).toBe('ready')
     })
 
-    test('a reconnect clears an exhausted automatic budget, so a phone that failed three times is tried again once it is back', async () => {
+    test('a reconnect after a REAL install failure keeps the exhausted budget — a flapping phone never re-installs on every reconnect', async () => {
       let calls = 0
       const { deps, db } = fakeDeps({
         makeLauncher: fakeMakeLauncher({
@@ -413,9 +413,17 @@ describe('createAgentProvisioner (plan 90 §3.8, §4.3, fixes F7, F9, F10)', () 
       expect((await provisioner.ensure('dev-1')).attempts).toBe(3)
       expect(calls).toBe(3)
 
-      const afterReconnect = await provisioner.ensure('dev-1', { reconnect: true })
+      // The owner's farm (2026-09-15): adb kept dropping and re-detecting phones. Every reconnect used to bypass the
+      // budget and run a full install again, which is what a flapping transport cannot take.
+      for (let i = 0; i < 5; i++) {
+        const afterReconnect = await provisioner.ensure('dev-1', { reconnect: true })
+        expect(afterReconnect.state).toBe('failed')
+        expect(afterReconnect.attempts).toBe(3)
+      }
+      expect(calls).toBe(3)
+      // An explicit retry still gets a real attempt.
+      await provisioner.ensure('dev-1', { force: true })
       expect(calls).toBe(4)
-      expect(afterReconnect.attempts).toBe(1)
     })
 
     test("guestAgent.provision: 'off' is a no-op for automatic calls — no adb work at all (acceptance criterion 8)", async () => {
