@@ -714,6 +714,17 @@ export function bottomHomeTab(tree: UiNode): UiNode | null {
   )
 }
 
+/**
+ * YouTube's forced-update screen (0.38.0). Production phone job 75895645 (2026-09-15): after launch YouTube showed a
+ * full screen "Update aplikasi Anda" — "Tersedia update dengan berbagai fitur baru…" — and one "UPDATE" button, no
+ * navigation at all; the run waited 25 s for a bottom bar and failed "no Create button", which read like a signed-out
+ * app. Recognised by that title on a YouTube node (the English wording is unverified).
+ */
+export function updateRequired(tree: UiNode): boolean {
+  const visible = onScreenIn(tree)
+  return all(tree, (n) => fromYouTube(n) && visible(n) && /^(update aplikasi anda|update your app|update youtube)$/i.test((n.text || n.desc).trim())).length > 0
+}
+
 const VIEW_CHANNEL = ['Lihat channel', 'View channel'] as const
 
 /**
@@ -1162,6 +1173,13 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       fail(
         'E_SCREEN_LANDSCAPE',
         `YouTube opened in landscape (${homeFrame.width}x${homeFrame.height}) even though the farm re-locks rotation when an app opens. Check the device's rotation setting is "lock-portrait" (Devices → the phone → Settings), then re-run — this flow taps positions measured in portrait.`,
+      )
+    }
+    if (!createButton(home) && updateRequired(home)) {
+      await capture(ctx, 'yt-01-update-required', home)
+      fail(
+        'E_APP_UPDATE_REQUIRED',
+        'YouTube on this phone is showing "Update aplikasi Anda" and will not open until it is updated. Update YouTube on the phone (press UPDATE, or through the Play Store), then re-run. Nothing was uploaded. See artifact yt-01-update-required.',
       )
     }
     if (!createButton(home)) {

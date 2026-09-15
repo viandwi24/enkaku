@@ -30,6 +30,7 @@ import {
   readChannelCells,
   resumeDraftPrompt,
   trimDoneButton,
+  updateRequired,
   uploadInProgress,
   viewChannelTarget,
 } from './post-video'
@@ -237,6 +238,23 @@ describe('onThumbnailEditor — where a mis-aimed details tap lands', () => {
   only the ids and labels production runs #6 and #7 dumped (Samsung farm, 2026-09-15); their bounds are placeholders
   in the centre of a 720x1600 screen.
 */
+describe('updateRequired — YouTube refusing to open until it is updated (0.38.0)', () => {
+  const screen = (children: UiNode[]): UiNode => node({ bounds: { left: 0, top: 0, right: 720, bottom: 1600 }, children })
+  // Production job 75895645 (2026-09-15): the whole screen, as its dump read it.
+  const title = node({ text: 'Update aplikasi Anda', bounds: { left: 160, top: 404, right: 560, bottom: 450 } })
+  const button = node({ text: 'UPDATE', clickable: true, bounds: { left: 280, top: 1427, right: 440, bottom: 1480 } })
+
+  test('the forced-update screen is recognised by its title', () => {
+    expect(updateRequired(screen([title, button]))).toBe(true)
+  })
+
+  test('a lone UPDATE button, the same words in another app, or an off-screen title is not', () => {
+    expect(updateRequired(screen([button]))).toBe(false)
+    expect(updateRequired(screen([{ ...title, packageName: 'com.android.vending' }]))).toBe(false)
+    expect(updateRequired(screen([{ ...title, bounds: { left: 0, top: 0, right: 0, bottom: 0 } }]))).toBe(false)
+  })
+})
+
 describe('the details screen drawn readable (0.37.0)', () => {
   const rid = (short: string): string => `com.google.android.youtube:id/${short}`
   const screen = (children: UiNode[]): UiNode => node({ bounds: { left: 0, top: 0, right: 720, bottom: 1600 }, children })
