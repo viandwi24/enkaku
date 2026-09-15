@@ -136,7 +136,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      # `packages` defaults to "tools platform-tools", and cmdline-tools 16.0 no longer carries a
+      # `tools` package, so the default fails the step before anything is built.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
       - run: yes | sdkmanager --licenses > /dev/null || true
       - run: sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
       # versionCode is release-driven (R4): the same `v*` tag that names the core binaries below
