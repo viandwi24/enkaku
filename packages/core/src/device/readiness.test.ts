@@ -19,6 +19,14 @@ import { createReadinessManager, type ReadinessManager } from './readiness'
 const PUT_STAYON = (mask: string) => `settings put global stay_on_while_plugged_in '${mask}'; settings get global stay_on_while_plugged_in`
 /** The wake nudge, as the number both `INJECT_KEYCODE` and `input keyevent` take. */
 const WAKEUP = 'input keyevent 224'
+/**
+ * Whether one recorded command IS the wake nudge, however `wake.ts` spelled
+ * it (plan 228 §3.3): on its own down an open control socket, or — the shell
+ * rung, which a readiness wake on a session-less phone takes — batched with
+ * the keyguard probe into ONE adb round trip.
+ */
+const isWake = (cmd: string): boolean => cmd === WAKEUP || cmd.startsWith(`${WAKEUP};`)
+const wakes = (calls: readonly string[]): number => calls.filter(isWake).length
 
 const D1 = 'd1'
 
@@ -452,7 +460,7 @@ describe('ReadinessManager.hold — never mutates desired (plan 43 §3.6, accept
     // Nothing has reconciled this device yet, so `actual` still starts
     // `asleep` — `hold()` wakes on ACTUAL, never on `desired` (§3.6).
     expect(readiness.actual(D1)).toBe('awake')
-    expect(execCalls).toContain(WAKEUP)
+    expect(execCalls.some(isWake)).toBe(true)
 
     const rowMidHold = db.select({ d: devices.desiredReadiness }).from(devices).where(eq(devices.id, D1)).get()
     expect(rowMidHold?.d).toBeNull()
@@ -476,7 +484,7 @@ describe('ReadinessManager.hold — never mutates desired (plan 43 §3.6, accept
     const hold = await readiness.hold(D1, 'job')
     expect(readiness.actual(D1)).toBe('awake')
     expect(readiness.get(D1).desired).toBe('asleep')
-    expect(execCalls).toContain(WAKEUP)
+    expect(execCalls.some(isWake)).toBe(true)
 
     hold.release()
     await Promise.resolve()
@@ -718,7 +726,7 @@ describe('ReadinessManager — a device that reconnects is re-woken (plan 125 §
 
     await readiness.reconcile(D1)
     expect(readiness.actual(D1)).toBe('awake')
-    const wakesAfterFirst = execCalls.filter((c) => c === WAKEUP).length
+    const wakesAfterFirst = wakes(execCalls)
     expect(wakesAfterFirst).toBe(1)
 
     states.apply(D1, 'DEVICE_DISCONNECTED')
@@ -729,7 +737,7 @@ describe('ReadinessManager — a device that reconnects is re-woken (plan 125 §
     await flush()
 
     expect(readiness.get(D1)).toMatchObject({ desired: 'awake', actual: 'awake', blocked: null })
-    expect(execCalls.filter((c) => c === WAKEUP).length).toBe(2)
+    expect(wakes(execCalls)).toBe(2)
   })
 
   test('a device desired asleep is NOT woken when it reconnects', async () => {
@@ -742,7 +750,7 @@ describe('ReadinessManager — a device that reconnects is re-woken (plan 125 §
     await flush()
 
     expect(readiness.actual(D1)).toBe('asleep')
-    expect(execCalls).not.toContain(WAKEUP)
+    expect(execCalls.some(isWake)).toBe(false)
   })
 })
 
@@ -780,7 +788,7 @@ describe('ReadinessManager.start — the boot sweep (plan 125 §4.4, §3.1)', ()
     expect(readiness.actual('d')).toBe('awake')
     // Two phones were physically nudged: `a` and `d` (its NULL row defaults
     // to awake). `b` reached `hot` through a session, and `c` was never touched.
-    expect(execCalls.filter((c) => c === WAKEUP).length).toBe(2)
+    expect(wakes(execCalls)).toBe(2)
   })
 
   test('an offline or quarantined device is SKIPPED with a reason, and no adb call is made against it', async () => {
@@ -885,6 +893,98 @@ describe('ReadinessManager.start — the boot sweep (plan 125 §4.4, §3.1)', ()
     const woken = Array.from({ length: 10 }, (_, i) => readiness.actual(`p${i}`)).filter((r) => r !== 'asleep').length
     expect(woken).toBeLessThanOrEqual(8)
     expect(woken).toBeLessThan(10)
+  })
+})
+
+/**
+ * The shutdown's wake-release sweep, and how WIDE it runs (plan 228 §3.4).
+ *
+ * `RELEASE_SWEEP_WORKERS` (8) was the width, chosen against adb's semaphore on
+ * the reasoning that the semaphore is the real limiter. On a farm at auto
+ * concurrency that is backwards: `computeAutoConcurrency` gives a 73-device
+ * farm 24 lanes, so the sweep ran eight at a time through a queue three times
+ * that wide — and the exit banner an operator watches was waiting on the sweep
+ * itself, not on the phones or on adb.
+ */
+describe('ReadinessManager.releaseAll — the sweep runs as wide as its caller says (plan 228 §3.4)', () => {
+  function seedFarm(db: ReturnType<typeof openDb>['db'], specs: { id: string; status: string; desired: string | null }[]) {
+    for (const spec of specs) {
+      db.insert(devices)
+        .values({
+          id: spec.id,
+          stableId: `stable-${spec.id}`,
+          serial: `SER-${spec.id}`,
+          label: `Phone ${spec.id}`,
+          status: spec.status,
+          desiredReadiness: spec.desired,
+        })
+        .run()
+    }
+  }
+
+  /**
+   * Runs a farm's boot sweep to completion against a barrier, then re-arms the
+   * barrier for the release and reports the peak concurrency the release
+   * reached. Each parked exec is one device mid-release, so the peak IS the
+   * width.
+   */
+  async function peakReleaseConcurrency(size: number, workers?: number): Promise<number> {
+    let waiters: (() => void)[] = []
+    const park = () => new Promise<void>((resolve) => waiters.push(resolve))
+    const drain = () => {
+      const pending = waiters
+      waiters = []
+      for (const resolve of pending) resolve()
+    }
+
+    const { db, readiness } = setUp({ adb: { park } })
+    seedFarm(
+      db,
+      Array.from({ length: size }, (_, i) => ({ id: `p${i}`, status: 'online', desired: 'awake' })),
+    )
+
+    // Every device held awake, so every one of them is in the release queue.
+    readiness.start()
+    for (let i = 0; i < 4000; i++) {
+      await flush()
+      if (waiters.length === 0) break
+      drain()
+    }
+
+    let peak = 0
+    const sweep = readiness.releaseAll(undefined, workers)
+    for (let i = 0; i < 4000; i++) {
+      await flush()
+      if (waiters.length === 0) break
+      peak = Math.max(peak, waiters.length)
+      drain()
+    }
+    await sweep
+    return peak
+  }
+
+  test('with no width given it stays at the RELEASE_SWEEP_WORKERS floor', async () => {
+    const peak = await peakReleaseConcurrency(20)
+    expect(peak).toBeLessThanOrEqual(8)
+    expect(peak).toBeGreaterThan(1)
+  })
+
+  test('a caller that knows adb is wider gets the wider sweep', async () => {
+    const peak = await peakReleaseConcurrency(20, 24)
+    // Strictly past the old flat ceiling — this is the whole fix.
+    expect(peak).toBeGreaterThan(8)
+    expect(peak).toBeLessThanOrEqual(20)
+  })
+
+  test('a width NARROWER than the floor never narrows the sweep — the constant is a floor', async () => {
+    const peak = await peakReleaseConcurrency(20, 2)
+    expect(peak).toBeGreaterThan(2)
+    expect(peak).toBeLessThanOrEqual(8)
+  })
+
+  test('the queue still caps it: a farm smaller than the width spawns no idle workers', async () => {
+    const peak = await peakReleaseConcurrency(3, 24)
+    expect(peak).toBeLessThanOrEqual(3)
   })
 })
 
@@ -1014,7 +1114,7 @@ describe('ReadinessManager — explicit Sleep and Wake on a farm where every onl
     const { db, readiness, execCalls } = setUp()
     seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
     const hold = await readiness.hold(D1, 'viewer')
-    expect(execCalls).not.toContain(WAKEUP)
+    expect(execCalls.some(isWake)).toBe(false)
     hold.release()
   })
 
@@ -1022,7 +1122,7 @@ describe('ReadinessManager — explicit Sleep and Wake on a farm where every onl
     const { db, readiness, execCalls } = setUp()
     seedDevice(db, { status: 'online', desiredReadiness: 'asleep' })
     const hold = await readiness.hold(D1, 'job')
-    expect(execCalls).toContain(WAKEUP)
+    expect(execCalls.some(isWake)).toBe(true)
     hold.release()
   })
 })

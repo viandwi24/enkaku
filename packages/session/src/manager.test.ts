@@ -713,6 +713,51 @@ describe('SessionManager.closeAll(reason) / activeDeviceIds() (plan 88 §3.10, �
     expect(manager.activeDeviceIds?.()).toEqual([])
     expect(await manager.closeAll()).toBe(0)
   })
+
+  /**
+   * Plan 228 §3.4 — `closeAll` has to carry the flag all the way to each
+   * session's own `close()`, because the saving it buys is per DEVICE. A
+   * pass-through that silently dropped the option would look identical from
+   * here and cost a 73-phone farm 73 needless adb round trips on every exit.
+   */
+  describe('skipPowerRevert reaches each session (plan 228 §3.4)', () => {
+    /** The fixture above is `keepAwake: 'off'`, which writes no power at all — these need a device that DOES. */
+    const awakeDevices: DeviceSnapshotSource = { get: (id) => (id === DEVICE_ID ? { ...snapshot, keepAwake: 'always' } : null) }
+    const recordingClient = (calls: string[]) =>
+      ({
+        exec: async (_serial: string, cmd: string) => {
+          calls.push(cmd)
+          return ''
+        },
+        execOut: async () => new Uint8Array(),
+      }) as unknown as AdbClient
+    const isPowerWrite = (cmd: string): boolean => cmd.startsWith('svc power stayon') || cmd.startsWith('settings put global stay_on_while_plugged_in')
+
+    test('the shutdown path writes no power release — the release sweep already made it', async () => {
+      const calls: string[] = []
+      const manager = createSessionManager({ client: recordingClient(calls), devices: awakeDevices, log: silentLog(), makeScrcpy: async () => fakeScrcpy() })
+      await manager.build(DEVICE_ID, { requireScrcpy: true })
+      const before = calls.length
+
+      expect(await manager.closeAll('shutdown', { skipPowerRevert: true })).toBe(1)
+
+      const afterClose = calls.slice(before)
+      expect(afterClose.some(isPowerWrite)).toBe(false)
+      // The close itself plainly ran: the farm tag has nobody else to clear it.
+      expect(afterClose.some((c) => c.startsWith('setprop '))).toBe(true)
+    })
+
+    test('a closeAll with no options releases the power hold, exactly as before', async () => {
+      const calls: string[] = []
+      const manager = createSessionManager({ client: recordingClient(calls), devices: awakeDevices, log: silentLog(), makeScrcpy: async () => fakeScrcpy() })
+      await manager.build(DEVICE_ID, { requireScrcpy: true })
+      const before = calls.length
+
+      await manager.closeAll()
+
+      expect(calls.slice(before).some(isPowerWrite)).toBe(true)
+    })
+  })
 })
 
 /**

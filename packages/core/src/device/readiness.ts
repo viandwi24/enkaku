@@ -97,7 +97,13 @@ export interface ReadinessManager {
    * fires once per device as it finishes, so a caller can tell "still working
    * through a big farm" from "wedged" without guessing a total deadline.
    */
-  releaseAll(onSettled?: () => void): Promise<{ released: number; failed: number }>
+  /**
+   * `workers` (plan 228 §3.4) is how many devices the sweep hands back at
+   * once. Defaults to `RELEASE_SWEEP_WORKERS`; the caller passes a wider one
+   * when adb's live lane is wider, because the fixed constant was silently
+   * the narrower of the two on any farm big enough to care.
+   */
+  releaseAll(onSettled?: () => void, workers?: number): Promise<{ released: number; failed: number }>
 }
 
 export interface ReadinessManagerDeps {
@@ -958,7 +964,7 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       stopped = true
     },
 
-    async releaseAll(onSettled?: () => void) {
+    async releaseAll(onSettled?: () => void, workerCount?: number) {
       let released = 0
       let failed = 0
       /*
@@ -989,8 +995,22 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
         here is independent, so they go together; adb's own global semaphore is
         the real limiter underneath and the caller widens it for this sweep.
       */
+      /*
+        The WIDTH is the caller's to widen (plan 228 §3.4).
+
+        This was `min(RELEASE_SWEEP_WORKERS, queue.length)` — a flat 8 — and
+        the constant's own comment explains it as "chosen against adb's own
+        global semaphore rather than the phones", on the reasoning that the
+        semaphore is the real limiter and can be pinned as low as 2. On a farm
+        pinned low that is right. On a farm at AUTO it is exactly backwards:
+        `computeAutoConcurrency` gives a 73-device farm 24 lanes, so the sweep
+        itself was the bottleneck and two thirds of adb's width sat idle while
+        an operator watched the exit banner. Whoever knows the live width
+        passes it; the constant stays the floor, and the queue length still
+        caps it so a small farm spawns no idle workers.
+      */
       const queue = [...keepAwakeApplied]
-      const workers = Math.min(RELEASE_SWEEP_WORKERS, queue.length)
+      const workers = Math.min(Math.max(RELEASE_SWEEP_WORKERS, Math.floor(workerCount ?? 0)), queue.length)
       await Promise.all(
         Array.from({ length: workers }, async () => {
           for (;;) {

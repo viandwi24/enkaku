@@ -74,6 +74,46 @@ const DEADLINE_ERROR_CODES = new Set(['E_ADB_TIMEOUT', 'E_NODE_TIMEOUT'])
 export const MAX_BUFFERED = 512 * 1024
 
 /**
+ * How much of the congestion budget each ADDITIONAL video stream on the same
+ * socket is worth (plan 228 §3.1).
+ *
+ * `MAX_BUFFERED` is a per-SOCKET number and Studio runs ONE socket for the
+ * whole page, so the Screens grid shares that single 512 KB between every
+ * tile it has open. At sixty tiles that is 8.5 KB per stream — less than one
+ * keyframe — so the socket reads as congested essentially all the time, every
+ * binding on it sets `awaitingKeyframe`, and sixty encoders are asked for a
+ * fresh IDR at once. The IDRs are the largest frames there are, so they
+ * re-congest the socket that asked for them, and the grid settles into a
+ * keyframe storm: tiles freeze, the client's staleness watchdog fires, and a
+ * wall that is streaming perfectly well per-device reads as "Reconnecting"
+ * across the board. That is the 60-device instability, and no amount of
+ * per-device tuning reaches it, because the limit being hit is not per-device.
+ *
+ * So the budget grows with what the socket is actually carrying. It is NOT a
+ * licence to buffer without bound — `WS_BUFFER_CEILING_BYTES` caps it, and the
+ * drop-to-keyframe behaviour above the cap is unchanged. A single stream is
+ * byte-identical to before (the first stream adds nothing), which is what
+ * keeps Device Control's own latency exactly where plan 85 §3.6 put it.
+ */
+export const WS_BUFFER_PER_STREAM = 64 * 1024
+/**
+ * The ceiling on the scaled budget. Deliberately the same number as
+ * `BACKPRESSURE_LIMIT_BYTES` below: past this, Bun's own enqueue limit is the
+ * next thing to trip, and letting our own threshold climb past it would mean
+ * the frame was dropped by Bun with nothing here marking `awaitingKeyframe`.
+ */
+export const WS_BUFFER_CEILING = 2 * 1024 * 1024
+
+/**
+ * The congestion threshold for ONE connection, given how many video streams
+ * it is carrying. `streams` includes the binding being served.
+ */
+export function bufferedLimitFor(streams: number): number {
+  const extra = Math.max(0, streams - 1) * WS_BUFFER_PER_STREAM
+  return Math.min(MAX_BUFFERED + extra, WS_BUFFER_CEILING)
+}
+
+/**
  * Plan 206 §3.8, §4.8 (R8) — Bun's own `websocket.backpressureLimit`, passed
  * to `Bun.serve` in `daemon.ts`. Wider than `MAX_BUFFERED` (which decides
  * per-frame drop-to-keyframe here) so Bun's own enqueue limit is never the
@@ -978,7 +1018,15 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
                 // ordinary case too, not just the moments this stream was
                 // already backed off.
                 transportMetrics.recordBufferedBytes(bufferedAmount)
-                const congested = bufferedAmount > MAX_BUFFERED
+                /*
+                  Scaled by how many streams share this socket (plan 228
+                  §3.1) — `state.streams.size` plus one for a binding that is
+                  still being attached and so is not in the map yet. See
+                  `bufferedLimitFor`'s own comment for why a flat per-socket
+                  number is the 60-tile instability rather than a safeguard
+                  against it.
+                */
+                const congested = bufferedAmount > bufferedLimitFor(Math.max(state.streams.size, 1))
                 if (meta.codec === 'png') {
                   if (congested) {
                     countersFor(binding).congestionDrops++

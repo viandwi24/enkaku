@@ -307,7 +307,19 @@ export interface DeviceSession {
    * unsubscribe.
    */
   onClipboardChanged(cb: (text: string) => void): () => void
-  close(): Promise<void>
+  /**
+   * Tear the session down and put back everything it applied to the device.
+   *
+   * `skipPowerRevert` (plan 228 §3.4) says the CALLER has already handed this
+   * device's screen back — the shutdown sweep (`readiness.releaseAll()`) does
+   * exactly that, per device, immediately before `SessionManager.closeAll()`
+   * runs. Without it the stay-on drop below is issued a second time on every
+   * phone in the farm: one more serialised adb round trip each, for a write
+   * whose value is already what we are about to write. It is never a licence
+   * to leave a phone pinned lit — the caller passing it has already done the
+   * release, and it is not honoured on any other close path.
+   */
+  close(opts?: { skipPowerRevert?: boolean }): Promise<void>
 }
 
 export interface CreateSessionDeps {
@@ -930,6 +942,36 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
     // only move the wait off the input path, never break it.
     const toPrewarm = uhidEngine
     if (toPrewarm) {
+      /*
+        Two triggers, and the FAST-PATH one is what fixes the first-touch
+        delay an operator actually feels (plan 228 §3.5).
+
+        The first-packet trigger below is right for a cold build and stays.
+        But Device Control does not open a cold build: `attachViewer` serves
+        the operator from the always-on WALL entry and builds a second,
+        `control` entry behind it (`skipDevicePrep: true`), and
+        `SessionManager.get()` resolves `control` the moment that entry lands
+        in the map — before its first video packet, while the viewer is
+        already touching the picture in front of them. So the operator's first
+        tap or drag after the switch paid `UHID_PREWARM_DELAY_MS +
+        UHID_SETTLE_MS` on a brand-new pointer: about 1.6 s of a drag that
+        looks frozen and then jumps, with everything after it instant. That is
+        precisely the "first swipe lags, the rest are fine" report.
+
+        `skipDevicePrep` is the condition because it is the fast path's own
+        marker, and on it the evidence the first-packet trigger exists to wait
+        for is ALREADY IN: a live wall entry on this device is proof that this
+        phone's scrcpy server accepts sockets and runs its threads, and
+        `makeScrcpy` above has resolved, which means this session's own video
+        socket completed its handshake. There is nothing left to learn from
+        the first packet that would change the decision.
+
+        Idempotent either way — `prewarm()` returns immediately if a create is
+        already pending or done, and `init()` is `??=`-cached — so the two
+        triggers cannot collide and a touch that still beats both registers
+        the pointer itself, exactly as before.
+      */
+      if (skipDevicePrep) toPrewarm.prewarm()
       let armed = false
       scrcpy.onPacket(() => {
         if (armed) return
@@ -1102,7 +1144,7 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
             if (m.type === 'clipboard') cb(m.text)
           })
         : () => {},
-    async close() {
+    async close(closeOpts) {
       // Plan 209 §4.9: UHID_DESTROY the virtual keyboard (if it was ever
       // created) before the control socket goes away with the rest of the
       // session — best-effort, matching the rest of this function.
@@ -1146,7 +1188,15 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       // fallback, so nothing is lost but the wait. `null` as the current value
       // means "we did not look" — the write always goes out, which is what
       // this line always did.
-      if (keepAwake !== 'off' && !skipWake) await applyStayOn(transport, 'off', null, log).catch(() => undefined)
+      /*
+        `closeOpts?.skipPowerRevert` (plan 228 §3.4) is the shutdown's own
+        skip: `daemon.stop()` runs `readiness.releaseAll()` — one stay-on drop
+        plus a sleep keyevent per device — immediately BEFORE closing the
+        sessions, so on that one path this write is the second identical write
+        to every phone in the farm. adb is serialised per device, so it is a
+        full round trip each, for nothing. Every other close path is unchanged.
+      */
+      const revertPower = keepAwake !== 'off' && !skipWake && !closeOpts?.skipPowerRevert
       // Rotation is deliberately NOT handed back here (2026-09-14). A lock mode
       // is a persistent device state the farm keeps across sessions, reconnects
       // and core restarts; reverting it on close is what left `lock-portrait`
@@ -1164,11 +1214,33 @@ export async function createSession(opts: CreateSessionOpts, deps: CreateSession
       // bootstrap still in flight before reverting, so a close racing the
       // deferred setup cannot leave the agent's IME pinned as the device's
       // default. See `revertTextInput`'s own comment.
-      await revertTextInput()
-      // Same idempotent-thunk contract as rotation right above — safe to
-      // call more than once (a timeout kill followed by a normal close).
-      await revertFarmTag()
-      await inspectorHandle?.release()
+      /*
+        Together, not one after another (plan 228 §3.4).
+
+        These four are mutually independent — the power write, the IME
+        restore, the farm-tag `setprop`, and letting the inspector engine go —
+        and they were four sequential `await`s. Three of them are adb commands
+        that queue behind each other per device anyway, so the ordering bought
+        nothing; what it cost was the fourth, `inspectorHandle.release()`,
+        which is a socket and a forward rather than a shell command and had no
+        reason to wait for three round trips before starting. On a farm-wide
+        shutdown that is one avoidable serialisation per device, and the whole
+        point of `Promise.all` here is that the SLOWEST of the four sets the
+        cost of the group instead of their sum.
+
+        Ordering that IS load-bearing stays above this block: the panel
+        restore, and `display.stop()` — both have to reach the control socket
+        before the session takes it away. Nothing in this group depends on
+        anything else in it, and nothing in it touches the display.
+      */
+      await Promise.all([
+        revertPower ? applyStayOn(transport, 'off', null, log).catch(() => undefined) : Promise.resolve(),
+        revertTextInput(),
+        // Same idempotent-thunk contract as rotation right above — safe to
+        // call more than once (a timeout kill followed by a normal close).
+        revertFarmTag(),
+        inspectorHandle?.release() ?? Promise.resolve(),
+      ])
       // Plan 88 §3.7 (fixes F12/H6): this call stays, but its MEANING
       // changed. It used to drop the whole adb transport for `adb-tcp` —
       // `host:disconnect` on session close — so closing one wall tile
