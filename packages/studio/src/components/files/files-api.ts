@@ -1,5 +1,13 @@
 import { z } from 'zod'
-import { ArtifactInfoSchema, type ArtifactInfo } from '@enkaku/protocol'
+import {
+  ArtifactBulkDeleteResponseSchema,
+  ArtifactInfoSchema,
+  ArtifactReferencesResponseSchema,
+  type ArtifactBulkDeleteInput,
+  type ArtifactBulkDeleteResponse,
+  type ArtifactInfo,
+  type ArtifactReference,
+} from '@enkaku/protocol'
 import { api, coreBase } from '@enkaku/ui'
 
 /**
@@ -36,6 +44,39 @@ export function setUploadPinned(id: string, pinned: boolean): Promise<{ artifact
 
 export function deleteUpload(id: string): Promise<{ ok: true; id: string }> {
   return api(`/api/artifacts/${encodeURIComponent(id)}`, DeleteResponseSchema, { method: 'DELETE' })
+}
+
+/**
+ * Every upload something still names — a queued job, plugin data, a schedule
+ * (`GET /api/artifacts/references`). Keyed by artifact id; an id that is absent
+ * has no reference the farm can see.
+ */
+export async function listUploadReferences(): Promise<Record<string, ArtifactReference[]>> {
+  const { references } = await api('/api/artifacts/references', ArtifactReferencesResponseSchema)
+  return references
+}
+
+/** `POST /api/artifacts/delete` — a preview (`preview: true`) or the real thing; the server re-checks every rule either way. */
+export function bulkDeleteUploads(body: ArtifactBulkDeleteInput): Promise<ArtifactBulkDeleteResponse> {
+  return api('/api/artifacts/delete', ArtifactBulkDeleteResponseSchema, { method: 'POST', json: body })
+}
+
+/** One reference in words, for a tile's "Used by" line and a dialog's list. */
+export function describeReference(ref: ArtifactReference): string {
+  switch (ref.kind) {
+    case 'job':
+      return `${ref.status === 'running' ? 'running' : 'queued'} job ${ref.name ?? ref.jobId}`
+    case 'batch':
+      return `active batch (${ref.status})`
+    case 'schedule':
+      return `schedule "${ref.name}"`
+    case 'workflow':
+      return `workflow "${ref.name}"`
+    case 'preset':
+      return `preset "${ref.name}" of ${ref.ownerName}`
+    case 'plugin-data':
+      return `${ref.namespace} data (${ref.key})`
+  }
 }
 
 /** Where the bytes are. Used by `<img>`/`<video>` directly — the browser is the decoder, which is why no thumbnail is stored (plan 800 wave 4). */
@@ -108,14 +149,8 @@ export function uploadFile(file: File, onProgress?: (fraction: number) => void):
   })
 }
 
-/** The three families the filter offers. Derived from what the probe actually stored, never from the filename. */
+/** The three families the filter offers, plus All. The family itself is `artifactFamilyOf` in `@enkaku/protocol`, so the bulk delete's filter mode selects exactly what the tab shows. */
 export type FileFilter = 'all' | 'image' | 'video' | 'other'
-
-export function familyOf(item: FileItem): Exclude<FileFilter, 'all'> {
-  if (item.kind === 'screenshot' || item.mimeType?.startsWith('image/')) return 'image'
-  if (item.kind === 'video' || item.mimeType?.startsWith('video/')) return 'video'
-  return 'other'
-}
 
 /** `1:23`, or null when the probe could not read a duration — never `0:00`, which reads as an empty video. */
 export function formatDuration(ms: number | null): string | null {

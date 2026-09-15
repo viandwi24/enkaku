@@ -2,9 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { artifactFamilyOf, type ArtifactBulkDeleteResponse, type ArtifactReference } from '@enkaku/protocol'
 import {
   Button,
   CheckCircleIcon,
+  Checkbox,
   CircleNotchIcon,
   ConfirmDialog,
   FileIcon,
@@ -25,10 +27,12 @@ import {
 } from '@enkaku/ui'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { newId } from '@/lib/ws'
+import { BulkDeleteDialog, type BulkDeleteTarget } from '@/components/files/BulkDeleteDialog'
 import {
   deleteUpload,
-  familyOf,
+  describeReference,
   formatDuration,
+  listUploadReferences,
   listUploads,
   renameUpload,
   setUploadPinned,
@@ -134,6 +138,11 @@ export default function FilesPage() {
   const [filter, setFilter] = useState<FileFilter>('all')
   const [query, setQuery] = useState('')
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null)
+  /** Ticked files, by id. Pruned on every reload so a deleted file never stays selected. */
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+  /** Who still uses each upload (a queued job, plugin data…). Empty when the caller may not manage files. */
+  const [references, setReferences] = useState<Record<string, ArtifactReference[]>>({})
+  const [bulkTarget, setBulkTarget] = useState<BulkDeleteTarget | null>(null)
   /**
    * The upload queue (null = no batch has run yet; `[]` never happens once a
    * batch starts, since it always seeds with the picked/dropped files). Kept
@@ -171,11 +180,19 @@ export default function FilesPage() {
 
   const reload = async () => {
     try {
-      setItems(await listUploads())
+      const next = await listUploads()
+      setItems(next)
       setError(null)
+      const present = new Set(next.map((i) => i.id))
+      setSelected((prev) => new Set([...prev].filter((id) => present.has(id))))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
+    // Best effort: a caller without the files permission gets a 403 here, and
+    // simply sees no "Used by" hints — the server still refuses what it must.
+    listUploadReferences()
+      .then(setReferences)
+      .catch(() => setReferences({}))
   }
 
   useEffect(() => {
@@ -185,7 +202,7 @@ export default function FilesPage() {
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase()
     return (items ?? []).filter((item) => {
-      if (filter !== 'all' && familyOf(item) !== filter) return false
+      if (filter !== 'all' && artifactFamilyOf(item) !== filter) return false
       if (q.length === 0) return true
       return (item.label ?? item.id).toLowerCase().includes(q)
     })
@@ -224,6 +241,33 @@ export default function FilesPage() {
       else if (ok === 0) toast.error(items.length === 1 ? `Could not upload ${items[0]?.file.name}` : `${failed} failed to upload`)
       else toast.warning(`${ok} uploaded, ${failed} failed`)
     })()
+  }
+
+  const shownSelected = shown.filter((item) => selected.has(item.id))
+  const allShownSelected = shown.length > 0 && shownSelected.length === shown.length
+  const selectedItems = (items ?? []).filter((item) => selected.has(item.id))
+  const selectedBytes = selectedItems.reduce((sum, item) => sum + (item.sizeBytes ?? 0), 0)
+
+  const toggleSelected = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  const toggleAllShown = () =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (allShownSelected) for (const item of shown) next.delete(item.id)
+      else for (const item of shown) next.add(item.id)
+      return next
+    })
+
+  const onBulkDone = (result: ArtifactBulkDeleteResponse) => {
+    const gone = new Set(result.items.filter((i) => i.outcome === 'deleted').map((i) => i.id))
+    setSelected((prev) => new Set([...prev].filter((id) => !gone.has(id))))
+    void reload()
   }
 
   const onPick = (files: FileList | null) => {
@@ -278,6 +322,15 @@ export default function FilesPage() {
                 e.target.value = ''
               }}
             />
+            <Button
+              variant="outline"
+              onClick={() => setBulkTarget({ mode: 'cleanup', family: filter, query })}
+              disabled={items === null || items.length === 0}
+              title="Delete old or unused files by rule"
+            >
+              <TrashIcon className="size-4" aria-hidden />
+              Clean up
+            </Button>
             <Button onClick={() => fileInput.current?.click()} disabled={uploading}>
               <UploadSimpleIcon className="size-4" aria-hidden />
               {uploading ? `Uploading ${queue?.filter((i) => i.status === 'done' || i.status === 'error').length ?? 0}/${queue?.length ?? 0}` : 'Upload'}
@@ -334,6 +387,30 @@ export default function FilesPage() {
             <span className="text-[12px] text-faint">
               {items === null ? '' : `${shown.length} of ${items.length}`}
             </span>
+            {shown.length > 0 && (
+              <label className="flex items-center gap-1.5 text-[12px] text-dim">
+                <Checkbox
+                  checked={allShownSelected ? true : shownSelected.length > 0 ? 'indeterminate' : false}
+                  onCheckedChange={toggleAllShown}
+                  aria-label="Select every file shown"
+                />
+                Select all shown
+              </label>
+            )}
+            {selected.size > 0 && (
+              <div className="ml-auto flex items-center gap-2">
+                <span className="text-[12px] text-dim">
+                  {selected.size} selected · {fileSize(selectedBytes)}
+                </span>
+                <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+                  Clear
+                </Button>
+                <Button size="sm" variant="destructive" onClick={() => setBulkTarget({ mode: 'selection', ids: [...selected] })}>
+                  <TrashIcon className="size-3.5" aria-hidden />
+                  Delete selected
+                </Button>
+              </div>
+            )}
           </div>
 
           {error !== null ? (
@@ -350,6 +427,9 @@ export default function FilesPage() {
                 <FileTile
                   key={item.id}
                   item={item}
+                  selected={selected.has(item.id)}
+                  onToggleSelect={() => toggleSelected(item.id)}
+                  references={references[item.id] ?? []}
                   renaming={renaming?.id === item.id ? renaming.value : null}
                   onStartRename={() => setRenaming({ id: item.id, value: item.label ?? '' })}
                   onRenameChange={(value) => setRenaming({ id: item.id, value })}
@@ -365,6 +445,7 @@ export default function FilesPage() {
         </div>
       </div>
 
+      <BulkDeleteDialog target={bulkTarget} onClose={() => setBulkTarget(null)} onDone={onBulkDone} />
     </div>
   )
 }
@@ -429,6 +510,9 @@ function UploadQueuePanel({ queue, onDismiss, disabled }: { queue: QueueItem[]; 
 /** One card. The preview is whatever the browser can decode; everything else is what the probe read at upload. */
 function FileTile({
   item,
+  selected,
+  onToggleSelect,
+  references,
   renaming,
   onStartRename,
   onRenameChange,
@@ -439,6 +523,9 @@ function FileTile({
   disabled,
 }: {
   item: FileItem
+  selected: boolean
+  onToggleSelect: () => void
+  references: ArtifactReference[]
   renaming: string | null
   onStartRename: () => void
   onRenameChange: (value: string) => void
@@ -448,13 +535,15 @@ function FileTile({
   onDelete: () => void
   disabled: boolean
 }) {
-  const family = familyOf(item)
+  const family = artifactFamilyOf(item)
+  const blocking = references.filter((r) => r.blocking)
+  const usedBy = references.length === 0 ? null : `${describeReference(references[0] as ArtifactReference)}${references.length > 1 ? ` +${references.length - 1} more` : ''}`
   const duration = formatDuration(item.durationMs)
   const name = item.label ?? item.id
   const url = uploadContentUrl(item.id)
 
   return (
-    <li className="flex flex-col overflow-hidden rounded-lg border bg-panel">
+    <li className={`flex flex-col overflow-hidden rounded-lg border bg-panel ${selected ? 'outline outline-2 -outline-offset-1 outline-accent' : ''}`}>
       <div className="relative flex aspect-video items-center justify-center bg-panel-2">
         {family === 'image' ? (
           <img src={url} alt="" loading="lazy" className="size-full object-contain" />
@@ -532,7 +621,20 @@ function FileTile({
             .join(' · ')}
         </p>
 
+        {usedBy !== null && (
+          <p
+            className={`truncate text-[11.5px] ${blocking.length > 0 ? 'text-danger' : 'text-warn'}`}
+            title={references.map(describeReference).join('\n')}
+          >
+            Used by {usedBy}
+          </p>
+        )}
+
         <div className="mt-0.5 flex items-center justify-end gap-0.5">
+          <label className="mr-auto flex items-center gap-1.5 text-[11.5px] text-faint">
+            <Checkbox checked={selected} onCheckedChange={onToggleSelect} aria-label={`Select ${name}`} />
+            Select
+          </label>
           <button
             type="button"
             onClick={onTogglePin}
@@ -550,17 +652,30 @@ function FileTile({
                 // A pinned file cannot be deleted: the server refuses it, and
                 // the pin means "never delete this automatically" — so the
                 // button says so here rather than letting the click fail.
-                disabled={disabled || item.pinned}
+                disabled={disabled || item.pinned || blocking.length > 0}
                 aria-label={`Delete ${name}`}
-                title={item.pinned ? 'Unpin it first' : 'Delete'}
+                title={item.pinned ? 'Unpin it first' : blocking.length > 0 ? 'A queued or running job still uses this file' : 'Delete'}
                 className="rounded p-1 text-faint hover:bg-panel-2 hover:text-danger disabled:opacity-50"
               >
                 <TrashIcon className="size-3.5" aria-hidden />
               </button>
             }
             title={`Delete ${name}?`}
-            description="The file is removed from the farm and its bytes deleted. Anything still referencing it — a workflow, a queue entry — will stop resolving."
-            confirmLabel="Delete"
+            description={
+              references.length === 0 ? (
+                'The file is removed from the farm and its bytes deleted. The farm found nothing that still uses it, but it cannot see a file a plugin keeps outside its stored data.'
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-danger">This file is still referenced. Deleting it makes whatever uses it fail — a post, a retry, a scheduled run.</p>
+                  <ul className="list-disc pl-5">
+                    {references.map((ref, i) => (
+                      <li key={i}>{describeReference(ref)}</li>
+                    ))}
+                  </ul>
+                </div>
+              )
+            }
+            confirmLabel={references.length > 0 ? 'Delete anyway' : 'Delete'}
             onConfirm={onDelete}
           />
         </div>
