@@ -88,8 +88,24 @@ export class UiTreeInspector implements Inspector {
 
   constructor(private deps: UiTreeInspectorDeps) {}
 
+  /**
+   * A UI read whose agent connection dropped is read once more (2026-09-15). Only reads: a dump or a find changes nothing
+   * on the phone, so asking again cannot do anything twice. Production YouTube runs ended on one
+   * "guest agent closed the connection before responding" in the middle of an otherwise healthy session.
+   */
+  private async read<T>(fn: (client: GuestAgentClient) => Promise<T>): Promise<T> {
+    try {
+      return await this.deps.withClient(fn)
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code !== 'E_TRANSPORT') throw err
+      this.deps.onLog?.('warn', `the guest agent connection on ${this.deps.deviceId} dropped during a UI read (${err instanceof Error ? err.message : String(err)}) — reading once more`)
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      return await this.deps.withClient(fn)
+    }
+  }
+
   async dump(): Promise<UiNode> {
-    const result = await this.deps.withClient((c) => c.uiDump())
+    const result = await this.read((c) => c.uiDump())
     if (result.truncated) {
       this.deps.onLog?.(
         'warn',
@@ -117,7 +133,7 @@ export class UiTreeInspector implements Inspector {
    */
   async find(sel: Selector): Promise<UiNode | null> {
     if ('point' in sel) return matchSelector({} as UiNode, sel)
-    const result = await this.deps.withClient((c) => c.uiFind(sel))
+    const result = await this.read((c) => c.uiFind(sel))
     if (!result.node) return null
     return (await this.rejectedAsContainer(sel, result.node)) ? null : result.node
   }
@@ -135,7 +151,7 @@ export class UiTreeInspector implements Inspector {
       const synthetic = matchSelector({} as UiNode, sel)
       return synthetic ? { ok: true, node: synthetic } : { ok: false, reason: 'not-found', matches: 0 }
     }
-    const result = await this.deps.withClient((c) => c.uiFind(sel))
+    const result = await this.read((c) => c.uiFind(sel))
     if (!result.node || result.matches === 0) return { ok: false, reason: 'not-found', matches: 0 }
     if (await this.rejectedAsContainer(sel, result.node)) return { ok: false, reason: 'rejected-oversized', matches: result.matches }
     if (result.matches > 1) return { ok: false, reason: 'ambiguous', matches: result.matches }

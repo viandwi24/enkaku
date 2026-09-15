@@ -529,6 +529,29 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
         try {
           return await fn(current)
         } catch (err) {
+          if (err instanceof GuestAgentClientError && err.code === 'E_TRANSPORT' && port !== null) {
+            /*
+              The connection, not the token (2026-09-15). The port forward is set up only by the first bootstrap
+              round, so once it was lost on a held session every later call failed "could not connect to
+              127.0.0.1:<port>" — and "guest agent closed the connection before responding" ended production runs on
+              three phones. The forward is restored here. A call that never connected never reached the agent, so it
+              is sent once more; a call cut off after it was sent may already have happened on the phone (a text
+              commit), so it is not.
+            */
+            const held = port
+            try {
+              await opts.launcher.forward(held)
+            } catch (forwardErr) {
+              deps.log.warn(`guest-agent session[${opts.deviceId}]: ${err.message} — and the port forward could not be restored: ${String(forwardErr)}`)
+              throw err
+            }
+            const neverSent = err.message.startsWith('could not connect')
+            deps.log.warn(
+              `guest-agent session[${opts.deviceId}]: ${err.message} — restored the port forward${neverSent ? '; retrying the call once, it never reached the agent' : '; not retrying a call the agent may already have received'}`,
+            )
+            if (neverSent) return await fn(current)
+            throw err
+          }
           if (!(err instanceof GuestAgentClientError) || !REAUTH_CODES.has(err.code)) throw err
           // The agent answered but does not recognise this token — the on-device process
           // genuinely restarted (crash, force-stop, reboot). Rotate exactly once here, never

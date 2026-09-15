@@ -42,6 +42,34 @@ describe('UiTreeInspector (plan 222 §4.2)', () => {
     expect(inspector.lastDump()?.root).toBe(root)
   })
 
+  test('a read whose agent connection dropped is read once more; any other error is not (2026-09-15)', async () => {
+    const root = node({ className: 'hierarchy' })
+    let calls = 0
+    const inspector = new UiTreeInspector({
+      deviceId: 'd1',
+      transport: { execOut: async () => new Uint8Array() } as never,
+      withClient: (async (fn: (c: GuestAgentClient) => Promise<unknown>) => {
+        calls++
+        if (calls === 1) throw Object.assign(new Error('guest agent closed the connection before responding'), { code: 'E_TRANSPORT' })
+        return fn(fakeClient({ uiDump: async () => ({ root, widthPx: 1, heightPx: 1, nodeCount: 1, truncated: false, tookMs: 1 }) }))
+      }) as never,
+    })
+    expect(await inspector.dump()).toBe(root)
+    expect(calls).toBe(2)
+
+    let other = 0
+    const failing = new UiTreeInspector({
+      deviceId: 'd1',
+      transport: { execOut: async () => new Uint8Array() } as never,
+      withClient: (async () => {
+        other++
+        throw Object.assign(new Error('the agent refused the request'), { code: 'E_PROTOCOL' })
+      }) as never,
+    })
+    await expect(failing.dump()).rejects.toThrow('the agent refused the request')
+    expect(other).toBe(1)
+  })
+
   test('a truncated dump is logged as truncated and still returned', async () => {
     const root = node({ className: 'hierarchy' })
     const logs: Array<{ level: string; msg: string }> = []

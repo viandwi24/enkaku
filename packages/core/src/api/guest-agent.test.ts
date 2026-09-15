@@ -1182,6 +1182,32 @@ describe('plan 44 §8b "Bug 1": one token per device, shared across every operat
     // Two bootstraps total for the device: the original apply(), plus exactly one re-auth.
     expect(calls.filter((c) => c.startsWith('bootstrap:'))).toHaveLength(2)
   })
+
+  test('a call that could not connect restores the port forward and is sent once more — no re-bootstrap (2026-09-15)', async () => {
+    const { launcher, calls } = fakeLauncher()
+    let statusCalls = 0
+    const client = fakeClient({
+      routeStatus: async () => {
+        statusCalls++
+        if (statusCalls === 1) throw new GuestAgentClientError('E_TRANSPORT', 'could not connect to 127.0.0.1:27114: Failed to connect')
+        return { prepared: true, up: true, upstream: 'proxy.example:1080' }
+      },
+    })
+    const { db, app } = makeHarness({ launcher, client })
+    seedDevice(db)
+
+    await app.request('/dev-1/network', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ host: 'proxy.example', port: 1080, udpMode: 'udp' }),
+    })
+    const res = await app.request('/dev-1/network')
+    const body = (await res.json()) as { observed: { up: boolean } | null; lastError: unknown }
+    expect(body.lastError).toBeNull()
+    expect(body.observed?.up).toBe(true)
+    expect(calls.filter((c) => c.startsWith('forward:')).length).toBeGreaterThanOrEqual(2)
+    expect(calls.filter((c) => c.startsWith('bootstrap:'))).toHaveLength(1)
+  })
 })
 
 describe('checks and health derivation (plan 51 §4.1, §5.5) — requires ENKAKU_NETWORK_PROBE_URL', () => {
