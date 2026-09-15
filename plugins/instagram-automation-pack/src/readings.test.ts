@@ -25,7 +25,11 @@ import {
   shareInterstitialButton,
   shareButton,
   shareNuxButton,
+  CONFIRM_PLAN,
 } from './post-video'
+import { MAX_REFRESHES_IN_A_ROW, PROFILE_PULL_BAND, makeRng, planConfirmStep, pullToRefreshPath } from './behavior'
+import type { ConfirmMove, ConfirmStep } from './behavior'
+import { rowsById, treeFrame } from './tree'
 import { isReady, isSignedOut, promoDismissButton, waitForTree } from './instagram'
 import { inboxItems, inboxStrings, onInbox } from './check-inbox'
 import { feedLikeState, feedPosts, onHomeFeed } from './scroll-feed'
@@ -45,6 +49,73 @@ import { readProfile } from './check-profile'
 async function fixture(name: string): Promise<UiNode> {
   return (await Bun.file(new URL(`./__fixtures__/${name}`, import.meta.url)).json()) as UiNode
 }
+
+describe('post-video — the looks after Share (0.7.0)', () => {
+  const plan = (seed: number, rounds = 300): ConfirmStep[] => {
+    const rng = makeRng(seed)
+    const moves: ConfirmMove[] = []
+    return Array.from({ length: rounds }, () => {
+      const step = planConfirmStep(rng, moves, CONFIRM_PLAN)
+      moves.push(step.move)
+      return step
+    })
+  }
+
+  test('the same seed replays the same rounds', () => {
+    expect(plan(42, 30)).toEqual(plan(42, 30))
+  })
+
+  test('pulls and trips Home are mixed: never Home twice in a row, never more than three pulls in a row', () => {
+    for (const seed of [1, 7, 99, 2026]) {
+      const moves = plan(seed).map((s) => (s.move === 'home' ? 'H' : 'R')).join('')
+      expect(moves).toContain('H')
+      expect(moves).toContain('R')
+      expect(moves).not.toContain('HH')
+      expect(moves).not.toContain('R'.repeat(MAX_REFRESHES_IN_A_ROW + 1))
+    }
+  })
+
+  test('waits are jittered inside the plan, with the odd longer one', () => {
+    const [lo, hi] = CONFIRM_PLAN.waitMs
+    const waits = plan(11).map((s) => s.waitMs)
+    expect(Math.min(...waits)).toBeGreaterThanOrEqual(lo)
+    expect(Math.max(...waits)).toBeLessThanOrEqual(Math.ceil(hi * 1.7))
+    expect(waits.some((w) => w > hi)).toBe(true)
+    expect(new Set(waits).size).toBeGreaterThan(250)
+  })
+
+  test('a pull round always pulls and lingers nowhere; a trip Home lingers 1.5–5 s', () => {
+    for (const s of plan(3)) {
+      if (s.move === 'refresh') {
+        expect(s.pull).toBe(true)
+        expect(s.lingerMs).toBe(0)
+      } else {
+        expect(s.lingerMs).toBeGreaterThanOrEqual(1_500)
+        expect(s.lingerMs).toBeLessThanOrEqual(5_000)
+      }
+    }
+  })
+
+  test('the pull starts below the profile\'s action bar and ends above its bottom nav, off both side edges (screen-profile-empty)', async () => {
+    const tree = await fixture('screen-profile-empty.json')
+    const frame = treeFrame(tree)
+    const actionBar = rowsById(tree, 'profile_action_bar')[0] as UiNode
+    const nav = rowsById(tree, 'tab_bar')[0] as UiNode
+    expect(actionBar.bounds.bottom).toBe(168)
+    expect(nav.bounds.top).toBe(1479)
+    const rng = makeRng(5)
+    for (let i = 0; i < 300; i++) {
+      const p = pullToRefreshPath(frame, rng, PROFILE_PULL_BAND)
+      expect(p.from.y).toBeGreaterThan(actionBar.bounds.bottom)
+      expect(p.to.y).toBeLessThan(nav.bounds.top)
+      expect(p.to.y - p.from.y).toBeGreaterThanOrEqual(128)
+      for (const pt of [p.from, p.to]) {
+        expect(pt.x).toBeGreaterThan(frame.width * 0.2)
+        expect(pt.x).toBeLessThan(frame.width * 0.8)
+      }
+    }
+  })
+})
 
 describe('post-video — the walk, screen by screen', () => {
   test('home: the navigation is up and "+" is the clickable in the left action bar', async () => {

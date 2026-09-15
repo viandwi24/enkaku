@@ -51,7 +51,7 @@ import postVideo from './post-video'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.6.0',
+  version: '0.7.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -61,7 +61,16 @@ export default definePlugin({
   /**
    * ## Changelog
    *
-   * **0.6.0 — the profile is re-read for up to four minutes after Share.**
+   * **0.7.0 — the profile is pulled to refresh at a person's rhythm.** The
+   * owner asked (2026-09-15) for the looks after Share to stop being one
+   * mechanical loop: every look after the first either pulls the open profile
+   * down to refresh it or visits Home and comes back to the profile (usually
+   * pulling there too), at jittered 10–20 s gaps, never Home twice in a row
+   * and never more than three pulls in a row. The pull is a slow drag inside
+   * the profile content, never a tap. The 4-minute budget, the early exit on a
+   * higher post count and "unverified, never failed" are unchanged.
+   *
+   * **0.6.0 —the profile is re-read for up to four minutes after Share.**
    * The owner watched production phone #2 (2026-09-15): the new Reel counted
    * on the profile only on the third refresh, just as its upload finished.
    * The confirmation looked eight times (about two minutes); it now keeps

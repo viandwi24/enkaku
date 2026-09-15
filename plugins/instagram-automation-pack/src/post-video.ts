@@ -3,6 +3,8 @@ import { ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { all, rowsById, treeFrame, within } from './tree'
+import { between, makeRng, planConfirmStep, pullToRefresh } from './behavior'
+import type { ConfirmMove, ConfirmPlan } from './behavior'
 import { INSTAGRAM_PACKAGE, backToNav, capture, centre, isReady, openTab, readableInstagramNodes, promoDismissButton, relaunch, sleep, waitForTree } from './instagram'
 
 /**
@@ -66,6 +68,11 @@ const CAPTION_MAX = 2_200
  * as the upload ended. Eight looks were about two minutes; a slower phone needs more.
  */
 const CONFIRM_BUDGET_MS = 4 * 60_000
+/**
+ * How the looks after the first one vary (0.7.0): jittered 10–20 s gaps (the fixed 15 s before), a trip to Home
+ * and back to the profile about a third of the time, and a pull to refresh on every other look and on most trips.
+ */
+export const CONFIRM_PLAN: ConfirmPlan = { waitMs: [10_000, 20_000], homeChance: 0.35, pullAfterHome: 0.6 }
 
 const params = z.object({
   source: z
@@ -451,16 +458,41 @@ async function tapCentre(ctx: ScriptContext<unknown>, node: UiNode): Promise<voi
   await ctx.device.tap({ point: centre(node) })
 }
 
-/** Open the profile tab and read the post count. Never throws: an unreadable count is not evidence about the post. */
-async function readPostCount(ctx: ScriptContext<unknown>, label: string): Promise<number | null> {
+/**
+ * Open the profile tab and read the post count. Never throws: an unreadable count is not evidence about the post.
+ * `pull` (0.7.0) pulls the profile down to refresh it once it is showing, then reads it again — a drag inside the
+ * profile content, never a tap. On a profile already open, `openTab` taps nothing either.
+ */
+async function readPostCount(ctx: ScriptContext<unknown>, label: string, opts?: { pull?: () => number }): Promise<number | null> {
   try {
     await backToNav(ctx)
-    const profile = await openTab(ctx, 'profile_tab', (t) => profilePostCount(t) !== null, 15_000)
+    let profile = await openTab(ctx, 'profile_tab', (t) => profilePostCount(t) !== null, 15_000)
+    if (profile.ok && opts?.pull) {
+      await pullToRefresh(ctx, treeFrame(profile.tree), opts.pull)
+      await sleep(between(opts.pull, 2_000, 3_500))
+      profile = await waitForTree(ctx, (t) => profilePostCount(t) !== null, { budgetMs: 10_000 })
+    }
     await capture(ctx, label, profile.tree)
     return profile.ok ? profilePostCount(profile.tree) : null
   } catch (err) {
     ctx.log.warn('could not read the profile post count', { error: String(err) })
     return null
+  }
+}
+
+/**
+ * Go to the Home feed and stay a moment (0.7.0) — one of the moves a confirmation round makes. A tap on a tab,
+ * never a relaunch. Never throws: if Home does not show, the next reading opens the profile from wherever
+ * Instagram is.
+ */
+async function visitFeed(ctx: ScriptContext<unknown>, lingerMs: number): Promise<void> {
+  try {
+    await backToNav(ctx)
+    const feed = await openTab(ctx, 'feed_tab', (t) => homeCreateButton(t) !== null, 12_000)
+    if (!feed.ok) ctx.log.warn('the Home feed did not show before going back to the profile')
+    await sleep(lingerMs)
+  } catch (err) {
+    ctx.log.warn('could not visit the Home feed before re-reading the profile', { error: String(err) })
   }
 }
 
@@ -844,15 +876,31 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     */
     let postsAfter: number | null = null
     let confirmError: string | null = null
+    const confirmStarted = Date.now()
+    /*
+      A real refresh, at a person's rhythm (0.7.0). The owner asked (2026-09-15) for the looks after Share to stop
+      being one mechanical loop: each round after the first is planned by `planConfirmStep` — a pull to refresh on
+      the profile already open, or a visit to Home and back to the profile — after a jittered wait. Neither move
+      force-stops or relaunches Instagram, which would kill the upload.
+    */
+    const rng = makeRng((Date.now() ^ Number(ctx.job.attempt)) >>> 0)
+    const moves: ConfirmMove[] = []
     try {
       if (!after.ok) {
         ctx.log.warn('something is still over the share screen after Share — see artifact ig-09-after-share')
       }
       // By time, not a count of 8 (0.6.0): the new Reel counts on the profile only once its upload finishes.
-      const confirmStarted = Date.now()
       for (let round = 0; round === 0 || Date.now() - confirmStarted < CONFIRM_BUDGET_MS; round++) {
-        if (round > 0) await sleep(15_000)
-        postsAfter = await readPostCount(ctx, `ig-10-profile-after-${round + 1}`)
+        let pull: (() => number) | undefined
+        if (round > 0) {
+          const step = planConfirmStep(rng, moves, CONFIRM_PLAN)
+          moves.push(step.move)
+          await sleep(step.waitMs)
+          if (step.move === 'home') await visitFeed(ctx, step.lingerMs)
+          pull = step.pull ? rng : undefined
+          ctx.log.info(`looking at the profile again (attempt ${round + 1}) — ${step.move === 'home' ? 'back from Home' : 'on the profile already open'}${step.pull ? ', pulled to refresh' : ''}`, { waitedMs: step.waitMs })
+        }
+        postsAfter = await readPostCount(ctx, `ig-10-profile-after-${round + 1}`, { pull })
         if (before !== null && postsAfter !== null && postsAfter > before) {
           return {
             outcome: 'posted' as const,
@@ -866,8 +914,6 @@ const script: PluginMemberScript<typeof params, typeof result> = {
           }
         }
         ctx.log.warn(`the profile does not show the new Reel yet (attempt ${round + 1}, looking for up to ${CONFIRM_BUDGET_MS / 60_000} min)`, { before: String(before), after: String(postsAfter) })
-        // Pull to refresh the profile before the next reading.
-        await ctx.device.swipe({ x: Math.round(frame.width / 2), y: Math.round(frame.height * 0.3) }, { x: Math.round(frame.width / 2), y: Math.round(frame.height * 0.75) }, 350)
       }
     } catch (err) {
       confirmError = err instanceof Error ? err.message : String(err)
@@ -889,7 +935,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       postsBefore: before,
       postsAfter,
       screens,
-      reason: `Share was tapped and Instagram left the share screen, but after ~2 minutes ${saw} Reporting "unverified" rather than assuming it posted.`,
+      reason: `Share was tapped and Instagram left the share screen, but after ${Math.round((Date.now() - confirmStarted) / 1000)}s ${saw} Reporting "unverified" rather than assuming it posted.`,
     }
   },
 
