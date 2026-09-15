@@ -864,6 +864,12 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.45.1 — the English wording of two dialogs, measured. Production session g-1789475048-2bac (2026-09-15, 1.45.0):
+  //   5 of 6 TikTok failures were "the own profile could not be opened", all on English builds, under a sheet reading
+  //   "Viewer history turned on" (#41 #44 #50) or a dialog reading "Save login for next time" with "Save login" and
+  //   "Not now" (#46). The pack only had guessed English wordings for both ("Profile view history is on", "Save login
+  //   info for next time"), so neither was recognised. The measured wording is now part of each identity; the sheet is
+  //   still closed with BACK (its close is unlabelled) and the dialog refused with "Not now".
   // 1.45.0 — a Profil tap that was not taken is tapped again, and the "Add phone" sheet is closed with its keyboard up.
   //   Two production failures on English TikTok builds (2026-09-15, pack 1.44.0, Samsung). Job 64d97391 stopped 5 times
   //   with "the own profile could not be opened to look for drafts": it found and tapped "Profile", and both captures
@@ -1136,7 +1142,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.45.0',
+  version: '1.45.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

@@ -51,7 +51,9 @@ export const TIKTOK_INTERRUPTIONS: readonly Interruption[] = [
     // The English wording is unverified.
     id: 'tt.viewer-history',
     what: 'the "profile view history turned on" sheet',
-    identity: ['Riwayat penonton diaktifkan', 'Profile view history is on', 'Profile view history turned on'],
+    // English MEASURED on production (1.45.1, 2026-09-15, #41 #44 #50): "Viewer history turned on", same `le1` title id and
+    // `viewer_auth_switch`, unlabelled close at [624,360][704,448]. The two older English guesses are kept, unverified.
+    identity: ['Riwayat penonton diaktifkan', 'Viewer history turned on', 'Profile view history is on', 'Profile view history turned on'],
   },
   /*
     Three more dialogs over the feed that hid the Profil tab (1.44.0), from production SM-A075F dumps (2026-09-15): of 19
@@ -63,7 +65,8 @@ export const TIKTOK_INTERRUPTIONS: readonly Interruption[] = [
     // Buttons measured: "Simpan info login" [97,930][622,1019] and "Tidak sekarang" [97,1020][622,1109].
     id: 'tt.save-login',
     what: 'the "save login info" dialog',
-    identity: ['Simpan info login untuk lain waktu', 'Save login info for next time'],
+    // English MEASURED on production (1.45.1, 2026-09-15, #46): "Save login for next time", buttons "Save login" and "Not now".
+    identity: ['Simpan info login untuk lain waktu', 'Save login for next time', 'Save login info for next time'],
     refuse: ['Tidak sekarang', 'Not now'],
   },
   {

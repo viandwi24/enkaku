@@ -128,6 +128,23 @@ describe('dialogs that hid the Profil tab on production (1.44.0)', () => {
     expect(closeNear(tree, found!.anchor)).toBeNull()
   })
 
+  test('the English builds\' wording, as measured on production (1.45.1)', () => {
+    const saveLogin = dialog('Save login for next time', 'Log in to the account on this device without entering your info.', [
+      ['Save login', 97, 930, 622, 1019],
+      ['Not now', 97, 1020, 622, 1109],
+    ])
+    const login = findInterruption(saveLogin)
+    expect(login?.interruption.id).toBe('tt.save-login')
+    expect(refusalButton(saveLogin, login!.interruption)?.text).toBe('Not now')
+
+    const viewer = dialog('Viewer history turned on', 'Others will see you viewed their profile.', [['Save', 64, 1360, 656, 1464]])
+    const sheet = findInterruption(viewer)
+    expect(sheet?.interruption.id).toBe('tt.viewer-history')
+    // No refusal and no labelled close: BACK, never "Save".
+    expect(refusalButton(viewer, sheet!.interruption)).toBeNull()
+    expect(closeNear(viewer, sheet!.anchor)).toBeNull()
+  })
+
   test('a reading with only System UI is a hidden system dialog; one with TikTok or nothing is not', () => {
     expect(withheldBySystemDialog(node({ packageName: '', children: [node({ packageName: 'com.android.systemui' })] }))).toBe(true)
     expect(withheldBySystemDialog(node({ packageName: '', children: [node({ packageName: 'com.android.systemui' }), node({})] }))).toBe(false)
