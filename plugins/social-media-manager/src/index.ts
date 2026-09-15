@@ -76,6 +76,13 @@ import {
  *
  * ## Changelog
  *
+ * - **0.36.0 — the router never sends a video whose file was deleted.** Files
+ *   can now be cleaned from the Files page. Before dispatching, the router asks the
+ *   farm's new `artifact.get` whether the upload still exists (read once a minute
+ *   per video); a deleted one is held on every waiting platform with the note
+ *   "the video file was deleted from Files" instead of failing on every phone. The
+ *   service now asks for the `artifact.get` permission — grant it when activating.
+ *   The check fails open: a core without it keeps posting as before.
  * - **0.35.0 — the Drafts tab is Cleanup, and sweeps old phone videos too.**
  *   The owner (2026-09-16): the video files the post scripts push pile up. The new
  *   `clean-phone-videos` member deletes the farm-pushed `post-`/`ig-`/`yt-` videos in a
@@ -683,6 +690,36 @@ function fleetNames(fleet: z.infer<typeof DeviceListOutput>): Map<string, string
 }
 
 const JobRunOutput = z.object({ jobId: z.string() })
+
+/** What `artifact.get` answers (core, 2026-09-16): a deleted file is `{ exists: false }`, never an error. */
+const ArtifactGetOutput = z.object({ exists: z.boolean() }).passthrough()
+const VIDEO_FILE_DELETED = 'the video file was deleted from Files, so nothing is sent — upload it again and add it to a new session'
+/** How long one reading of "does this file still exist" is trusted, so a tick over forty rows is not forty calls every poll. */
+const FILE_CHECK_TTL_MS = 60_000
+const fileChecks = new Map<string, { exists: boolean; at: number }>()
+let fileCheckUnavailableLogged = false
+
+/**
+ * Does the video's upload still exist (0.36.0)? The owner (2026-09-16): files can now be cleaned from the Files page, and
+ * what depends on a file must handle it going. A post whose file is gone would only fail on every phone it is sent to,
+ * so the router holds it with a note instead. Fails OPEN: a core without `artifact.get`, or a read that throws, says
+ * "exists" — an outage of this check must never stop a farm from posting.
+ */
+async function videoFileExists(ctx: PluginServiceContext, artifactId: string): Promise<boolean> {
+  const cached = fileChecks.get(artifactId)
+  if (cached && Date.now() - cached.at < FILE_CHECK_TTL_MS) return cached.exists
+  try {
+    const { exists } = await ctx.farm.call('artifact.get', { artifactId }, ArtifactGetOutput)
+    fileChecks.set(artifactId, { exists, at: Date.now() })
+    return exists
+  } catch (err) {
+    if (!fileCheckUnavailableLogged) {
+      fileCheckUnavailableLogged = true
+      ctx.log.warn('could not check whether video files still exist — sending as before', { error: messageOf(err) })
+    }
+    return true
+  }
+}
 /** Only the fields the reconciler reads. Validated at this boundary because the farm's own shape may move under a published plugin. */
 const JobGetOutput = z.object({ status: z.string(), error: z.string().nullable().optional(), result: z.unknown().optional(), startedAt: z.number().nullable().optional() })
 
@@ -1041,6 +1078,23 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
       (`platformPostTexts`). A platform with nothing to post is held with the note; the others still go, so a
       video whose only text is its YouTube title is sent to YouTube and waits everywhere else.
     */
+    // A deleted upload is held with a note on every platform still waiting, never sent (0.36.0, `videoFileExists`).
+    if (post.platforms.some((id) => stateFor(post, id).state === 'pending') && !(await videoFileExists(ctx, post.videoArtifactId))) {
+      const dispatch: Post['dispatch'] = { ...post.dispatch }
+      let changed = false
+      for (const id of post.platforms) {
+        const state = stateFor(post, id)
+        if (state.state !== 'pending' || state.note === VIDEO_FILE_DELETED) continue
+        dispatch[id] = withSummary({ ...state, note: VIDEO_FILE_DELETED })
+        changed = true
+      }
+      if (changed) {
+        const written = await ctx.storage.global.setIfVersion(entry.key, { ...post, dispatch }, entry.version)
+        if (written) entry.version += 1
+      }
+      continue
+    }
+
     const rule = post.groupId !== null ? (groups.get(post.groupId)?.hashtags ?? NO_HASHTAG_RULE) : NO_HASHTAG_RULE
     const { texts, bare } = platformPostTexts(post, rule)
     if (bare.length > 0) {
@@ -1215,7 +1269,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.35.0',
+  version: '0.36.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
@@ -1239,7 +1293,7 @@ export default definePlugin({
      * asks about jobs it holds ids for, one at a time — a permission asked for
      * and not needed is one an operator granted for nothing.
      */
-    permissions: ['device.list', 'job.run', 'job.get'],
+    permissions: ['device.list', 'job.run', 'job.get', 'artifact.get'],
     setup: (ctx) => {
       const timer = setInterval(() => {
         void maybeRunTick(ctx).catch((err) => ctx.log.warn('router tick failed', { error: messageOf(err) }))
