@@ -54,9 +54,10 @@ describe('youtubeTitle — a long caption fitted to 100 characters (0.34.0)', ()
     // Cut at a word, and the punctuation left dangling at the cut is dropped.
     expect(title).toStartWith('Sambil nunggu, kita cek zona buy dulu ya #')
     expect(title).toContain('#trading')
-    // The text is cut on a word boundary: no half word before the first hashtag.
+    // The text is cut on a word boundary: the caption goes on with a non-letter right where the title's text stops.
     const body = title.slice(0, title.indexOf(' #'))
-    expect(caption).toContain(`${body} `)
+    expect(caption.startsWith(body)).toBe(true)
+    expect(caption.charAt(body.length)).toMatch(/[^\p{L}\p{N}]/u)
     // What did not fit is reported, and every kept tag is one of the caption's.
     const kept = title.split(' ').filter((w) => w.startsWith('#'))
     expect([...kept, ...droppedTags].sort()).toEqual(['#AkademiBitorex', '#fyp', '#market', '#marketupdate', '#trading', '#tradinglife', '#zonabuy'].sort())
