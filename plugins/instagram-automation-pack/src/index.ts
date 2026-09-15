@@ -52,7 +52,7 @@ import clearDrafts from './clear-drafts'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.10.1',
+  version: '0.10.2',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -61,6 +61,8 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.10.2 — the pushed videos are cleaned up.** Every run left its video in /sdcard/DCIM/Camera and nothing removed it (the owner, 2026-09-16: old video files pile up). Before pushing, `removeStalePushedVideos` deletes this pack's own pushed files older than six hours
    *
    * **0.10.1 — the caption is typed at a person's pace.** The owner
    * (2026-09-16): captions went in "like a robot, or like copy and paste".

@@ -1,4 +1,5 @@
 import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
+import { removeStalePushedVideos } from './pushed-videos'
 import { ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
@@ -1232,6 +1233,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     }
     screens.push('home')
 
+    await removeStalePushedVideos(ctx)
     const remotePath = `/sdcard/DCIM/Camera/yt-${ctx.job.id}-${ctx.job.attempt}.mp4`
     const fileName = remotePath.slice(remotePath.lastIndexOf('/') + 1)
     await ctx.device.push({ artifactId: ctx.params.videoArtifactId, remotePath, mediaScan: 'auto' })

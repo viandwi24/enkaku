@@ -1,4 +1,5 @@
 import { ui, type PluginMemberScript, type ScriptContext } from '@enkaku/sdk'
+import { removeStalePushedVideos } from './pushed-videos'
 import type { Bounds, Selector, UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { between, makeRng, planConfirmStep, sleep, type ConfirmMove, type ConfirmPlan, type ConfirmStep } from './human'
@@ -2429,6 +2430,7 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     // has ever known the artifact's real extension, and inventing one now would be a behaviour
     // change to a mode this step must leave alone.
     const remoteExt = attempt.folderVideo ? (attempt.folderVideo.path.match(/\.([^./]+)$/)?.[1] ?? 'mp4') : 'mp4'
+    await removeStalePushedVideos(ctx)
     const remotePath = `/sdcard/DCIM/Camera/post-${ctx.job.id}-${ctx.job.attempt}.${remoteExt}`
     const pushResult = await ctx.device.push({ artifactId: resolved.artifactId, remotePath, mediaScan: 'auto' })
     attempt.remotePath = remotePath // only recorded once the push actually completed — an honest "where it was left" (G8, §3.8)

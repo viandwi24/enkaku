@@ -865,6 +865,7 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.46.1 — the videos this pack pushed onto the phone are cleaned up. Every run left its video in /sdcard/DCIM/Camera and nothing removed it (the owner, 2026-09-16: old video files pile up). Before pushing, `removeStalePushedVideos` deletes this pack's own pushed files older than six hours — never a fresh one an upload may still read, never any other file.
   // 1.46.0 — drafts are cleared AFTER posting, and `clear-drafts` cleans them on its own. The owner's decision
   //   (2026-09-16): clearing first put a profile visit and a folder walk in front of every post, and on production
   //   (2026-09-15) "the own profile could not be opened" before posting failed ~39 runs that had posted nothing. Now
@@ -1180,7 +1181,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.46.0',
+  version: '1.46.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

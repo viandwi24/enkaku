@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.0',
+  version: '0.39.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,8 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.1 — the pushed videos are cleaned up.** Every run left its video in /sdcard/DCIM/Camera and nothing removed it (the owner, 2026-09-16: old video files pile up). Before pushing, `removeStalePushedVideos` deletes this pack's own pushed files older than six hours
    *
    * **0.39.0 — `clear-drafts`: every draft on the channel, deleted on its own.**
  * The owner asked (2026-09-16) for draft cleaning as a script of its own on every

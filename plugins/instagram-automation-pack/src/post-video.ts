@@ -1,4 +1,5 @@
 import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
+import { removeStalePushedVideos } from './pushed-videos'
 import { ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
@@ -808,6 +809,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     if (!ctx.params.dryRun) screens.push('profile')
     ctx.log.info('read the post count before posting', { posts: before === null ? 'unreadable' : String(before) })
 
+    await removeStalePushedVideos(ctx)
     const remotePath = `/sdcard/DCIM/Camera/ig-${ctx.job.id}-${ctx.job.attempt}.mp4`
     await ctx.device.push({ artifactId: ctx.params.videoArtifactId, remotePath, mediaScan: 'auto' })
     const expectedSec = await newestVideoSeconds(ctx, remotePath)
