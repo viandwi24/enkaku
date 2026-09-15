@@ -31,6 +31,21 @@ import { formatDeviceLabel, loadDeviceNumbers, lookupDeviceNumber } from './devi
 import type { EventRecorder } from '../events/recorder'
 import type { EndpointStore } from './endpoints'
 
+/**
+ * What `onDeviceReady` knows about how the device came back.
+ *
+ * `resumed` is true when adb dropped the serial and it returned INSIDE the
+ * offline grace (`DEVICE_OFFLINE_GRACE_SEC`): the device never went offline,
+ * nothing about it was forgotten, and only what dies with the link (the
+ * scrcpy child, `adb forward`/`adb reverse`) needs redoing. The heavy
+ * device-online fan-out (agent ensure, labelling, preparation) is for a
+ * device that was genuinely away, and running it on every USB flap is load
+ * that can cause the next flap (field report, 73-phone farm, 2026-09-15).
+ */
+export interface DeviceReadyInfo {
+  resumed: boolean
+}
+
 export interface DeviceRegistryDeps {
   client: AdbClient
   db: Db
@@ -45,7 +60,7 @@ export interface DeviceRegistryDeps {
    * id (plan 52 §4.1, §5.3) so a caller can also restore any persisted
    * network route for exactly this device, probe-first.
    */
-  onDeviceReady?: (deviceId: string) => void
+  onDeviceReady?: (deviceId: string, info?: DeviceReadyInfo) => void
   /** Main-stream device events: device.online / device.offline / device.unauthorized (Plan 18 §4.2). */
   record?: EventRecorder['record']
   /**
@@ -581,15 +596,34 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
    * patience. `onOnline` cancels a pending removal, so a device that comes
    * back inside the window never transitions at all — no flap to render.
    */
-  const pendingRemovals = new Map<string, ReturnType<typeof setTimeout>>()
+  const pendingRemovals = new Map<string, { timer: ReturnType<typeof setTimeout>; since: number }>()
+  /**
+   * stableId → how many times this device came back inside the grace since
+   * this process started. In memory only: it exists so a flapping phone is
+   * visible in the log line and the `device.flap` event, not as a metric.
+   */
+  const flapCounts = new Map<string, number>()
 
-  function cancelPendingRemoval(serial: string): void {
-    const timer = pendingRemovals.get(serial)
-    if (timer) {
-      clearTimeout(timer)
-      pendingRemovals.delete(serial)
-      log.debug(`device ${serial} reappeared inside the offline grace — removal cancelled`)
-    }
+  /** The operator's name for whatever row this serial belongs to, or the bare serial. */
+  function labelForSerial(serial: string): string {
+    const stableId = serialToStableId.get(serial)
+    const row = stableId
+      ? db.select().from(devices).where(eq(devices.stableId, stableId)).get()
+      : db.select().from(devices).where(eq(devices.serial, serial)).get()
+    if (!row) return serial
+    return `${formatDeviceLabel(lookupDeviceNumber(db, row.stableId), row.label)} (${serial})`
+  }
+
+  /**
+   * Calls off a held removal. Returns how long the device was gone when there
+   * was one to cancel — that is the flap — and null when there was none.
+   */
+  function cancelPendingRemoval(serial: string): number | null {
+    const pending = pendingRemovals.get(serial)
+    if (!pending) return null
+    clearTimeout(pending.timer)
+    pendingRemovals.delete(serial)
+    return Date.now() - pending.since
   }
 
   function cancelProbeRetry(serial: string): void {
@@ -622,7 +656,16 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
     // already running still has its pending removal to call off, and
     // returning early without doing so would let the timer fire underneath a
     // device that is demonstrably back.
-    cancelPendingRemoval(serial)
+    const goneMs = cancelPendingRemoval(serial)
+    if (goneMs !== null) {
+      const stableId = serialToStableId.get(serial)
+      const count = stableId ? (flapCounts.get(stableId) ?? 0) + 1 : 1
+      if (stableId) flapCounts.set(stableId, count)
+      // `info`, not `debug`: a phone that keeps dropping off USB for a few
+      // seconds never goes offline, so this line is the ONLY trace of it.
+      log.info(`device ${labelForSerial(serial)} came back within the grace (flap) after ${Math.round(goneMs / 1000)}s — flap ${count} since start`)
+    }
+    const resumed = goneMs !== null
     if (probesInFlight.has(serial)) return
     probesInFlight.add(serial)
     try {
@@ -763,8 +806,15 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
         })
         log.info(`new device registered: ${formatDeviceLabel(number, row.label)} (${probe.stableId}) via ${serial}`)
       }
-      deps.record?.({ deviceId: row.id, stream: 'main', kind: 'device.online', meta: { serial, transport: row.transport ?? 'adb-usb', number } })
-      deps.onDeviceReady?.(row.id)
+      if (resumed) {
+        // Never went offline, so there is no `device.online` to record — a
+        // flap is its own kind, and the device's log is where an operator
+        // looks when a tile keeps saying "Reconnecting".
+        deps.record?.({ deviceId: row.id, stream: 'main', kind: 'device.flap', meta: { serial, transport: row.transport ?? 'adb-usb', number, goneMs, count: flapCounts.get(row.stableId) ?? 1 } })
+      } else {
+        deps.record?.({ deviceId: row.id, stream: 'main', kind: 'device.online', meta: { serial, transport: row.transport ?? 'adb-usb', number } })
+      }
+      deps.onDeviceReady?.(row.id, { resumed })
     } catch (err) {
       // Used to be a dead end (F9): the device stayed invisible until
       // physically unplugged and replugged, because no next tracker event
@@ -801,14 +851,14 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       applyRemoval(serial)
       return
     }
-    log.debug(`device ${serial} dropped by adb — holding it online for ${Math.round(graceMs / 1000)}s in case it comes back`)
-    pendingRemovals.set(
-      serial,
-      setTimeout(() => {
+    log.info(`device ${labelForSerial(serial)} dropped by adb — holding it online for ${Math.round(graceMs / 1000)}s`)
+    pendingRemovals.set(serial, {
+      since: Date.now(),
+      timer: setTimeout(() => {
         pendingRemovals.delete(serial)
         applyRemoval(serial)
       }, graceMs),
-    )
+    })
   }
 
   /** What `onRemove` did before the grace: the transition itself, unchanged. */
@@ -892,7 +942,7 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
       // A held removal is bookkeeping, not a pending write: dropping it on
       // stop is right, because `start()` already re-derives every status
       // from the tracker's first snapshot.
-      for (const timer of pendingRemovals.values()) clearTimeout(timer)
+      for (const pending of pendingRemovals.values()) clearTimeout(pending.timer)
       pendingRemovals.clear()
       await client.trackDevices().stop()
     },

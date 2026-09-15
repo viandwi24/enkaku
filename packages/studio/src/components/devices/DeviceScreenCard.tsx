@@ -3,7 +3,7 @@ import type { DeviceInfo } from '@enkaku/protocol'
 import { LabelChip, Spinner, StatusDot, cn } from '@enkaku/ui'
 import { LiveView } from '@/components/LiveView'
 import { AgentAlertChip } from '@/components/guest-agent/AgentAlertChip'
-import { dotStateOf, dotTooltipOf, reconnectingAttempt } from './device-state'
+import { dotStateOf, dotTooltipOf, reconnectingOf } from './device-state'
 
 /** The handoff's "135° 6px stripe pattern at `opacity: 0.7`" for a screen that is not live. */
 const STRIPE: CSSProperties = {
@@ -48,8 +48,8 @@ export function DeviceScreenCard({
   onContextMenu: (e: React.MouseEvent) => void
 }) {
   // A device the farm is actively rebuilding a session for reads as
-  // "Reconnecting", not as an ordinary dead tile — see `reconnectingAttempt`.
-  const reconnecting = reconnectingAttempt(device)
+  // "Reconnecting · <where it is>", not as an ordinary dead tile — see `reconnectingOf`.
+  const reconnecting = reconnectingOf(device)
 
   return (
     <div
@@ -111,7 +111,8 @@ export function DeviceScreenCard({
             {reconnecting !== null ? (
               <>
                 <Spinner className="size-4 text-accent" />
-                <span className="text-label text-accent">{reconnecting > 0 ? `Reconnecting · ${reconnecting}` : 'Connecting'}</span>
+                <span className="px-1 text-center text-label text-accent">{reconnecting.label}</span>
+                {reconnecting.attempt >= 2 && <span className="text-tip text-faint">attempt {reconnecting.attempt}</span>}
               </>
             ) : (
               <span className={cn('text-label', device.status === 'quarantined' ? 'text-warn' : 'text-faint-2')}>{idleLabelOf(device)}</span>

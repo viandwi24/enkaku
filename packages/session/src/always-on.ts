@@ -48,9 +48,73 @@ export function usbRootOf(usb: string | undefined): string {
   return dash < 0 ? usb : usb.slice(0, dash)
 }
 
-/** Backoff for the n-th consecutive failure (1-based); the last value repeats. */
-export function rebuildDelayMs(attempt: number): number {
-  return REBUILD_BACKOFF_MS[Math.min(attempt, REBUILD_BACKOFF_MS.length) - 1] ?? REBUILD_BACKOFF_MS[REBUILD_BACKOFF_MS.length - 1]!
+/**
+ * ± this fraction is added to every rebuild delay.
+ *
+ * Without it, a USB hub that drops twenty phones at once schedules twenty
+ * rebuilds on the SAME millisecond, and they reach the per-root and farm caps
+ * as one wave, retry as one wave, and fail as one wave. Spread by ±30%, the
+ * 1 s rung lands anywhere in 0.7–1.3 s and the 30 s rung in 21–39 s.
+ */
+export const REBUILD_JITTER = 0.3
+
+/**
+ * Backoff for the n-th consecutive failure (1-based); the last value repeats.
+ * `rng` returns [0, 1); 0.5 is the unjittered midpoint, which is the default
+ * so a caller without an rng (and every test that asserts the schedule) sees
+ * the documented numbers.
+ */
+export function rebuildDelayMs(attempt: number, rng: () => number = () => 0.5): number {
+  const base = REBUILD_BACKOFF_MS[Math.min(attempt, REBUILD_BACKOFF_MS.length) - 1] ?? REBUILD_BACKOFF_MS[REBUILD_BACKOFF_MS.length - 1]!
+  const spread = (Math.min(Math.max(rng(), 0), 1) * 2 - 1) * REBUILD_JITTER
+  return Math.round(base * (1 + spread))
+}
+
+/**
+ * Where a RECOVERING build is, for the words over the tile (Studio's
+ * `device-state.ts`). `queued` covers both the backoff wait and the wait for
+ * a build slot — from the tile's point of view both are "not started yet".
+ * `building` is steps 1–3, `waiting-frame` is step 4: the scrcpy server is up
+ * and the picture has not arrived.
+ */
+export type RecoveryStep = 'queued' | 'building' | 'waiting-frame'
+
+export function recoveryStepOf(step: PrepStep): RecoveryStep {
+  return step >= 4 ? 'waiting-frame' : 'building'
+}
+
+/** The pump's sort key: device number ascending, unnumbered devices last, then id. */
+interface BuildKey {
+  number: number | null
+  id: string
+}
+
+function compareBuildKeys(a: BuildKey, b: BuildKey): number {
+  if (a.number !== b.number) {
+    if (a.number === null) return 1
+    if (b.number === null) return -1
+    return a.number - b.number
+  }
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+}
+
+/**
+ * The order the pump offers queued devices to the build slots: device-number
+ * order, ROTATED to start just after the last device that was given a slot.
+ *
+ * Plain number order meant every pass started from #1, so under a mass
+ * reconnect the low numbers took every freed slot first, every time, and #70
+ * waited behind devices that had already been rebuilt twice. Rotating from a
+ * cursor is round-robin: nobody is skipped twice in a row, the per-root and
+ * farm caps are untouched, and a boot (no cursor yet) still builds #1 first.
+ * Pure, exported for the test.
+ */
+export function rebuildOrder(ids: readonly string[], numberOf: (id: string) => number | null, after: BuildKey | null): string[] {
+  const keyed = ids.map((id) => ({ id, number: numberOf(id) })).sort(compareBuildKeys)
+  if (!after) return keyed.map((k) => k.id)
+  const pivot = keyed.findIndex((k) => compareBuildKeys(k, after) > 0)
+  if (pivot <= 0) return keyed.map((k) => k.id)
+  return [...keyed.slice(pivot), ...keyed.slice(0, pivot)].map((k) => k.id)
 }
 
 /**
@@ -96,6 +160,8 @@ export interface AlwaysOnDeps {
   log: Logger
   /** Injectable for tests; default `setTimeout`/`clearTimeout`/`Date.now`. */
   timers?: { set: (fn: () => void, ms: number) => unknown; clear: (h: unknown) => void; now: () => number }
+  /** [0, 1) source for the rebuild jitter (`REBUILD_JITTER`); default `Math.random`. A test passes `() => 0.5` for the exact schedule. */
+  rng?: () => number
 }
 
 export interface AlwaysOn {
@@ -121,6 +187,8 @@ interface Record_ {
   timer: unknown
   /** The `FIRST_FRAME_TIMEOUT_MS` deadline armed once `build()` resolves, cleared by the first frame. */
   frameTimer: unknown
+  /** The last `meta.step` written to the activity, so a build does not re-broadcast the same step for every phase. */
+  recoveryStep: RecoveryStep | null
 }
 
 /** The activity sentence for a build state — shared with `ws-handlers.ts`'s `E_SESSION_PREPARING` message. */
@@ -146,6 +214,23 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
   let usbRootByDeviceId = new Map<string, string>()
   let usbRootCacheAt = 0
   const runningBuilds = new Set<Promise<void>>()
+  const rng = deps.rng ?? Math.random
+  /** The last device given a build slot — `rebuildOrder` starts the next pass just after it. */
+  let lastStarted: BuildKey | null = null
+
+  /**
+   * Write where a recovering build is into its activity (`meta.step`). Only
+   * for a recovery (`attempt > 0`): a first build has no `recovering` meta and
+   * Studio renders it as preparing, not reconnecting. The whole meta is
+   * written every time because the activity registry replaces `meta`, it does
+   * not merge it.
+   */
+  function markRecoveryStep(deviceId: string, record: Record_, step: RecoveryStep): void {
+    if (!record.activityId || record.attempt <= 0) return
+    if (record.recoveryStep === step) return
+    record.recoveryStep = step
+    deps.activities.update(deviceId, record.activityId, { meta: { recovering: true, attempt: record.attempt, step } })
+  }
 
   function farmCeiling(): number {
     return deps.farmCeiling?.() ?? SESSION_BUILD_FARM_CEILING
@@ -211,19 +296,25 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
     if (record) clearFrameDeadline(record)
     if (!record) return
     record.state = 'recovering'
-    const delay = rebuildDelayMs(record.attempt)
+    const delay = rebuildDelayMs(record.attempt, rng)
+    record.recoveryStep = 'queued'
     if (!record.activityId) {
-      record.activityId = deps.activities.start(deviceId, { kind: 'prep', label: recoveringLabel(record.attempt), actor: ALWAYS_ON_ACTOR, meta: { recovering: true, attempt: record.attempt } })
+      record.activityId = deps.activities.start(deviceId, { kind: 'prep', label: recoveringLabel(record.attempt), actor: ALWAYS_ON_ACTOR, meta: { recovering: true, attempt: record.attempt, step: 'queued' } })
     } else {
       deps.activities.update(deviceId, record.activityId, {
         label: recoveringLabel(record.attempt),
-        meta: { recovering: true, attempt: record.attempt, nextRetryAt: timers.now() + delay, reason: String(why) },
+        meta: { recovering: true, attempt: record.attempt, step: 'queued', nextRetryAt: timers.now() + delay, reason: String(why) },
       })
     }
+    if (record.timer) timers.clear(record.timer)
     record.timer = timers.set(() => {
+      record.timer = null
+      // The record may have been replaced or dropped while this waited
+      // (`deviceOffline`, or `deviceOnline` cutting the backoff short).
+      if (records.get(deviceId) !== record || record.state !== 'recovering') return
       record.state = 'queued'
-      if (record.activityId) deps.activities.update(deviceId, record.activityId, { label: PREP_QUEUED_LABEL, meta: { recovering: true, attempt: record.attempt } })
-      queued.push(deviceId)
+      if (record.activityId) deps.activities.update(deviceId, record.activityId, { label: PREP_QUEUED_LABEL, meta: { recovering: true, attempt: record.attempt, step: 'queued' } })
+      if (!queued.includes(deviceId)) queued.push(deviceId)
       pump()
     }, delay)
   }
@@ -240,6 +331,7 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
             record.step = step
             if (record.activityId) deps.activities.update(deviceId, record.activityId, { label: prepLabel(step) })
             if (step === 5) onFirstFrame(deviceId)
+            else markRecoveryStep(deviceId, record, recoveryStepOf(step))
           },
         })
         /*
@@ -294,16 +386,12 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
   function pump(): void {
     if (!started) return
     void refreshUsbRoots().then(() => {
-      queued.sort((a, b) => {
-        const na = deps.deviceNumber(a)
-        const nb = deps.deviceNumber(b)
-        if (na === nb) return a < b ? -1 : a > b ? 1 : 0
-        if (na === null) return 1
-        if (nb === null) return -1
-        return na - nb
-      })
-      for (const deviceId of [...queued]) {
+      for (const deviceId of rebuildOrder(queued, deps.deviceNumber, lastStarted)) {
         if (running.size >= farmCeiling()) return
+        // Never two builds for one device: a device can only be queued once
+        // (`scheduleRebuild`/`deviceOnline` guard the push), but a build that
+        // is still running must not be started again underneath itself.
+        if (running.has(deviceId)) continue
         const root = rootFor(deviceId)
         if (root !== UNKNOWN_ROOT && runningPerRoot(root) >= deps.buildsPerUsbRoot()) continue
         const idx = queued.indexOf(deviceId)
@@ -311,8 +399,10 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
         queued.splice(idx, 1)
         const record = records.get(deviceId)
         if (!record) continue
+        lastStarted = { number: deps.deviceNumber(deviceId), id: deviceId }
         record.state = 'preparing'
         record.usbRoot = root
+        markRecoveryStep(deviceId, record, 'building')
         void runBuild(deviceId)
       }
     })
@@ -328,9 +418,31 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
     deviceOnline(deviceId) {
       const existing = records.get(deviceId)
       if (existing && (existing.state === 'queued' || existing.state === 'preparing' || existing.state === 'ready')) return
+      if (existing && existing.state === 'recovering') {
+        /*
+          The device came back (a USB flap inside the offline grace) while
+          its rebuild was waiting out a backoff. That is fresh evidence the
+          link is up, so the wait is cut short — but the SAME record is kept.
+
+          This used to fall through and replace the record while the old
+          backoff timer was still armed. The timer then fired against the
+          replaced record, pushed the device into the queue a second time,
+          and the second "build" resolved at once against the session the
+          first had just made — with no step 5, so the first-frame deadline
+          armed, fired 30 s later, closed a HEALTHY session and started
+          "Reconnecting · 1" all over again.
+        */
+        if (existing.timer) timers.clear(existing.timer)
+        existing.timer = null
+        existing.state = 'queued'
+        markRecoveryStep(deviceId, existing, 'queued')
+        if (!queued.includes(deviceId)) queued.push(deviceId)
+        pump()
+        return
+      }
       const activityId = deps.activities.start(deviceId, { kind: 'prep', label: PREP_QUEUED_LABEL, actor: ALWAYS_ON_ACTOR })
-      records.set(deviceId, { state: 'queued', step: null, attempt: 0, failures: 0, usbRoot: null, activityId, timer: null, frameTimer: null })
-      queued.push(deviceId)
+      records.set(deviceId, { state: 'queued', step: null, attempt: 0, failures: 0, usbRoot: null, activityId, timer: null, frameTimer: null, recoveryStep: null })
+      if (!queued.includes(deviceId)) queued.push(deviceId)
       pump()
     },
 

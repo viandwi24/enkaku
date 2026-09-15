@@ -8,6 +8,9 @@ import {
   recoveringLabel,
   PREP_QUEUED_LABEL,
   REBUILD_BACKOFF_MS,
+  REBUILD_JITTER,
+  rebuildOrder,
+  recoveryStepOf,
   INSPECTOR_PREWARM_DELAY_MS,
   FIRST_FRAME_TIMEOUT_MS,
   type ActivityPort,
@@ -125,6 +128,8 @@ function baseDeps(overrides: Partial<AlwaysOnDeps> = {}): AlwaysOnDeps {
     activities: recordingActivities(),
     buildsPerUsbRoot: () => 4,
     log: silentLog(),
+    // The unjittered midpoint, so every test that asserts the backoff schedule sees its exact numbers.
+    rng: () => 0.5,
     ...overrides,
   }
 }
@@ -142,6 +147,17 @@ describe('usbRootOf (plan 206 §4.2)', () => {
 })
 
 describe('rebuildDelayMs (plan 206 §4.2)', () => {
+  test('jitter spreads each rung by ±30% and never beyond', () => {
+    expect(rebuildDelayMs(1, () => 0)).toBe(700)
+    expect(rebuildDelayMs(1, () => 0.5)).toBe(1_000)
+    expect(rebuildDelayMs(1, () => 0.999_999)).toBe(1_300)
+    expect(rebuildDelayMs(4, () => 0)).toBe(21_000)
+    expect(rebuildDelayMs(4, () => 1)).toBe(39_000)
+    // An rng out of range is clamped, not trusted.
+    expect(rebuildDelayMs(2, () => 7)).toBe(3_000 * (1 + REBUILD_JITTER))
+    expect(rebuildDelayMs(2, () => -1)).toBe(3_000 * (1 - REBUILD_JITTER))
+  })
+
   test('matches the documented schedule and repeats the last value', () => {
     expect(rebuildDelayMs(1)).toBe(REBUILD_BACKOFF_MS[0])
     expect(rebuildDelayMs(2)).toBe(REBUILD_BACKOFF_MS[1])
@@ -617,5 +633,160 @@ describe('a session that never produces a first frame', () => {
     await flush()
     expect(builds).toBe(1)
     expect(activities.lastLabel('d1')).not.toBe(recoveringLabel(1))
+  })
+})
+
+describe('rebuildOrder — round-robin from the last device given a slot', () => {
+  const numbers: Record<string, number | null> = { a: 1, b: 2, c: 3, d: 4, z: null }
+  const numberOf = (id: string) => numbers[id] ?? null
+
+  test('with no cursor it is plain device-number order, unnumbered last', () => {
+    expect(rebuildOrder(['z', 'c', 'a', 'd', 'b'], numberOf, null)).toEqual(['a', 'b', 'c', 'd', 'z'])
+  })
+
+  test('it starts just after the cursor and wraps', () => {
+    expect(rebuildOrder(['a', 'b', 'c', 'd', 'z'], numberOf, { number: 2, id: 'b' })).toEqual(['c', 'd', 'z', 'a', 'b'])
+  })
+
+  test('a cursor past the end wraps to the start', () => {
+    expect(rebuildOrder(['a', 'b', 'c'], numberOf, { number: null, id: 'zz' })).toEqual(['a', 'b', 'c'])
+  })
+
+  test('the cursor need not still be queued', () => {
+    expect(rebuildOrder(['a', 'd'], numberOf, { number: 3, id: 'c' })).toEqual(['d', 'a'])
+  })
+})
+
+describe('recoveryStepOf', () => {
+  test('steps 1-3 are building, 4 and 5 are waiting for the picture', () => {
+    expect([1, 2, 3, 4, 5].map((s) => recoveryStepOf(s as PrepStep))).toEqual(['building', 'building', 'building', 'waiting-frame', 'waiting-frame'])
+  })
+})
+
+describe('a recovering rebuild says where it is (meta.step)', () => {
+  test('queued during the backoff, building once it has a slot, waiting-frame at step 4', async () => {
+    const { timers, advance } = fakeTimers()
+    const activities = recordingActivities()
+    let buildNo = 0
+    let finishSecond: (() => void) | null = null
+    const always = createAlwaysOn(
+      baseDeps({
+        timers,
+        activities,
+        sessions: fakeSessions(async (_id, opts) => {
+          buildNo++
+          if (buildNo === 1) {
+            for (const step of [1, 2, 3, 4, 5] as const) opts.onStep?.(step)
+            return
+          }
+          opts.onStep?.(1)
+          expect(activities.lastMeta('dev-1')).toMatchObject({ recovering: true, attempt: 1, step: 'building' })
+          opts.onStep?.(4)
+          await new Promise<void>((resolve) => (finishSecond = resolve))
+          opts.onStep?.(5)
+        }),
+      }),
+    )
+    always.start()
+    always.deviceOnline('dev-1')
+    await flush()
+    always.sessionEnded('dev-1', 'socket closed')
+    expect(activities.lastMeta('dev-1')).toMatchObject({ recovering: true, attempt: 1, step: 'queued' })
+    advance(1_000)
+    await flush()
+    expect(activities.lastMeta('dev-1')).toMatchObject({ recovering: true, attempt: 1, step: 'waiting-frame' })
+    finishSecond!()
+    await flush()
+    expect(always.stateOf('dev-1').state).toBe('ready')
+  })
+
+  test('a first build carries no recovering meta at all', async () => {
+    const activities = recordingActivities()
+    const always = createAlwaysOn(
+      baseDeps({
+        activities,
+        sessions: fakeSessions(async (_id, opts) => {
+          opts.onStep?.(1)
+          opts.onStep?.(4)
+        }),
+      }),
+    )
+    always.start()
+    always.deviceOnline('dev-1')
+    await flush()
+    expect(activities.lastMeta('dev-1')).toBeUndefined()
+    await always.stop()
+  })
+})
+
+describe('a device that comes back while its rebuild waits out a backoff', () => {
+  test('is rebuilt now, once, and the old backoff timer does not queue it a second time', async () => {
+    const { timers, advance } = fakeTimers()
+    let builds = 0
+    let failNext = true
+    const always = createAlwaysOn(
+      baseDeps({
+        timers,
+        sessions: fakeSessions(async (_id, opts) => {
+          builds++
+          if (failNext) {
+            failNext = false
+            throw new Error('device not found')
+          }
+          for (const step of [1, 2, 3, 4, 5] as const) opts.onStep?.(step)
+        }),
+      }),
+    )
+    always.start()
+    always.deviceOnline('dev-1')
+    await flush()
+    expect(builds).toBe(1)
+    expect(always.stateOf('dev-1').state).toBe('recovering')
+
+    // The phone is back (a flap inside the grace) before the 1 s backoff ends.
+    advance(200)
+    always.deviceOnline('dev-1')
+    await flush()
+    expect(builds).toBe(2)
+    expect(always.stateOf('dev-1').state).toBe('ready')
+    // The attempt counter is not reset by the return itself — only a frame does that.
+    expect(always.stateOf('dev-1').attempt).toBe(0)
+
+    // The original backoff would have fired here and started a phantom
+    // second build against the healthy session.
+    advance(5_000)
+    await flush()
+    expect(builds).toBe(2)
+    advance(FIRST_FRAME_TIMEOUT_MS * 2)
+    await flush()
+    expect(builds).toBe(2)
+    expect(always.stateOf('dev-1').state).toBe('ready')
+  })
+})
+
+describe('jittered backoff uses the injected rng', () => {
+  test('rng 0 rebuilds at 700 ms, not at 1 s', async () => {
+    const { timers, advance } = fakeTimers()
+    let builds = 0
+    const always = createAlwaysOn(
+      baseDeps({
+        timers,
+        rng: () => 0,
+        sessions: fakeSessions(async (_id, opts) => {
+          builds++
+          for (const step of [1, 2, 3, 4, 5] as const) opts.onStep?.(step)
+        }),
+      }),
+    )
+    always.start()
+    always.deviceOnline('dev-1')
+    await flush()
+    always.sessionEnded('dev-1', 'socket closed')
+    advance(699)
+    await flush()
+    expect(builds).toBe(1)
+    advance(1)
+    await flush()
+    expect(builds).toBe(2)
   })
 })

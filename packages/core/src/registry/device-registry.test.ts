@@ -843,3 +843,76 @@ describe('registry — a dropped transport is held before it is called offline',
     expect(statusOf()).toBe('online')
   })
 })
+
+describe('registry — onDeviceReady says whether the device came back inside the grace', () => {
+  type TrackerEv = { kind: 'add'; serial: string; state: string } | { kind: 'remove'; serial: string }
+
+  async function readyCalls(removalGraceMs: number) {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    const log = createLogger('test')
+    const listeners: Array<(ev: TrackerEv) => void> = []
+    const client = fakeAdb()
+    ;(client as unknown as { trackDevices: () => unknown }).trackDevices = () => ({
+      on: (cb: (ev: TrackerEv) => void) => {
+        listeners.push(cb)
+        return () => {}
+      },
+      start: async () => {},
+      stop: () => {},
+    })
+    const calls: Array<{ deviceId: string; resumed: boolean | undefined }> = []
+    const kinds: string[] = []
+    const registry = createDeviceRegistry({
+      client,
+      db,
+      hub: new WsHub(log),
+      log,
+      states: createDeviceStateMachine({ db, log, onChange: () => {} }),
+      removalGraceMs: () => removalGraceMs,
+      onDeviceReady: (deviceId, info) => calls.push({ deviceId, resumed: info?.resumed }),
+      record: (ev) => void kinds.push(ev.kind),
+    })
+    await registry.start()
+    const emit = (ev: TrackerEv) => {
+      for (const cb of listeners) cb(ev)
+    }
+    emit({ kind: 'add', serial: 'TESTSERIAL', state: 'device' })
+    await new Promise((r) => setTimeout(r, 150))
+    admitDevice(db, 'HW-SERIAL-1')
+    emit({ kind: 'add', serial: 'TESTSERIAL', state: 'device' })
+    await new Promise((r) => setTimeout(r, 150))
+    return { registry, emit, calls, kinds }
+  }
+
+  test('an ordinary online is not resumed', async () => {
+    const { registry, calls, kinds } = await readyCalls(400)
+    expect(calls.at(-1)?.resumed).toBe(false)
+    expect(kinds.at(-1)).toBe('device.online')
+    await registry.stop()
+  })
+
+  test('a return inside the grace is resumed, and records device.flap instead of device.online', async () => {
+    const { registry, emit, calls, kinds } = await readyCalls(400)
+    const before = calls.length
+    emit({ kind: 'remove', serial: 'TESTSERIAL' })
+    await new Promise((r) => setTimeout(r, 50))
+    emit({ kind: 'add', serial: 'TESTSERIAL', state: 'device' })
+    await new Promise((r) => setTimeout(r, 150))
+    expect(calls.length).toBe(before + 1)
+    expect(calls.at(-1)?.resumed).toBe(true)
+    expect(kinds.at(-1)).toBe('device.flap')
+    await registry.stop()
+  })
+
+  test('a return after the grace expired is a genuine online, not a flap', async () => {
+    const { registry, emit, calls } = await readyCalls(100)
+    emit({ kind: 'remove', serial: 'TESTSERIAL' })
+    await new Promise((r) => setTimeout(r, 250))
+    emit({ kind: 'add', serial: 'TESTSERIAL', state: 'device' })
+    await new Promise((r) => setTimeout(r, 150))
+    expect(calls.at(-1)?.resumed).toBe(false)
+    await registry.stop()
+  })
+})

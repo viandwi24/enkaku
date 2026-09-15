@@ -114,7 +114,11 @@ import {
   WORKSPACE_MAX_FILE_BYTES,
   PREPARATION_SWEEP_MS,
   RELEASE_SWEEP_WORKERS,
+  AGENT_RECONNECT_ENSURE_MIN_INTERVAL_SEC,
+  VIDEO_SILENCE_KEYFRAME_SEC,
+  VIDEO_SILENCE_RESTART_SEC,
 } from './config/constants'
+import { createPerKeyThrottle } from './util/per-key-throttle'
 
 import { createNodeRoutes } from './api/nodes'
 import { createNodeAuth } from './tunnel/node-auth'
@@ -4521,6 +4525,19 @@ let blobGc: BlobGc | null = null
           // boot, which would skip the wake on exactly the builds that most need it. A missing
           // readiness manager must mean "wake it", never "assume it is awake".
           deviceIsAwake: (deviceId) => (readiness ? readiness.actual(deviceId) !== 'asleep' : false),
+          // The live-session silence watchdog: a watched picture that stops is
+          // nudged for a keyframe, then restarted. `screenOff` reads only what
+          // the phone itself answered (`observed`) — `actual` is bookkeeping and
+          // says nothing about the panel (plan 125 §0.3).
+          ...(VIDEO_SILENCE_KEYFRAME_SEC > 0
+            ? {
+                silenceWatchdog: {
+                  keyframeAfterMs: VIDEO_SILENCE_KEYFRAME_SEC * 1000,
+                  restartAfterMs: VIDEO_SILENCE_RESTART_SEC * 1000,
+                  screenOff: (deviceId: string) => readiness?.get(deviceId).observed?.state === 'off',
+                },
+              }
+            : {}),
           // The input arbiter's bounded-queue budget (plan 91 §4.1, §4.5) has no operator-facing
           // setting any more — the old second-operator-grant subsystem is gone (plan 205 §2.4) and
           // with it the only farm setting that ever fed these two accessors. Both are optional on
@@ -4675,6 +4692,9 @@ let blobGc: BlobGc | null = null
             activities.end(deviceId, id)
           },
         }
+        // At most one device-online guest-agent check per phone per window —
+        // see `AGENT_RECONNECT_ENSURE_MIN_INTERVAL_SEC`. Read by `onDeviceReady`.
+        const agentReconnectGate = createPerKeyThrottle(AGENT_RECONNECT_ENSURE_MIN_INTERVAL_SEC * 1000)
         alwaysOn = createAlwaysOn({
           sessions,
           devices: deviceSource,
@@ -4987,13 +5007,16 @@ let blobGc: BlobGc | null = null
             // left to reach.
             reverseRegistry.handleDeviceOffline(deviceId)
           },
-          onDeviceReady: (deviceId) => {
+          onDeviceReady: (deviceId, info) => {
             // Plan 206 §4.10 — a session is built when a device comes
             // online, not when a browser asks (G1). First line, so a core
             // restart's own re-probe of every attached serial
             // (`registry.start()` below) enqueues one build per device with
-            // no browser ever involved.
+            // no browser ever involved. Also on a flap (`resumed`): the scrcpy
+            // server's `adb shell` child died with the link, so the session
+            // must be rebuilt whatever else is skipped below.
             alwaysOn?.deviceOnline(deviceId)
+            const resumed = info?.resumed === true
             // The rotation lock is a standing device state (2026-09-14): re-checked the moment a
             // device comes online (admission, reconnect, and every device on a core restart), not
             // only when its session builds — a build can fail or wait its turn in the ramp, and a
@@ -5019,6 +5042,14 @@ let blobGc: BlobGc | null = null
             void reverseRegistry.handleDeviceOnline(deviceId).catch((err) =>
               log.warn(`reverse re-establish failed for ${deviceId} on device-online, tolerated: ${String(err)}`),
             )
+            // A flap inside the offline grace (`resumed`) stops here. The
+            // device never went offline, so its guest agent, its screen label
+            // and its preparation are exactly as they were a few seconds ago;
+            // only what dies with the link (the session, forwards, reverses,
+            // the network route — all handled above) needs redoing. Running the
+            // rest on every USB flap was adb load on a link already failing,
+            // and on a 73-phone farm it could cause the next flap.
+            if (resumed) return
             // Plan 90 §3.8's second hook — "device online" — the SAME hook
             // `restoreNetworkRoute` above already uses for exactly this
             // purpose ("otomatis deteksi pas reconnect"). This also covers
@@ -5027,9 +5058,11 @@ let blobGc: BlobGc | null = null
             // `onDeviceReady`, so a freshly admitted, currently-plugged-in
             // phone reaches the provisioner on its very first callback, with
             // no second, redundant call needed here.
-            void agentProvisionerRef?.ensure(deviceId, { reconnect: true }).catch((err) =>
-              log.warn(`agent-provisioner ensure() failed for ${deviceId} on device-online, tolerated: ${String(err)}`),
-            )
+            if (agentProvisionerRef && agentReconnectGate.take(deviceId)) {
+              void agentProvisionerRef.ensure(deviceId, { reconnect: true }).catch((err) =>
+                log.warn(`agent-provisioner ensure() failed for ${deviceId} on device-online, tolerated: ${String(err)}`),
+              )
+            }
             // Plan 89 §3.7 point 1 — the SAME hook `restoreNetworkRoute` and
             // the agent provisioner above already use. Probe-first
             // (`reconcile`, never `apply`): a device already showing the

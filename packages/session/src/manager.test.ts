@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { AdbClient } from '@enkaku/adb'
 import type { ScrcpySession } from '@enkaku/scrcpy'
-import { createRateMeter, createSessionManager, RateMeter, type PrepStep } from './manager'
+import { createRateMeter, createSessionManager, RateMeter, silenceAction, SILENCE_CHECK_EVERY_MS, type PrepStep } from './manager'
 import type { DeviceSnapshot, DeviceSnapshotSource } from './types'
 import type { Logger } from './logger'
 import type { VideoProfile } from './video-profile'
@@ -1034,6 +1034,157 @@ describe('SessionManager — clipboard subscription (plan 209 §3.2 D10, §4.9, 
     emitControl('from control')
     expect(changes).toEqual([{ deviceId: DEVICE_ID, text: 'from base' }])
 
+    await manager.closeAll()
+  })
+})
+
+describe('silenceAction — the live-session silence watchdog decision', () => {
+  const base = {
+    now: 100_000,
+    lastFrameAt: 100_000 - 16_000,
+    keyframeRequestedAt: null,
+    viewers: 1,
+    subscribers: 1,
+    screenOff: false,
+    busy: false,
+    jobRunning: false,
+    keyframeAfterMs: 15_000,
+    restartAfterMs: 10_000,
+  }
+
+  test('a watched picture silent past the first threshold asks for a keyframe', () => {
+    expect(silenceAction(base)).toBe('keyframe')
+  })
+
+  test('a picture that is still flowing is left alone', () => {
+    expect(silenceAction({ ...base, lastFrameAt: base.now - 14_999 })).toBe('none')
+  })
+
+  test('a session that never produced a frame is the build deadline’s business, not this one', () => {
+    expect(silenceAction({ ...base, lastFrameAt: null })).toBe('none')
+  })
+
+  test('nobody subscribed: nothing to do, however long the silence', () => {
+    expect(silenceAction({ ...base, viewers: 0, subscribers: 0 })).toBe('none')
+  })
+
+  test('waits restartAfterMs after the keyframe request before restarting', () => {
+    expect(silenceAction({ ...base, keyframeRequestedAt: base.now - 9_999 })).toBe('none')
+    expect(silenceAction({ ...base, keyframeRequestedAt: base.now - 10_000 })).toBe('restart')
+  })
+
+  test('never restarts with no viewer — a job subscriber alone gets the keyframe nudge only', () => {
+    expect(silenceAction({ ...base, viewers: 0, subscribers: 1 })).toBe('keyframe')
+    expect(silenceAction({ ...base, viewers: 0, subscribers: 1, keyframeRequestedAt: base.now - 60_000 })).toBe('none')
+  })
+
+  test('never restarts under a running job', () => {
+    expect(silenceAction({ ...base, jobRunning: true, keyframeRequestedAt: base.now - 60_000 })).toBe('none')
+  })
+
+  test('a screen known to be off, or a restart already in flight, is skipped outright', () => {
+    expect(silenceAction({ ...base, screenOff: true })).toBe('none')
+    expect(silenceAction({ ...base, busy: true, keyframeRequestedAt: base.now - 60_000 })).toBe('none')
+  })
+})
+
+describe('SessionManager — silence watchdog wiring', () => {
+  /** A packet-controllable scrcpy fake that also counts `resetVideo` (the keyframe request). */
+  function countingScrcpy() {
+    const fake = fakeScrcpyWithPackets()
+    let resets = 0
+    ;(fake.session.control as unknown as { resetVideo: () => void }).resetVideo = () => void resets++
+    return { ...fake, resets: () => resets }
+  }
+
+  test('a watched wall picture that goes silent is nudged, then restarted through restartAt', async () => {
+    const { timers, advance } = fakeTimers()
+    const first = countingScrcpy()
+    const second = countingScrcpy()
+    let makes = 0
+    const events: string[] = []
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      timers,
+      makeScrcpy: async () => (makes++ === 0 ? first.session : second.session),
+      onEvent: (_id, kind, meta) => void events.push(`${kind}:${String(meta.reason ?? '')}`),
+      silenceWatchdog: { keyframeAfterMs: 15_000, restartAfterMs: 10_000 },
+    })
+    await manager.build(DEVICE_ID, { requireScrcpy: true })
+    await manager.attachViewer(DEVICE_ID, 'wall', () => {})
+    first.emit('config')
+    first.emit('keyframe')
+    const resetsAfterAttach = first.resets()
+
+    // Silent, but not yet long enough.
+    advance(SILENCE_CHECK_EVERY_MS * 5)
+    expect(first.resets()).toBe(resetsAfterAttach)
+
+    // Past 15 s: one keyframe request, and only one.
+    advance(SILENCE_CHECK_EVERY_MS * 2)
+    expect(first.resets()).toBe(resetsAfterAttach + 1)
+    advance(SILENCE_CHECK_EVERY_MS)
+    expect(first.resets()).toBe(resetsAfterAttach + 1)
+    expect(makes).toBe(1)
+
+    // Still nothing 10 s after the request: restarted.
+    advance(SILENCE_CHECK_EVERY_MS * 4)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(makes).toBe(2)
+    expect(events).toContain('session.closed:video_stalled')
+    await manager.closeAll()
+  })
+
+  test('a frame after the nudge cancels the restart', async () => {
+    const { timers, advance } = fakeTimers()
+    const fake = countingScrcpy()
+    let makes = 0
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      timers,
+      makeScrcpy: async () => {
+        makes++
+        return fake.session
+      },
+      silenceWatchdog: { keyframeAfterMs: 15_000, restartAfterMs: 10_000 },
+    })
+    await manager.build(DEVICE_ID, { requireScrcpy: true })
+    await manager.attachViewer(DEVICE_ID, 'wall', () => {})
+    fake.emit('config')
+    fake.emit('keyframe')
+    advance(SILENCE_CHECK_EVERY_MS * 7)
+    fake.emit('frame')
+    advance(SILENCE_CHECK_EVERY_MS * 5)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(makes).toBe(1)
+    await manager.closeAll()
+  })
+
+  test('with no viewer a silent picture is never restarted', async () => {
+    const { timers, advance } = fakeTimers()
+    const fake = countingScrcpy()
+    let makes = 0
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      timers,
+      makeScrcpy: async () => {
+        makes++
+        return fake.session
+      },
+      silenceWatchdog: { keyframeAfterMs: 15_000, restartAfterMs: 10_000 },
+    })
+    await manager.build(DEVICE_ID, { requireScrcpy: true })
+    fake.emit('config')
+    fake.emit('keyframe')
+    advance(120_000)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(makes).toBe(1)
     await manager.closeAll()
   })
 })

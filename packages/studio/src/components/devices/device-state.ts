@@ -74,3 +74,30 @@ export function reconnectingAttempt(device: Pick<DeviceInfo, 'activities'>): num
   const attempt = a.meta?.attempt
   return typeof attempt === 'number' ? attempt : 0
 }
+
+/**
+ * The words for a reconnect, from where the rebuild actually is.
+ *
+ * "Reconnecting · 1" said only that a counter had moved, and it read the same
+ * whether the farm was waiting for a build slot, starting the encoder, or
+ * holding a running encoder that had not yet sent a picture — three states an
+ * operator acts on differently. The always-on builder now writes
+ * `meta.step` (`queued` | `building` | `waiting-frame`,
+ * `packages/session/src/always-on.ts`), and this turns it into words. The
+ * attempt is returned beside the label rather than inside it, and only
+ * matters from 2: a first attempt is the normal case.
+ *
+ * This is the PREP activity, a fact about the device — not cast state, which
+ * only `cast-status.ts` may word. It never says "Disconnected": that is
+ * reserved for a device that is really offline.
+ */
+export function reconnectingOf(device: Pick<DeviceInfo, 'activities'>): { label: string; attempt: number } | null {
+  const a = device.activities.find((x) => x.kind === 'prep' && x.meta?.recovering === true)
+  if (!a) return null
+  const attempt = typeof a.meta?.attempt === 'number' ? a.meta.attempt : 0
+  const step = a.meta?.step
+  if (step === 'queued') return { label: 'Reconnecting · queued', attempt }
+  if (step === 'building') return { label: 'Reconnecting · starting', attempt }
+  if (step === 'waiting-frame') return { label: 'Reconnecting · waiting for picture', attempt }
+  return { label: attempt > 0 ? 'Reconnecting' : 'Connecting', attempt }
+}

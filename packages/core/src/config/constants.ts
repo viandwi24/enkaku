@@ -115,6 +115,28 @@ export const TOUCH_PROFILES = json('ENKAKU_TOUCH_PROFILES', TOUCH_PROFILES_DEFAU
 // ── Device housekeeping (replaces defaults.prep.screenOffTimeoutMs, discovery.*, health.*, adbControl.*, battery.*, labelling.*) ──
 export const DEVICE_SCREEN_OFF_TIMEOUT_MS = num('ENKAKU_DEVICE_SCREEN_OFF_TIMEOUT_MS', 1_800_000, z.number().int().min(0))
 export const DEVICE_OFFLINE_GRACE_SEC = num('ENKAKU_DEVICE_OFFLINE_GRACE_SEC', 20, z.number().int().min(5).max(600))
+/**
+ * The least time between two `agentProvisioner.ensure(..., { reconnect: true })`
+ * calls for one device from the device-online hook (`daemon.ts`'s
+ * `onDeviceReady`). A phone flapping on a bad USB link used to verify its guest
+ * agent on every return, and that adb load was part of what made it flap
+ * again (73-phone farm, 2026-09-15). A flap inside `DEVICE_OFFLINE_GRACE_SEC`
+ * skips the ensure entirely; this bounds the flaps that fall just outside it.
+ * 0 turns the limit off.
+ */
+export const AGENT_RECONNECT_ENSURE_MIN_INTERVAL_SEC = num('ENKAKU_AGENT_RECONNECT_ENSURE_MIN_INTERVAL_SEC', 600, z.number().int().min(0).max(86_400))
+/**
+ * The live-session silence watchdog (`SessionManagerDeps.silenceWatchdog`,
+ * `packages/session/src/manager.ts`'s `silenceAction`). A session that has
+ * delivered frames, has someone subscribed, and sends nothing for
+ * `VIDEO_SILENCE_KEYFRAME_SEC` is asked for a keyframe; still nothing
+ * `VIDEO_SILENCE_RESTART_SEC` later and a session with a viewer is restarted.
+ * scrcpy repeats frames about ten times a second on a static screen, so a
+ * healthy stream never gets near either. `VIDEO_SILENCE_KEYFRAME_SEC=0` turns
+ * the watchdog off.
+ */
+export const VIDEO_SILENCE_KEYFRAME_SEC = num('ENKAKU_VIDEO_SILENCE_KEYFRAME_SEC', 15, z.number().int().min(0).max(600))
+export const VIDEO_SILENCE_RESTART_SEC = num('ENKAKU_VIDEO_SILENCE_RESTART_SEC', 10, z.number().int().min(3).max(600))
 export const DEVICE_RECOVERY_COOLDOWN_SEC = num('ENKAKU_DEVICE_RECOVERY_COOLDOWN_SEC', 120, z.number().int().min(30).max(3600))
 export const DEVICE_RECOVERY_PROBE_INTERVAL_SEC = num('ENKAKU_DEVICE_RECOVERY_PROBE_INTERVAL_SEC', 60, z.number().int().min(10).max(3600))
 export const DEVICE_ENDPOINTS_REMEMBERED = num('ENKAKU_DEVICE_ENDPOINTS_REMEMBERED', 4, z.number().int().min(1).max(16))

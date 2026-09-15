@@ -99,6 +99,13 @@ export const UI_TREE_PROBE_BUDGET_MS = 3_000
 export async function uiTreeUnavailableReason(deps: InspectorFactoryDeps, deviceId: string): Promise<string | null> {
   if (!deps.uiTree) return 'this host has no guest-agent session (the cloud node path)'
   const uiTree = deps.uiTree
+  const timedOutAt = uiTreeTimedOut.get(deviceId)
+  if (timedOutAt !== undefined) {
+    if (Date.now() - timedOutAt < UI_TREE_REPROBE_AFTER_MS) {
+      return `the ui-tree probe did not answer within ${UI_TREE_PROBE_BUDGET_MS}ms earlier this run — not asking again for ${Math.round(UI_TREE_REPROBE_AFTER_MS / 60_000)} min`
+    }
+    uiTreeTimedOut.delete(deviceId)
+  }
   try {
     const probe = async (): Promise<string | null> => {
       const agent = await uiTree.agentStatus(deviceId)
@@ -117,10 +124,37 @@ export async function uiTreeUnavailableReason(deps: InspectorFactoryDeps, device
       if (!status.connected) return 'the accessibility service is enabled but not bound yet (it usually binds within seconds of a reboot)'
       return null
     }
-    return await withTimeout(probe(), UI_TREE_PROBE_BUDGET_MS, `the ui-tree probe did not answer within ${UI_TREE_PROBE_BUDGET_MS}ms`)
+    return await withTimeout(probe(), UI_TREE_PROBE_BUDGET_MS, UI_TREE_TIMEOUT_MESSAGE)
   } catch (err) {
-    return err instanceof Error ? err.message : String(err)
+    const message = err instanceof Error ? err.message : String(err)
+    // Only the silent case is remembered. A fast answer ("not enabled", "not
+    // bound yet") costs nothing to ask again and may change within seconds.
+    if (message === UI_TREE_TIMEOUT_MESSAGE) uiTreeTimedOut.set(deviceId, Date.now())
+    return message
   }
+}
+
+const UI_TREE_TIMEOUT_MESSAGE = `the ui-tree probe did not answer within ${UI_TREE_PROBE_BUDGET_MS}ms`
+
+/**
+ * How long a device whose ui-tree probe went unanswered is skipped straight to
+ * the next rung.
+ *
+ * `uiServerRefused` below already stopped a failed ui-server from being paid
+ * for on every session; the ui-tree timeout was not remembered at all, so
+ * every rebuild of such a phone waited the full 3 s again — 101 times in 20
+ * minutes on one 59-phone production farm, on top of an 11 s ui-server start
+ * the first time. Ten minutes, not the whole run, because a guest agent that
+ * was wedged can recover without anything in this process noticing.
+ */
+export const UI_TREE_REPROBE_AFTER_MS = 600_000
+
+/** deviceId → `Date.now()` of the last unanswered ui-tree probe. In memory, like `uiServerRefused`. */
+const uiTreeTimedOut = new Map<string, number>()
+
+/** Test seam, like `forgetUiServerRefusals`. */
+export function forgetUiTreeTimeouts(): void {
+  uiTreeTimedOut.clear()
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {

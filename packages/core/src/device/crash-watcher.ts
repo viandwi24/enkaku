@@ -63,6 +63,8 @@ export interface CrashWatcherDeps {
    * farm policy, only its existence is.
    */
   restartBackoffMs?: { initialMs: number; maxMs: number }
+  /** [0, 1) source for the resubscribe jitter; default `Math.random`. */
+  rng?: () => number
 }
 
 export interface CrashWatcher {
@@ -87,6 +89,8 @@ const DEFAULT_MAX_PER_MINUTE = 20
 /** The resubscribe backoff's floor and ceiling (plan 85 §3.2, §5 step 85.4) — 2 s → 60 s, doubling. */
 const DEFAULT_RESTART_INITIAL_MS = 2_000
 const DEFAULT_RESTART_MAX_MS = 60_000
+/** adb's words for "there is no such device right now" (`AdbError: device '<serial>' not found`, `device offline`). */
+const DEVICE_GONE = /device '[^']*' not found|device not found|device offline/i
 
 interface Watch {
   deviceId: string
@@ -133,6 +137,9 @@ export function createCrashWatcher(deps: CrashWatcherDeps): CrashWatcher {
   const desired = new Set<string>()
   /** A pending (or in-flight) backoff-driven resubscribe, keyed by deviceId. Present only between an unexpected end and its next resubscribe attempt. */
   const restarting = new Map<string, Restart>()
+  /** Devices whose resubscribe stopped because adb could not find them; the next `watch()` starts them again. */
+  const parked = new Set<string>()
+  const rng = deps.rng ?? Math.random
 
   function crashWatchEnabled(): boolean {
     return (deps.crashWatch?.() ?? 'always') !== 'off'
@@ -157,7 +164,23 @@ export function createCrashWatcher(deps: CrashWatcherDeps): CrashWatcher {
   function scheduleRestart(deviceId: string, reason: string, attempt: number): void {
     if (!desired.has(deviceId)) return // the session closed under us — nothing to restart for
     if (!crashWatchEnabled()) return // the farm traded detection for the stream slot (plan 85 §3.2) — do not fight that choice
-    const delayMs = Math.min(restartMaxMs, restartInitialMs * 2 ** attempt)
+    if (DEVICE_GONE.test(reason)) {
+      /*
+        adb says the device is not there (a USB flap, or a hub reset taking
+        twenty phones at once). Retrying every 2-4 s cannot succeed until it
+        is back, and each retry is an adb round trip on a link that is
+        already failing — 151 of them in 20 minutes on one production farm.
+        Park instead: the device's next session (`session.opened` →
+        `watch()`) starts the stream again, immediately.
+      */
+      clearRestart(deviceId)
+      parked.add(deviceId)
+      deps.log.info(`crash watch on ${deviceId} paused until its session is back (${reason})`)
+      return
+    }
+    // ±30% so a hub-sized drop does not resubscribe every phone on the same tick.
+    const base = Math.min(restartMaxMs, restartInitialMs * 2 ** attempt)
+    const delayMs = Math.round(base * (1 + (rng() * 2 - 1) * 0.3))
     deps.log.warn(`crash watch on ${deviceId} ended (${reason}) — resubscribing in ${delayMs}ms (attempt ${attempt + 1})`)
     const timer = setTimeout(() => {
       restarting.delete(deviceId)
@@ -254,6 +277,7 @@ export function createCrashWatcher(deps: CrashWatcherDeps): CrashWatcher {
   return {
     async watch(deviceId) {
       desired.add(deviceId)
+      parked.delete(deviceId)
       if (byDevice.has(deviceId)) return // idempotent (plan 37 §4.3)
       if (restarting.has(deviceId)) return // a backoff-driven resubscribe is already pending — let it run, do not race it
       if (!crashWatchEnabled()) return // monitor.crashWatch: 'off' (plan 85 §3.2) — trade detection for the stream slot
@@ -273,6 +297,7 @@ export function createCrashWatcher(deps: CrashWatcherDeps): CrashWatcher {
       // timer's own `desired.has` check, and any `scheduleRestart` call
       // racing with this one, both see "no longer wanted".
       desired.delete(deviceId)
+      parked.delete(deviceId)
       clearRestart(deviceId)
       const w = byDevice.get(deviceId)
       if (!w) return

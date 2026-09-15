@@ -14,6 +14,8 @@ export type DeviceEventStream = z.infer<typeof DeviceEventStreamSchema>
  * `kind` stays a free string so a future kind never needs a migration. */
 export const MAIN_EVENT_KINDS = [
   'device.online',
+  /** adb dropped the serial and it came back inside `DEVICE_OFFLINE_GRACE_SEC`, so it never went offline — carries { serial, transport, number, goneMs, count }. `count` is per core process, not persisted. */
+  'device.flap',
   'device.offline',
   'device.unauthorized',
   /** An activity started on the device (plan 205, MVP 04) — carries { id, kind, label, actor }. */

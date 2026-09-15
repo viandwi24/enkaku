@@ -17,6 +17,54 @@ export const CONTROL_LINGER_MS = 15_000
 
 export type FrameSink = (chunk: Uint8Array, meta: FrameMeta) => void
 
+/** How often the silence watchdog looks at every entry. Cheap: a map walk, no adb. */
+export const SILENCE_CHECK_EVERY_MS = 2_500
+
+/** What the silence watchdog does about one entry on one tick. */
+export type SilenceAction = 'none' | 'keyframe' | 'restart'
+
+export interface SilenceInput {
+  now: number
+  /** When this entry last dispatched a video packet; null if it never has. */
+  lastFrameAt: number | null
+  /** When the watchdog asked for a keyframe during THIS silence; null if it has not. */
+  keyframeRequestedAt: number | null
+  viewers: number
+  subscribers: number
+  /** The phone's screen is known to be off (a probe said so, never a guess). */
+  screenOff: boolean
+  /** A build, restart or reprofile of this entry is already in flight. */
+  busy: boolean
+  jobRunning: boolean
+  keyframeAfterMs: number
+  restartAfterMs: number
+}
+
+/**
+ * The live-session silence watchdog's decision (plan 600's server-side gap).
+ *
+ * `FIRST_FRAME_TIMEOUT_MS` covers a build that never produces its first frame;
+ * nothing covered a session that HAD a picture and then went quiet with its
+ * socket still open, which is the tile that sits at "No frames · Ns" for as
+ * long as anyone watches. scrcpy repeats the previous frame about ten times a
+ * second on a static screen, so a healthy encoder never gets near this.
+ *
+ * The ladder is deliberately mild first: ask for a keyframe (two bytes on the
+ * control socket), and only if that is unanswered for `restartAfterMs` more,
+ * restart the entry. A restart needs a viewer — an idle picture nobody is
+ * watching is fine — and never runs under a job, whose input would die with
+ * the session's UHID pointer. Pure, exported for the test.
+ */
+export function silenceAction(i: SilenceInput): SilenceAction {
+  if (i.lastFrameAt === null || i.busy || i.screenOff) return 'none'
+  if (i.viewers === 0 && i.subscribers === 0) return 'none'
+  if (i.now - i.lastFrameAt < i.keyframeAfterMs) return 'none'
+  if (i.keyframeRequestedAt === null) return 'keyframe'
+  if (i.now - i.keyframeRequestedAt < i.restartAfterMs) return 'none'
+  if (i.viewers === 0 || i.jobRunning) return 'none'
+  return 'restart'
+}
+
 /**
  * `stream.start` at `control` quality attaches to the wall entry first and
  * switches once the control entry has produced its first keyframe (plan 206
@@ -133,6 +181,10 @@ interface Entry {
   clipboardUnsubscribe: (() => void) | null
   /** Unix seconds this entry's forward was opened (plan 223 §4.3). Set once, when `createEntry` receives a `ready` session. */
   openedAt: number
+  /** `timers.now()` of the last dispatched packet; null until the first. Read by the silence watchdog. */
+  lastFrameAt: number | null
+  /** When the silence watchdog asked this entry for a keyframe; cleared by the next packet. */
+  keyframeRequestedAt: number | null
 }
 
 export interface ForwardRecord {
@@ -234,6 +286,13 @@ export interface SessionManagerDeps {
   deviceIsAwake?: (deviceId: string) => boolean
   /** Test seam for the control entry's linger timer (plan 206 §3.4); defaults to real `setTimeout`/`clearTimeout`/`Date.now`. */
   timers?: { set: (fn: () => void, ms: number) => unknown; clear: (h: unknown) => void; now: () => number }
+  /**
+   * The live-session silence watchdog (`silenceAction`). Absent means off —
+   * `daemon.ts` passes it from `VIDEO_SILENCE_KEYFRAME_SEC`/
+   * `VIDEO_SILENCE_RESTART_SEC`. `screenOff` must answer true only when the
+   * phone was actually observed with its screen off.
+   */
+  silenceWatchdog?: { keyframeAfterMs: number; restartAfterMs: number; screenOff?: (deviceId: string) => boolean }
 }
 
 /** Plan 100 §4.2 — the composite map key: at most one entry per `(deviceId, quality)` pair. */
@@ -300,6 +359,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     if (!entry) return
     entry.latency.record(meta)
     entry.rate.record(chunk.byteLength)
+    entry.lastFrameAt = timers.now()
+    entry.keyframeRequestedAt = null
     if (entry.quality === 'control' && !entry.live && meta.keyframe && entry.session.videoKeyframe?.()) {
       entry.live = true
       const pendings = pendingSwitches.get(entry.deviceId)
@@ -470,8 +531,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // subscribed, so a device with both encoders running pushes once.
       clipboardUnsubscribe: quality === 'wall' && deps.onClipboardChanged ? session.onClipboardChanged((text) => deps.onClipboardChanged!(deviceId, text)) : null,
       openedAt: Math.floor(timers.now() / 1000),
+      lastFrameAt: null,
+      keyframeRequestedAt: null,
     }
     entries.set(key, entry)
+    armSilenceWatchdog()
     await session.display.start()
     onPhase?.('waiting-frame')
     deps.onEvent?.(deviceId, 'session.opened', {
@@ -640,7 +704,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       .finally(() => inFlight.delete(key))
   }
 
-  async function restartAt(deviceId: string, quality: Quality, detail?: string): Promise<void> {
+  async function restartAt(deviceId: string, quality: Quality, detail?: string, closedReason?: string): Promise<void> {
     const key = entryKey(deviceId, quality)
     if (!entries.has(key)) return
     let pending = upgrading.get(key)
@@ -651,19 +715,107 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         entries.delete(key)
         if (old.lingerTimer) timers.clear(old.lingerTimer)
         await old.session.close().catch((err) => deps.log.warn(`failed to close session ${deviceId}: ${String(err)}`))
-        deps.onEvent?.(deviceId, 'session.closed', { reason: detail ? 'video_reprofile' : 'quality_upgrade' })
+        deps.onEvent?.(deviceId, 'session.closed', { reason: closedReason ?? (detail ? 'video_reprofile' : 'quality_upgrade') })
         const fresh = await createEntry(deviceId, quality, quality === 'control' ? { skipDevicePrep: true, requireScrcpy: true } : { requireScrcpy: true })
         for (const sub of old.frameSubscribers) {
           fresh.frameSubscribers.add(sub)
           subscriberEntry.set(sub, key)
         }
         for (const sub of old.viewers) fresh.viewers.add(sub)
+        // A picture that was flowing before the restart is expected to flow
+        // after it: start the silence clock now, so a restart that yields
+        // nothing is noticed instead of sitting at "never had a frame".
+        if (old.lastFrameAt !== null && fresh.lastFrameAt === null) fresh.lastFrameAt = timers.now()
         entries.set(key, fresh)
       })()
       upgrading.set(key, pending)
       void pending.finally(() => upgrading.delete(key))
     }
     await pending
+  }
+
+  let silenceTimer: unknown = null
+
+  /** Arms the next watchdog tick if the watchdog is on and nothing is armed. The tick re-arms itself only while entries exist. */
+  function armSilenceWatchdog(): void {
+    if (!deps.silenceWatchdog || silenceTimer !== null) return
+    silenceTimer = timers.set(silenceTick, SILENCE_CHECK_EVERY_MS)
+  }
+
+  function silenceTick(): void {
+    silenceTimer = null
+    const cfg = deps.silenceWatchdog
+    if (!cfg) return
+    const now = timers.now()
+    for (const [key, entry] of entries) {
+      // screencap-loop sends a frame when the screen changes, not ten a
+      // second, so its silence means nothing. Checked first, with the cheap
+      // clock test, so `screenOff` (a readiness read) runs only for an entry
+      // that is actually silent.
+      if (entry.session.displayEngineId !== 'scrcpy') continue
+      if (entry.lastFrameAt === null || now - entry.lastFrameAt < cfg.keyframeAfterMs) continue
+      const action = silenceAction({
+        now,
+        lastFrameAt: entry.lastFrameAt,
+        keyframeRequestedAt: entry.keyframeRequestedAt,
+        viewers: entry.viewers.size,
+        subscribers: entry.frameSubscribers.size,
+        screenOff: cfg.screenOff?.(entry.deviceId) ?? false,
+        busy: upgrading.has(key) || inFlight.has(key),
+        jobRunning: deps.hasRunningJob?.(entry.deviceId) ?? false,
+        keyframeAfterMs: cfg.keyframeAfterMs,
+        restartAfterMs: cfg.restartAfterMs,
+      })
+      const silentSec = Math.round((now - entry.lastFrameAt) / 1000)
+      if (action === 'keyframe') {
+        entry.keyframeRequestedAt = now
+        deps.log.info(`no video from ${entry.deviceId} (${entry.quality}) for ${silentSec}s with ${entry.viewers.size} viewer(s) — requesting a keyframe`)
+        try {
+          entry.session.requestKeyframe?.()
+        } catch (err) {
+          deps.log.warn(`keyframe request failed on ${entry.deviceId} (${entry.quality}): ${String(err)}`)
+        }
+      } else if (action === 'restart') {
+        void restartSilentEntry(entry, silentSec)
+      }
+    }
+    if (entries.size > 0) armSilenceWatchdog()
+  }
+
+  /**
+   * Restart a silent entry through the ordinary `restartAt` path. If the
+   * restart itself fails, the entry is already gone from the map, so the
+   * failure is handed on exactly as a display error would be: a base entry to
+   * the always-on builder (`onSessionEnded`, which owns backoff and device
+   * prep), a control entry's viewers back onto the base entry.
+   */
+  async function restartSilentEntry(entry: Entry, silentSec: number): Promise<void> {
+    const { deviceId, quality } = entry
+    deps.log.warn(`no video from ${deviceId} (${quality}) for ${silentSec}s and the keyframe request went unanswered — restarting the session`)
+    try {
+      await restartAt(deviceId, quality, undefined, 'video_stalled')
+    } catch (err) {
+      const reason = `video stalled and the restart failed: ${err instanceof Error ? err.message : String(err)}`
+      deps.log.warn(`${reason} (${deviceId}, ${quality})`)
+      for (const sub of entry.frameSubscribers) {
+        if (subscriberEntry.get(sub) === entryKey(deviceId, quality)) subscriberEntry.delete(sub)
+      }
+      if (quality === 'wall') {
+        deps.onSessionEnded?.(deviceId, reason)
+        const controlKey = entryKey(deviceId, 'control')
+        if (entries.has(controlKey)) void closeEntry(controlKey, 'base_gone')
+        pendingSwitches.delete(deviceId)
+        return
+      }
+      const baseKey = entryKey(deviceId, 'wall')
+      const baseEntry = entries.get(baseKey)
+      if (!baseEntry) return
+      for (const sink of entry.viewers) {
+        baseEntry.frameSubscribers.add(sink)
+        baseEntry.viewers.add(sink)
+        subscriberEntry.set(sink, baseKey)
+      }
+    }
   }
 
   function encoderStateOf(entry: Entry | undefined): EncoderState | null {

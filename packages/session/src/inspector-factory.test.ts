@@ -2,12 +2,15 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import type { AdbStreamHandle, AdbStreamOptions } from '@enkaku/adb'
 import type { DeviceArtifact, ToolchainManager } from '@enkaku/toolchain'
 import type { Transport } from '@enkaku/protocol'
-import { createInspectorForSession, forgetUiServerRefusals, UI_TREE_PROBE_BUDGET_MS, uiTreeUnavailableReason, type InspectorFactoryDeps } from './inspector-factory'
+import { createInspectorForSession, forgetUiServerRefusals, forgetUiTreeTimeouts, UI_TREE_PROBE_BUDGET_MS, uiTreeUnavailableReason, type InspectorFactoryDeps } from './inspector-factory'
 import { PortAllocator } from './port-allocator'
 import type { Logger } from './logger'
 
-// A device that refused ui-server stays refused for the core's lifetime; tests share one id.
-beforeEach(forgetUiServerRefusals)
+// A device that refused ui-server (or left a ui-tree probe unanswered) stays remembered; tests share one id.
+beforeEach(() => {
+  forgetUiServerRefusals()
+  forgetUiTreeTimeouts()
+})
 
 const PKG = 'com.github.uiautomator'
 
@@ -307,6 +310,31 @@ describe('createInspectorForSession — the engine ladder: ui-tree, then ui-serv
     expect(elapsed).toBeLessThan(UI_TREE_PROBE_BUDGET_MS + 2_000)
     expect(fallbacks[0]!.reason).toContain('did not answer within')
   }, 10_000)
+
+  test('an unanswered ui-tree probe is not paid again on the next session for the same device', async () => {
+    let probes = 0
+    const { deps, transport, fallbacks } = failingUiServerDeps({
+      uiTree: {
+        agentStatus: () => {
+          probes++
+          return new Promise(() => {}) // never resolves
+        },
+        withClient: async (_deviceId, fn) => fn({} as never),
+        openWatch: async () => ({ close: async () => {} }),
+      },
+    })
+    await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'ui-tree' })
+    expect(probes).toBe(1)
+    const start = Date.now()
+    const handle = await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'ui-tree' })
+    expect(Date.now() - start).toBeLessThan(1_000)
+    expect(probes).toBe(1)
+    expect(handle.engineId).toBe('uiautomator-dump')
+    expect(fallbacks.filter((f) => f.from === 'ui-tree').at(-1)!.reason).toContain('earlier this run')
+    // A different device is still asked.
+    await createInspectorForSession(deps, { deviceId: 'device-2', transport, requested: 'ui-tree' })
+    expect(probes).toBe(2)
+  }, 15_000)
 })
 
 describe('uiTreeUnavailableReason (plan 222 §4.5)', () => {
