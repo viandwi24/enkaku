@@ -51,7 +51,7 @@ import postVideo from './post-video'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.7.0',
+  version: '0.7.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -60,6 +60,17 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.7.1 — the caption is typed only into a focused field.** The owner
+   * watched production phone #20 (2026-09-15) on the share screen: the page
+   * kept bouncing as if swiped against its end, and the run failed "does not
+   * hold all of it". Its share screen had been read while still sliding in (the
+   * page 342 px to the right), so the caption tap went to x=702, past the
+   * field; the field never took focus, and every space and ENTER of the caption
+   * scrolled the page instead. The field is now tapped only once two readings
+   * place it the same, and after the tap the run reads the screen: with no
+   * focus and no keyboard it taps once more, and then stops with
+   * E_CAPTION_NOT_FOCUSED without typing anything.
    *
    * **Also in 0.7.0 — three production failures (2026-09-15).** Phone #3:
    * Android's hidden "Izinkan Instagram mengambil gambar dan merekam video?"

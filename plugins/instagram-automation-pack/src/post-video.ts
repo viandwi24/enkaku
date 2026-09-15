@@ -58,6 +58,8 @@ const SHARE_CAPTION = { x: 300 / 720, y: 728 / 1640 }
 
 /** How long the caption tap gets before typing — short, for the reason `youtube/post-video` measured (the focus window). */
 const FOCUS_SETTLE_MS = 400
+/** Readings of the share screen, 400 ms apart, waited for two that place the caption field the same (0.7.1). */
+const SETTLE_READS = 5
 
 /** Instagram's caption limit. */
 const CAPTION_MAX = 2_200
@@ -224,6 +226,29 @@ export function shareButton(tree: UiNode): UiNode | null {
  */
 export function captionField(tree: UiNode): UiNode | null {
   return rowsById(tree, 'caption_input_text_view').find((n) => n.clickable) ?? null
+}
+
+/**
+ * The caption field once the share screen has stopped moving (0.7.1): present in two readings in a row with the same
+ * bounds. Production phone #20 (2026-09-15) read the share screen while it was still sliding in — the whole page 342 px
+ * to the right, the field at x 372–1032 — and tapped that field's centre, x=702. By the tap the page had settled with
+ * the field at x 30–690, so the tap landed on plain page, the field never took focus, and the caption went to the page:
+ * its spaces and ENTERs scrolled the share screen into its end again and again, and nothing landed.
+ */
+export function settledCaptionField(before: UiNode, now: UiNode): UiNode | null {
+  const a = captionField(before)
+  const b = captionField(now)
+  if (!a || !b) return null
+  const same = a.bounds.left === b.bounds.left && a.bounds.top === b.bounds.top && a.bounds.right === b.bounds.right && a.bounds.bottom === b.bounds.bottom
+  return same ? b : null
+}
+
+/**
+ * The caption field has focus (0.7.1): the field says so, or a soft keyboard is up. Nothing is typed until it has — keys
+ * sent to a share screen whose field is not focused scroll the screen instead (phone #20).
+ */
+export function captionFocused(tree: UiNode): boolean {
+  return captionField(tree)?.focused === true || keyboardShowing(tree)
 }
 
 /**
@@ -758,15 +783,39 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     }
     let landed = false
     for (let attempt = 0; attempt < 2 && !landed; attempt++) {
-      const now = attempt === 0 ? shareTree : await ctx.device.dump()
-      const field = captionField(now)
+      // A reading of a screen still sliding in gives bounds the tap will not find (0.7.1): wait for two readings that agree.
+      let before = attempt === 0 ? shareTree : await ctx.device.dump()
+      let field: UiNode | null = null
+      for (let read = 0; read < SETTLE_READS && !field; read++) {
+        await sleep(400)
+        const now = await ctx.device.dump()
+        field = settledCaptionField(before, now)
+        before = now
+      }
+      if (!field) field = captionField(before)
       if (attempt > 0 && field && field.text.trim() !== '' && !/^tulis keterangan|^write a caption/i.test(field.text.trim())) {
         // Something was typed that is not this caption — never type a second copy on top of it.
         break
       }
       const point = field ? centre(field) : { x: Math.round(shareFrame.width * SHARE_CAPTION.x), y: Math.round(shareFrame.height * SHARE_CAPTION.y) }
-      await ctx.device.tap({ point }, { via: 'adb' })
-      await sleep(FOCUS_SETTLE_MS)
+      // Tapped, then read: nothing is typed into a field that did not take focus (0.7.1). A second tap a moment later is
+      // what a person does when the first one did not bring the keyboard up.
+      let focused = false
+      let focusTree = before
+      for (let tap = 0; tap < 2 && !focused; tap++) {
+        if (tap > 0) await sleep(600 + Math.round(Math.random() * 400))
+        await ctx.device.tap({ point }, { via: 'adb' })
+        await sleep(FOCUS_SETTLE_MS)
+        focusTree = await ctx.device.dump()
+        focused = captionFocused(focusTree)
+      }
+      if (!focused) {
+        await capture(ctx, `ig-07-caption-not-focused-${attempt + 1}`, focusTree)
+        fail(
+          'E_CAPTION_NOT_FOCUSED',
+          'tapped the caption field twice but it did not take focus (no keyboard came up), so nothing was typed and nothing was shared. See the ig-07-caption-not-focused artifact.',
+        )
+      }
       if (viaAdb) {
         for (const [i, line] of lines.entries()) {
           if (i > 0) await ctx.device.key('ENTER')

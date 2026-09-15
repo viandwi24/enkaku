@@ -21,7 +21,9 @@ import {
   resumeDraftDialog,
   samePath,
   captionField,
+  captionFocused,
   captionLanded,
+  settledCaptionField,
   shareInterstitialButton,
   shareButton,
   shareNuxButton,
@@ -268,6 +270,15 @@ describe('post-video — the walk, screen by screen', () => {
     expect(captionLanded(withText('enkaku dry run #test'), 'enkaku dry run #test')).toBe(true)
     expect(captionLanded(withText('Enkaku  dry run  # test'), 'enkaku dry run #test')).toBe(true)
     expect(captionLanded(withText('Tulis keterangan dan tambahkan tagar...'), 'enkaku dry run #test')).toBe(false)
+  })
+
+  test('the caption field is tapped only where two readings agree, and typed into only once it has focus (0.7.1)', () => {
+    const field = (left: number, focused = false): UiNode => ({ resourceId: 'com.instagram.android:id/caption_input_text_view', text: 'Tulis keterangan dan tambahkan tagar...', desc: '', className: 'android.widget.AutoCompleteTextView', packageName: 'com.instagram.android', bounds: { left, top: 751, right: left + 660, bottom: 841 }, clickable: true, enabled: true, focused, index: 0, children: [] })
+    // Production #20: read while the share screen slid in (field at x 372), tapped after it settled (x 30).
+    expect(settledCaptionField(field(372), field(30))).toBeNull()
+    expect(settledCaptionField(field(30), field(30))?.bounds.left).toBe(30)
+    expect(captionFocused(field(30))).toBe(false)
+    expect(captionFocused(field(30, true))).toBe(true)
   })
 
   test('MediaStore\'s path spelling is the same file as the pushed one', () => {
