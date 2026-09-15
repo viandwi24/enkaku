@@ -1,6 +1,7 @@
 import { deviceState, type DeviceInfo } from '@enkaku/protocol'
 import type { StatusDotState } from '@enkaku/ui'
 import { relativeTime } from '@enkaku/ui'
+import { explainQuarantine } from '@/lib/quarantine'
 
 /**
  * The one mapping between plan 205's `deviceState()` (`free | controlled |
@@ -43,7 +44,9 @@ export function isDeviceState(device: Pick<DeviceInfo, 'status' | 'activities'>,
  */
 export function dotTooltipOf(device: DeviceInfo): string {
   if (device.status === 'offline') return `Last seen ${relativeTime(device.lastSeen)}`
-  if (device.status === 'quarantined') return device.quarantineReason ? `Quarantined · ${device.quarantineReason}` : 'Quarantined'
+  if (device.status === 'quarantined') {
+    return device.quarantineReason ? `Quarantined · ${explainQuarantine(device.quarantineReason, device.battery?.temperatureC ?? null)}` : 'Quarantined · no reason recorded'
+  }
   const job = device.activities.find((a) => a.kind === 'job' || a.kind === 'workflow-job')
   if (job) return `Job · ${job.label}`
   const control = device.activities.find((a) => a.kind === 'control')

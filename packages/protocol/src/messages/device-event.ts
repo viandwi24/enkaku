@@ -33,6 +33,8 @@ export const MAIN_EVENT_KINDS = [
   'job.triggered',
   'settings.changed',
   'battery.warning',
+  /** A device ran hotter than the farm's `tempThresholdC` and was auto-quarantined — carries { reason, temperatureC, thresholdC }. Released on its own once it cools (`device.recovered`). */
+  'device.quarantined',
   /** A device stopped answering adb and was auto-quarantined (plan 23 §4.4). */
   'device.unhealthy',
   /** The same device answered again and was auto-released (plan 23 §4.4). */

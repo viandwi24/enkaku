@@ -3,6 +3,7 @@ import type { DeviceInfo } from '@enkaku/protocol'
 import { LabelChip, Spinner, StatusDot, cn } from '@enkaku/ui'
 import { LiveView } from '@/components/LiveView'
 import { AgentAlertChip } from '@/components/guest-agent/AgentAlertChip'
+import { quarantineShort } from '@/lib/quarantine'
 import { dotStateOf, dotTooltipOf, reconnectingOf } from './device-state'
 
 /** The handoff's "135° 6px stripe pattern at `opacity: 0.7`" for a screen that is not live. */
@@ -115,7 +116,15 @@ export function DeviceScreenCard({
                 {reconnecting.attempt >= 2 && <span className="text-tip text-faint">attempt {reconnecting.attempt}</span>}
               </>
             ) : (
-              <span className={cn('text-label', device.status === 'quarantined' ? 'text-warn' : 'text-faint-2')}>{idleLabelOf(device)}</span>
+              <>
+                <span className={cn('text-label', device.status === 'quarantined' ? 'text-warn' : 'text-faint-2')}>{idleLabelOf(device)}</span>
+                {/* Why, in the tile itself — the full sentence is on hover and in Device Control's banner. */}
+                {device.status === 'quarantined' && (
+                  <span className="line-clamp-2 px-2 text-center text-tip text-faint">
+                    {quarantineShort(device.quarantineReason, device.battery?.temperatureC ?? null)}
+                  </span>
+                )}
+              </>
             )}
           </div>
         )}

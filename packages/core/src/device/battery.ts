@@ -123,6 +123,8 @@ export function createBatteryMonitor(deps: {
           if (applied) {
             deps.db.update(devices).set({ quarantineReason: reason }).where(eq(devices.id, row.id)).run()
             deps.log.warn(`device ${row.label} quarantined: temperature ${battery.temperatureC}°C > ${cfg.tempThresholdC}°C`)
+            // Its own event, so the device log says WHEN and how hot — `battery.warning` alone repeats every poll.
+            deps.record?.({ deviceId: row.id, stream: 'main', kind: 'device.quarantined', meta: { reason, temperatureC: battery.temperatureC, thresholdC: cfg.tempThresholdC } })
           } else {
             // The device is busy or under manual control → flag it for the next cycle.
             deps.log.warn(`device ${row.label} is hot (${battery.temperatureC}°C) but cannot be quarantined yet (${status})`)

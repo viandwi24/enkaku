@@ -21,7 +21,26 @@ export function explainQuarantine(reason: string, nowC?: number | null): string 
   if (thermal) {
     const at = `temperature reached ${thermal[1]}°C`
     const pulledAt = Number(thermal[1])
-    return nowC != null && Number.isFinite(nowC) && nowC < pulledAt ? `${at} — now ${nowC.toFixed(1)}°C` : at
+    const now = nowC != null && Number.isFinite(nowC) && nowC < pulledAt ? ` — now ${nowC.toFixed(1)}°C` : ''
+    return `${at}${now}. It returns on its own once it cools below the "Pause jobs above" setting`
   }
+  if (reason === 'adb:unreachable') {
+    return 'stopped answering over adb (several timeouts in a row). It returns on its own within a minute of answering again — check its USB cable and hub'
+  }
+  return reason
+}
+
+/**
+ * The few words a wall tile has room for under "Quarantined" (2026-09-15: the owner could see a tile
+ * was quarantined but not why without opening it). The full sentence is `explainQuarantine`.
+ */
+export function quarantineShort(reason: string | null | undefined, nowC?: number | null): string {
+  if (!reason) return 'no reason recorded'
+  const thermal = /^thermal:([\d.]+)C$/.exec(reason)
+  if (thermal) {
+    const now = nowC != null && Number.isFinite(nowC) ? ` · now ${nowC.toFixed(1)}°C` : ''
+    return `Too hot · ${thermal[1]}°C${now}`
+  }
+  if (reason === 'adb:unreachable') return 'adb not answering'
   return reason
 }

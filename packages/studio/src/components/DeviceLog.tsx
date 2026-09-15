@@ -40,6 +40,10 @@ const KIND_LABEL: Record<string, string> = {
   'job.triggered': 'Job triggered',
   'settings.changed': 'Settings changed',
   'battery.warning': 'Battery warning',
+  'device.flap': 'USB blip',
+  'device.quarantined': 'Quarantined (heat)',
+  'device.unhealthy': 'Quarantined (adb)',
+  'device.recovered': 'Back from quarantine',
   'input.tap': 'Tap',
   'input.swipe': 'Swipe',
   'input.key': 'Key',
@@ -69,6 +73,10 @@ const KIND_TONE: Record<string, string> = {
   'job.retry': 'text-warn border-warn/35 bg-warn/10',
   'job.triggered': 'text-accent border-accent/35 bg-accent/10',
   'battery.warning': 'text-danger border-danger/40 bg-danger/10',
+  'device.flap': 'text-warn border-warn/35 bg-warn/10',
+  'device.quarantined': 'text-danger border-danger/40 bg-danger/10',
+  'device.unhealthy': 'text-danger border-danger/40 bg-danger/10',
+  'device.recovered': 'text-ok border-ok/35 bg-ok/10',
   'adb.endpoint.opened': 'text-accent border-accent/35 bg-accent/10',
   'adb.endpoint.closed': 'text-faint border-line bg-transparent',
   'app.crashed': 'text-danger border-danger/40 bg-danger/10',
@@ -128,6 +136,16 @@ function summarize(ev: DeviceEvent): string {
       return Array.isArray(meta.keys) && meta.keys.length > 0 ? `Changed: ${meta.keys.join(', ')}` : 'Settings changed'
     case 'battery.warning':
       return `${String(meta.temperatureC ?? '?')}°C at ${String(meta.level ?? '?')}%`
+    case 'device.flap': {
+      const goneMs = typeof meta.goneMs === 'number' ? meta.goneMs : null
+      return `adb dropped it and it came back${goneMs !== null ? ` after ${(goneMs / 1000).toFixed(1)}s` : ''}${meta.count ? ` · blip ${String(meta.count)} since the core started` : ''}`
+    }
+    case 'device.quarantined':
+      return `${String(meta.temperatureC ?? '?')}°C, over the ${String(meta.thresholdC ?? '?')}°C "Pause jobs above" setting — returns on its own once it cools`
+    case 'device.unhealthy':
+      return 'Stopped answering over adb — returns on its own when it answers again'
+    case 'device.recovered':
+      return 'Back in the pool'
     case 'input.tap':
       return `at (${String(meta.x ?? '?')}, ${String(meta.y ?? '?')})`
     case 'input.swipe': {
