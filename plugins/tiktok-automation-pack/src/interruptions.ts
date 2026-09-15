@@ -38,6 +38,16 @@ export const TIKTOK_INTERRUPTIONS: readonly Interruption[] = [
     what: 'the "add phone number" sheet',
     identity: ['Tambah nomor telepon', 'Tambahkan nomor telepon Anda', 'Add phone number', 'Add your phone number'],
   },
+  {
+    // Seen on the owner's production SM-A075F #9 (2026-09-15) over the own profile as it opened: a bottom sheet
+    // "Riwayat penonton diaktifkan" with a `viewer_auth_switch` toggle, a "Simpan" button and an unlabelled close
+    // (X) at its top right. It hid "Menu profil", so clearing drafts said "the own profile could not be opened".
+    // Its close carries no label, so `dismissInterruptions` closes it with BACK — never "Simpan", never the toggle.
+    // The English wording is unverified.
+    id: 'tt.viewer-history',
+    what: 'the "profile view history turned on" sheet',
+    identity: ['Riwayat penonton diaktifkan', 'Profile view history is on', 'Profile view history turned on'],
+  },
 ]
 
 /** The labels a sheet's close control carries. Nothing that continues, agrees or submits. */

@@ -864,6 +864,10 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // Also in 1.42.0 — the "Riwayat penonton diaktifkan" sheet over the own profile is closed. Production #9 (2026-09-15)
+  //   stopped at "the own profile could not be opened to look for drafts" with that sheet (a viewer-history toggle, a
+  //   "Simpan" button, an unlabelled close) hiding "Menu profil". It is a new interruption, `tt.viewer-history`, and
+  //   opening the own profile now closes a known sheet with BACK and looks again — never "Simpan".
   // 1.42.0 — the profile is pulled to refresh after Post, at a person's rhythm; and TikTok's drafts dialog is
   //   recognised. The owner asked (2026-09-15) for a real refresh and less of a mechanical loop: every look after
   //   the first either pulls the open profile down to refresh it (a slow drag inside the grid, never a tap) or goes

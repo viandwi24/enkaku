@@ -46,6 +46,37 @@ function phoneSheet(lang: 'id' | 'en', closeIn: 'text' | 'desc'): UiNode {
   })
 }
 
+describe('the "Riwayat penonton diaktifkan" sheet over the profile', () => {
+  // The nodes of production #9's dump (2026-09-15, SM-A075F 720x1600), texts trimmed to what identifies them.
+  function viewerSheet(): UiNode {
+    return node({
+      className: 'hierarchy',
+      children: [
+        node({ className: 'android.widget.TextView', text: 'Bitorex Buzz', bounds: { left: 20, top: 90, right: 300, bottom: 130 } }),
+        node({
+          className: 'android.widget.FrameLayout',
+          resourceId: 'com.ss.android.ugc.trill:id/fxf',
+          desc: 'Lembar bawah',
+          bounds: { left: 0, top: 342, right: 720, bottom: 1510 },
+          children: [
+            node({ className: 'android.widget.Button', clickable: true, bounds: { left: 630, top: 349, right: 705, bottom: 432 } }),
+            node({ className: 'android.widget.TextView', resourceId: 'com.ss.android.ugc.trill:id/le1', text: 'Riwayat penonton diaktifkan', bounds: { left: 96, top: 740, right: 624, bottom: 886 } }),
+            node({ className: 'android.widget.TextView', resourceId: 'com.ss.android.ugc.trill:id/sqz', text: 'Riwayat penonton', bounds: { left: 60, top: 1233, right: 547, bottom: 1269 } }),
+            node({ className: 'android.widget.Switch', resourceId: 'com.ss.android.ugc.trill:id/viewer_auth_switch', clickable: true, bounds: { left: 570, top: 1233, right: 660, bottom: 1284 } }),
+            node({ className: 'android.widget.Button', text: 'Simpan', clickable: true, bounds: { left: 60, top: 1359, right: 660, bottom: 1457 } }),
+          ],
+        }),
+      ],
+    })
+  }
+
+  test('is recognised by its title, and its unlabelled close leaves no close to tap — the caller uses BACK, never "Simpan"', () => {
+    const found = findInterruption(viewerSheet())
+    expect(found?.interruption.id).toBe('tt.viewer-history')
+    expect(closeNear(viewerSheet(), found!.anchor)).toBeNull()
+  })
+})
+
 describe('the add-phone-number sheet', () => {
   for (const lang of ['id', 'en'] as const) {
     for (const closeIn of ['text', 'desc'] as const) {

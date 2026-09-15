@@ -10,6 +10,7 @@ import { tiktokQueue, type TikTokQueueClaim } from './queue'
 import { readCaptionsFile, pickCaption } from './captions'
 import { resolveVideoFromFolder, recordVideoPosted } from './folder'
 import { TIKTOK_PACKAGE, PROFIL_TAB, MENU_PROFIL } from './sheet'
+import { dismissInterruptions } from './interruptions'
 
 /**
  * Posts a video to TikTok — the member plan 113 exists to build (§1, §4.3). Pushes an uploaded
@@ -1007,7 +1008,16 @@ async function openOwnProfile(ctx: ScriptContext<unknown>, frameWidth: number): 
     return null
   }
   await ctx.device.tap({ point: centreOf(profilNode) })
-  const menuNode = await waitForOnScreen(ctx, frameWidth, [descOf(MENU_PROFIL), 'Profile menu'], 10_000)
+  let menuNode = await waitForOnScreen(ctx, frameWidth, [descOf(MENU_PROFIL), 'Profile menu'], 10_000)
+  if (!menuNode) {
+    // A sheet TikTok raises as the profile opens can hide "Menu profil" (1.42.0, production #9's "Riwayat penonton
+    // diaktifkan"): close a known one and look again.
+    const { dismissed } = await dismissInterruptions(ctx)
+    if (dismissed.length > 0) {
+      ctx.log.info('closed a sheet over the own profile', { dismissed: dismissed.join(', ') })
+      menuNode = await waitForOnScreen(ctx, frameWidth, [descOf(MENU_PROFIL), 'Profile menu'], 6_000)
+    }
+  }
   if (!menuNode) {
     await capture(ctx, 'profile-not-open')
     ctx.log.warn('the own profile did not open (no on-screen "Menu profil")')
