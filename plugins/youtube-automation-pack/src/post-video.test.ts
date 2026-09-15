@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { UiNode } from '@enkaku/protocol'
 import {
   asciiTitle,
+  youtubeTitle,
   cellShowsTitle,
   cellTitleKey,
   channelHeaderShown,
@@ -40,6 +41,41 @@ async function fixture(name: string): Promise<UiNode> {
 }
 
 const W = 720
+
+describe('youtubeTitle — a long caption fitted to 100 characters (0.34.0)', () => {
+  // The production caption of 2026-09-15 row #2, emoji already dropped by `asciiTitle`.
+  const caption =
+    'Sambil nunggu, kita cek zona buy dulu ya. Market hari ini tuh agak-agak aneh sih, sampe males mau liat lagi Ada yang ngerasain hal yang sama hari ini? #trading #market #zonabuy #tradinglife #marketupdate #AkademiBitorex #fyp'
+
+  test('keeps hashtags at the end, cuts the text at a word, and never passes 100', () => {
+    const { title, droppedTags, cut } = youtubeTitle(caption)
+    expect(title.length).toBeLessThanOrEqual(100)
+    expect(cut).toBe(true)
+    // Cut at a word, and the punctuation left dangling at the cut is dropped.
+    expect(title).toStartWith('Sambil nunggu, kita cek zona buy dulu ya #')
+    expect(title).toContain('#trading')
+    // The text is cut on a word boundary: no half word before the first hashtag.
+    const body = title.slice(0, title.indexOf(' #'))
+    expect(caption).toContain(`${body} `)
+    // What did not fit is reported, and every kept tag is one of the caption's.
+    const kept = title.split(' ').filter((w) => w.startsWith('#'))
+    expect([...kept, ...droppedTags].sort()).toEqual(['#AkademiBitorex', '#fyp', '#market', '#marketupdate', '#trading', '#tradinglife', '#zonabuy'].sort())
+    expect(body.length).toBeGreaterThanOrEqual(40)
+  })
+
+  test('a caption that fits is left whole', () => {
+    expect(youtubeTitle('Short and sweet #trading #fyp')).toEqual({ title: 'Short and sweet #trading #fyp', droppedTags: [], cut: false })
+  })
+
+  test('hashtags only, and text only, both stay within the limit', () => {
+    const tagsOnly = youtubeTitle(Array.from({ length: 30 }, (_, i) => `#tag${i}`).join(' '))
+    expect(tagsOnly.title.length).toBeLessThanOrEqual(100)
+    expect(tagsOnly.title).toStartWith('#tag0 #tag1')
+    const textOnly = youtubeTitle('kata '.repeat(40).trim())
+    expect(textOnly.title.length).toBeLessThanOrEqual(100)
+    expect(textOnly.title.endsWith('kata')).toBe(true)
+  })
+})
 
 describe('the screens the farm can read', () => {
   test('home has the Create button; the signed-out You page is recognised', async () => {

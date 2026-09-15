@@ -165,6 +165,8 @@ export function detailsGeometry(tree: UiNode): DetailsGeometry {
 const CONFIRM_ROUNDS = 6
 /** How long a run that saw its upload in flight keeps looking at the channel, counted from the first look (0.33.0). */
 const CONFIRM_BUDGET_MS = 5 * 60_000
+/** How long every run keeps looking at the channel after Upload, even one that never saw its upload in flight (0.34.0). */
+const CONFIRM_MIN_MS = 3 * 60_000
 
 /**
  * How long the title tap gets before the text is typed.
@@ -196,8 +198,43 @@ export function asciiTitle(s: string): string {
   return s.replace(/[^\x20-\x7e]/g, '').replace(/\s+/g, ' ').trim()
 }
 
-/** YouTube's title limit. A longer caption is cut, and the cut is logged. */
+/** YouTube's title limit. A longer caption is fitted by `youtubeTitle`, and the cut is logged. */
 const TITLE_MAX = 100
+/** The least caption text a fitted title keeps before a hashtag is given room (0.34.0). */
+const TITLE_MIN_TEXT = 40
+
+/**
+ * A caption fitted to YouTube's 100-character title (0.34.0): the caption's words cut at a word boundary, then as
+ * many of its hashtags as fit, in their own order. The owner's production farm (2026-09-15): captions of 200+
+ * characters were cut at character 100, so every hashtag — which the post composes at the END — was lost, and
+ * the cut could fall mid-word. At least `TITLE_MIN_TEXT` characters of text are kept before a hashtag is added.
+ */
+export function youtubeTitle(caption: string, max = TITLE_MAX): { title: string; droppedTags: string[]; cut: boolean } {
+  const words = caption.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
+  const isTag = (w: string): boolean => /^#[A-Za-z0-9_]+$/.test(w)
+  const tags: string[] = []
+  for (const w of words) if (isTag(w) && !tags.includes(w)) tags.push(w)
+  const text = words.filter((w) => !isTag(w)).join(' ')
+
+  const kept: string[] = []
+  for (const tag of tags) {
+    const tagsLength = [...kept, tag].join(' ').length
+    const room = max - tagsLength - (text === '' ? 0 : 1)
+    if (room < Math.min(TITLE_MIN_TEXT, text.length)) break
+    kept.push(tag)
+  }
+  const tagText = kept.join(' ')
+  const budget = max - (tagText === '' ? 0 : tagText.length + (text === '' ? 0 : 1))
+  let body = text
+  let cut = false
+  if (body.length > budget) {
+    cut = true
+    const slice = body.slice(0, budget + 1)
+    const space = slice.lastIndexOf(' ')
+    body = (space > 0 ? slice.slice(0, space) : body.slice(0, budget)).replace(/[\s,.;:!?-]+$/, '')
+  }
+  return { title: [body, tagText].filter((s) => s !== '').join(' '), droppedTags: tags.filter((t) => !kept.includes(t)), cut }
+}
 
 const params = z.object({
   source: z
@@ -986,8 +1023,13 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     }
     if (title.length === 0) fail('E_PARAMS_INVALID', 'the caption has no characters that can be typed as a YouTube title (printable ASCII) — give it some text.')
     if (title.length > TITLE_MAX) {
-      ctx.log.warn(`caption is longer than YouTube's ${TITLE_MAX}-character title — the rest was cut`, { length: title.length })
-      title = title.slice(0, TITLE_MAX).trim()
+      const fitted = youtubeTitle(title)
+      ctx.log.warn(`caption is longer than YouTube's ${TITLE_MAX}-character title — cut at a word, keeping the hashtags that fit`, {
+        length: title.length,
+        title: fitted.title,
+        droppedHashtags: fitted.droppedTags.join(' '),
+      })
+      title = fitted.title
     }
 
     let home = await capture(ctx, 'yt-01-home')
@@ -1321,7 +1363,9 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     const confirmStarted = Date.now()
     try {
       for (let round = 0; ; round++) {
-        if (round >= CONFIRM_ROUNDS && (inFlightWords === null || Date.now() - confirmStarted >= CONFIRM_BUDGET_MS)) break
+        // At least `CONFIRM_MIN_MS` whatever was seen (0.34.0): the uploading cell vanishes from a re-opened
+        // channel until YouTube finishes, so a run that never caught it in flight still waits a few minutes.
+        if (round >= CONFIRM_ROUNDS && Date.now() - confirmStarted >= (inFlightWords === null ? CONFIRM_MIN_MS : CONFIRM_BUDGET_MS)) break
         if (round > 0) await sleep(round >= CONFIRM_ROUNDS ? 15_000 : 10_000)
         const after = await readOwnChannel(ctx, `yt-11-channel-after-${round + 1}`, { readIfShown: round === 0 })
         last = judgeChannel(before, after, title, { seenUploading })
@@ -1349,7 +1393,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
           ctx.log.warn('the channel could not be read — bringing YouTube to the front without restarting it', { round: round + 1 })
           await ctx.device.app.launch(YOUTUBE_PACKAGE).catch((err: unknown) => ctx.log.warn('could not bring YouTube to the front', { error: String(err) }))
         }
-        ctx.log.warn(`the channel does not show this Short as live yet (attempt ${round + 1}${inFlightWords === null ? `/${CONFIRM_ROUNDS}` : `, watching the upload for up to ${CONFIRM_BUDGET_MS / 60_000} min`})`, { judged: JSON.stringify(last) })
+        ctx.log.warn(`the channel does not show this Short as live yet (attempt ${round + 1}, looking for up to ${(inFlightWords === null ? CONFIRM_MIN_MS : CONFIRM_BUDGET_MS) / 60_000} min${inFlightWords === null ? '' : ' — the upload was seen in flight'})`, { judged: JSON.stringify(last) })
       }
     } catch (err) {
       confirmError = err instanceof Error ? err.message : String(err)

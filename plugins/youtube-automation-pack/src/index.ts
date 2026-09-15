@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.33.0',
+  version: '0.34.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,16 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.34.0 — hashtags survive a long caption, and every upload is watched
+   * for at least three minutes.** The owner's production farm (2026-09-15):
+   * a 224-character caption was cut at character 100, which dropped every
+   * hashtag (the post puts them at the end) and could cut a word in half.
+   * `youtubeTitle` now keeps the caption's text cut at a word and adds as many
+   * of its hashtags as fit, keeping at least 40 characters of text. And a run
+   * that never caught its upload in flight still looks at the channel for 3
+   * minutes before "unverified" (5 once the upload was seen), because the
+   * uploading cell disappears from a re-opened channel until it finishes.
    *
    * **0.33.0 — an upload seen in flight is watched until it lands.** The
    * owner's production farm (2026-09-15, #12): the first look after Upload read
