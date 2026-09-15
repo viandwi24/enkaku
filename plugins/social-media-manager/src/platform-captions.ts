@@ -157,42 +157,55 @@ function keepFirstHashtags(text: string, max: number): string {
     .trim()
 }
 
-/** `text` cut to `max` characters at a word boundary when one is reasonably near, trailing punctuation dropped. */
-function cutAtWord(text: string, max: number): string {
-  if (text.length <= max) return text
-  const slice = text.slice(0, max + 1)
-  const space = slice.lastIndexOf(' ')
-  return (space > max * 0.6 ? slice.slice(0, space) : text.slice(0, max)).replace(/[\s,.;:!?-]+$/, '')
-}
+/** What a cut caption ends with (0.31.0): three ASCII dots, so YouTube's and Instagram's adb typing can carry it. */
+export const CUT_MARK = '...'
 
-/** The caption, a blank line, the hashtags — hashtags dropped from the END until it fits, then the text cut. */
-function joinWithin(body: string, tags: readonly string[], max: number): string {
-  const kept = [...tags]
-  const join = (): string => (kept.length === 0 ? body : body === '' ? kept.join(' ') : `${body}\n\n${kept.join(' ')}`)
-  while (kept.length > 0 && join().length > max) kept.pop()
-  return join().length > max ? cutAtWord(body, max) : join()
+/**
+ * `text` cut to at most `max` characters at a word boundary when one is reasonably near, ending in `CUT_MARK` when
+ * anything was cut (0.31.0) — the owner (2026-09-15): a caption joined with its hashtags must never run past the limit,
+ * and a cut caption should read as cut. Empty when not even a word and the mark fit.
+ */
+function cutWithMark(text: string, max: number): string {
+  if (text.length <= max) return text
+  const room = max - CUT_MARK.length
+  if (room <= 0) return ''
+  const slice = text.slice(0, room + 1)
+  const space = slice.lastIndexOf(' ')
+  const head = (space > room * 0.6 ? slice.slice(0, space) : text.slice(0, room)).replace(/[\s,.;:!?-]+$/, '')
+  return head === '' ? '' : `${head}${CUT_MARK}`
 }
 
 /**
- * A title fitted to YouTube's 100 characters the way `youtubeTitle` in the youtube pack fits one: as many
- * hashtags as fit in their own order, never at the cost of the first `YOUTUBE_TITLE_MIN_TEXT` characters of
- * text, then the text cut at a word boundary. Mirrored rather than imported — a plugin never imports another pack.
+ * The caption, a blank line, the hashtags — within `max`. Hashtags are dropped from the END until it fits, but never the
+ * first `keep` of them (the session's required hashtags, 0.31.0); if it still does not fit, the caption text is cut,
+ * ending in `CUT_MARK`, and the kept hashtags stay whole.
  */
-export function fitYouTubeTitle(text: string, tags: readonly string[], max = YOUTUBE_TITLE_MAX): string {
+function joinWithin(body: string, tags: readonly string[], max: number, keep = 0): string {
+  const kept = [...tags]
+  const join = (b: string): string => (kept.length === 0 ? b : b === '' ? kept.join(' ') : `${b}\n\n${kept.join(' ')}`)
+  while (kept.length > keep && join(body).length > max) kept.pop()
+  if (join(body).length <= max) return join(body)
+  const room = kept.length === 0 ? max : max - kept.join(' ').length - 2
+  return join(cutWithMark(body, Math.max(0, room)))
+}
+
+/**
+ * A title fitted to YouTube's 100 characters: as many hashtags as fit in their own order, never at the cost of the first
+ * `YOUTUBE_TITLE_MIN_TEXT` characters of text — except the first `keep` (the session's required hashtags, 0.31.0), which
+ * stay whenever they fit at all — then the text cut at a word boundary, ending in `CUT_MARK` (0.31.0).
+ */
+export function fitYouTubeTitle(text: string, tags: readonly string[], max = YOUTUBE_TITLE_MAX, keep = 0): string {
   const kept: string[] = []
-  for (const tag of tags) {
-    const room = max - [...kept, tag].join(' ').length - (text === '' ? 0 : 1)
-    if (room < Math.min(YOUTUBE_TITLE_MIN_TEXT, text.length)) break
+  for (const [index, tag] of tags.entries()) {
+    const tagsLength = [...kept, tag].join(' ').length
+    if (tagsLength > max) break
+    const room = max - tagsLength - (text === '' ? 0 : 1)
+    if (index >= keep && room < Math.min(YOUTUBE_TITLE_MIN_TEXT, text.length)) break
     kept.push(tag)
   }
   const tagText = kept.join(' ')
   const budget = max - (tagText === '' ? 0 : tagText.length + (text === '' ? 0 : 1))
-  let body = text
-  if (body.length > budget) {
-    const slice = body.slice(0, budget + 1)
-    const space = slice.lastIndexOf(' ')
-    body = (space > 0 ? slice.slice(0, space) : body.slice(0, budget)).replace(/[\s,.;:!?-]+$/, '')
-  }
+  const body = cutWithMark(text, Math.max(0, budget))
   return [body, tagText].filter((s) => s !== '').join(' ')
 }
 
@@ -211,21 +224,26 @@ export function fitYouTubeTitle(text: string, tags: readonly string[], max = YOU
  *
  * Empty when nothing is left (a caption written entirely in a script adb cannot type, with no hashtags).
  */
-export function fitPlatformCaption(platform: PlatformId, input: { text: string; hashtags: readonly string[] }): string {
+export function fitPlatformCaption(platform: PlatformId, input: { text: string; hashtags: readonly string[]; required?: readonly string[] | undefined }): string {
   const limit = PLATFORM_CAPTION_LIMITS[platform]
+  const tagsFor = (tags: readonly string[]): string[] => (limit.asciiOnly ? asciiHashtags(tags) : normalizeHashtags(tags))
+  // The session's required hashtags come first and are never the ones dropped (0.31.0).
+  const required = tagsFor(input.required ?? [])
   if (platform === 'youtube') {
     const line = asciiText(input.text, true)
     const inline = hashtagsIn(line)
     const words = line.split(' ').filter((w) => w !== '' && !TAG_WORD.test(w))
-    const tags = asciiHashtags([...inline, ...input.hashtags]).slice(0, limit.maxHashtags)
-    return fitYouTubeTitle(words.join(' '), tags, limit.maxLength)
+    const tags = tagsFor([...required, ...inline, ...input.hashtags]).slice(0, Math.max(limit.maxHashtags, required.length))
+    return fitYouTubeTitle(words.join(' '), tags, limit.maxLength, required.length)
   }
-  const body = keepFirstHashtags(limit.asciiOnly ? asciiText(input.text, limit.singleLine) : input.text.replace(/\r\n?/g, '\n').trim(), limit.maxHashtags)
+  // Hashtags written inside the text give way to the required ones, so the platform's own cap never drops a required one.
+  const body = keepFirstHashtags(limit.asciiOnly ? asciiText(input.text, limit.singleLine) : input.text.replace(/\r\n?/g, '\n').trim(), Math.max(0, limit.maxHashtags - required.length))
   const inline = hashtagsIn(body)
   const taken = new Set(inline.map((t) => t.toLowerCase()))
-  const candidates = (limit.asciiOnly ? asciiHashtags(input.hashtags) : normalizeHashtags(input.hashtags)).filter((t) => !taken.has(t.toLowerCase()))
-  const tags = candidates.slice(0, Math.max(0, limit.maxHashtags - inline.length))
-  return joinWithin(body, tags, limit.maxLength)
+  const requiredLeft = required.filter((t) => !taken.has(t.toLowerCase()))
+  const candidates = tagsFor([...requiredLeft, ...input.hashtags]).filter((t) => !taken.has(t.toLowerCase()))
+  const tags = candidates.slice(0, Math.max(requiredLeft.length, limit.maxHashtags - inline.length))
+  return joinWithin(body, tags, limit.maxLength, requiredLeft.length)
 }
 
 /**
@@ -238,12 +256,14 @@ export function fitPlatformCaptions(input: {
   caption: string
   texts?: Partial<Record<PlatformId, string>>
   hashtags: readonly string[]
+  /** The session's required hashtags (0.31.0): never dropped from any platform's text. */
+  required?: readonly string[] | undefined
 }): PlatformCaptions {
   const out: PlatformCaptions = {}
   for (const id of PLATFORM_IDS) {
     if (!input.platforms.includes(id)) continue
     const written = input.texts?.[id]?.trim()
-    const fitted = fitPlatformCaption(id, { text: written !== undefined && written !== '' ? written : input.caption, hashtags: input.hashtags })
+    const fitted = fitPlatformCaption(id, { text: written !== undefined && written !== '' ? written : input.caption, hashtags: input.hashtags, required: input.required })
     if (fitted !== '') out[id] = fitted
   }
   return out
@@ -299,15 +319,15 @@ export function platformPostText(post: PostTextSource, platform: string, rule: H
   const hashtags = hashtagsFor({ rule, line: post.hashtagLine, own: post.hashtags })
   if (!isCaptionPlatform(platform)) return composePostText(post.caption, hashtags)
   const own = post.platformCaptions?.[platform]?.trim()
-  if (own === undefined || own === '') return sharedTextFor(platform, post.caption, hashtags)
+  if (own === undefined || own === '') return sharedTextFor(platform, post.caption, hashtags, rule.fixed)
   // A text written by hand keeps every word, but never more hashtags than the platform takes. YouTube's pack fits its own title.
   const max = PLATFORM_CAPTION_LIMITS[platform].maxHashtags
   return platform !== 'youtube' && hashtagsIn(own).length > max ? keepFirstHashtags(own, max) : own
 }
 
 /** The shared caption and hashtags fitted to one platform — what fills a platform's own caption. Also the page's preview. */
-export function sharedTextFor(platform: PlatformId, caption: string, hashtags: readonly string[]): string {
-  return fitPlatformCaption(platform, { text: caption, hashtags })
+export function sharedTextFor(platform: PlatformId, caption: string, hashtags: readonly string[], required?: readonly string[]): string {
+  return fitPlatformCaption(platform, { text: caption, hashtags, required })
 }
 
 /** A caption platform's name as the page writes it. */
@@ -321,11 +341,11 @@ export function captionPlatformTitle(platform: PlatformId): string {
  * its own platform — it is never one text for all three. A platform whose fitted text is empty (nothing to post there)
  * stays without one, and the router holds it.
  */
-export function withPlatformCaptions(input: { platforms: readonly string[]; caption: string; hashtags: readonly string[]; captions: PlatformCaptions }): PlatformCaptions {
+export function withPlatformCaptions(input: { platforms: readonly string[]; caption: string; hashtags: readonly string[]; captions: PlatformCaptions; required?: readonly string[] }): PlatformCaptions {
   const out: PlatformCaptions = { ...input.captions }
   for (const id of PLATFORM_IDS) {
     if (!input.platforms.includes(id) || (out[id] ?? '').trim() !== '') continue
-    const fitted = sharedTextFor(id, input.caption, input.hashtags)
+    const fitted = sharedTextFor(id, input.caption, input.hashtags, input.required)
     if (fitted !== '') out[id] = fitted
   }
   return out
@@ -341,14 +361,15 @@ export function followSharedText(input: {
   before: { caption: string; hashtags: readonly string[] }
   after: { caption: string; hashtags: readonly string[] }
   captions: PlatformCaptions
+  required?: readonly string[]
 }): { captions: PlatformCaptions; kept: PlatformId[] } {
   const out: PlatformCaptions = { ...input.captions }
   const kept: PlatformId[] = []
   for (const id of PLATFORM_IDS) {
     if (!input.platforms.includes(id)) continue
     const stored = out[id]
-    const fitted = sharedTextFor(id, input.after.caption, input.after.hashtags)
-    if (stored !== undefined && stored !== sharedTextFor(id, input.before.caption, input.before.hashtags)) {
+    const fitted = sharedTextFor(id, input.after.caption, input.after.hashtags, input.required)
+    if (stored !== undefined && stored !== sharedTextFor(id, input.before.caption, input.before.hashtags, input.required)) {
       if (stored !== fitted) kept.push(id)
       continue
     }

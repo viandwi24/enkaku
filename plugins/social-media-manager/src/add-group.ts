@@ -240,6 +240,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         caption,
         ...(texts !== undefined ? { texts } : {}),
         hashtags: hashtagsFor({ rule: hashtagRule, line: next.hashtagLine, own: next.hashtags }),
+        required: hashtagRule.fixed,
       })
 
       if (existing) {

@@ -364,6 +364,31 @@ export function readableDetails(tree: UiNode): { upload: UiNode | null; title: U
   return { upload, title }
 }
 
+/**
+ * The title field's text on a READABLE details screen (0.38.3): `''` when it shows only its placeholder ("Caption your
+ * Short" / "Tambahkan teks pada video Shorts"), `null` when no field can be read (a hidden details screen). The field is
+ * the on-screen YouTube EditText.
+ */
+export function titleFieldText(tree: UiNode): string | null {
+  const visible = onScreenIn(tree)
+  const field = all(tree, (n) => fromYouTube(n) && visible(n) && /EditText$/.test(n.className))[0]
+  if (!field) return null
+  const text = field.text.replace(/\s+/g, ' ').trim()
+  return /^(caption your short|tambahkan teks pada video shorts|create a title|add a title|tambahkan judul)$/i.test(text) ? '' : text
+}
+
+/** The same title, whitespace aside. */
+export function sameTitle(held: string, title: string): boolean {
+  const norm = (s: string): string => s.replace(/\s+/g, ' ').trim()
+  return norm(held) === norm(title)
+}
+
+/** YouTube's red refusal under the title, "Tulis teks yang lebih singkat" (0.38.3, measured); the English wording is unverified. */
+export function titleRefused(tree: UiNode): boolean {
+  const visible = onScreenIn(tree)
+  return all(tree, (n) => fromYouTube(n) && visible(n) && /tulis teks yang lebih singkat|write shorter text|title is too long/i.test(`${n.text} ${n.desc}`)).length > 0
+}
+
 /** The details screen, hidden from the reader (the moto) or readable (production Samsung) — see `readableDetails`. */
 export function onDetailsScreen(tree: UiNode): boolean {
   return hiddenWindow(tree) === 'details' || readableDetails(tree) !== null
@@ -1487,13 +1512,41 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       const back = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: 8_000 })
       if (back.ok) {
         await sleep(1_000)
-        await ctx.device.tap({ point: titlePoint }, { via: 'adb' })
-        await sleep(FOCUS_SETTLE_MS)
-        await ctx.device.type(title, { via: 'adb', instant: true })
-        ctx.log.info('typed the title again')
-        await sleep(1_500)
+        /*
+          What the field already holds decides (0.38.3). Part of the first typing CAN land before the thumbnail editor
+          opens: production 4e4eac2b and 9073e560 (2026-09-15) typed the title again on top of it, the field then held the
+          title twice, YouTube refused it in red — "Tulis teks yang lebih singkat" — and Upload stayed disabled. So the title
+          is typed again only into a field read empty; a field already holding the whole title is left as it is; anything
+          else (part of it, or a field the reader cannot see) stops the run here, with nothing uploaded.
+        */
+        const held = titleFieldText(back.tree)
+        if (held === '') {
+          await ctx.device.tap({ point: titlePoint }, { via: 'adb' })
+          await sleep(FOCUS_SETTLE_MS)
+          await ctx.device.type(title, { via: 'adb', instant: true })
+          ctx.log.info('typed the title again, into a field read empty')
+          await sleep(1_500)
+        } else if (held !== null && sameTitle(held, title)) {
+          ctx.log.info('the whole title had already landed before the thumbnail editor opened — not typing it again')
+        } else {
+          await capture(ctx, 'yt-09-title-not-clean', back.tree)
+          fail(
+            'E_DETAILS_LAYOUT',
+            held === null
+              ? 'the title opened YouTube\'s thumbnail editor, and after leaving it the title field could not be read, so the title was not typed again (typing it twice makes YouTube refuse it) — nothing was uploaded. See artifact yt-09-title-not-clean.'
+              : `the title opened YouTube's thumbnail editor after part of it landed — the field holds "${held.slice(0, 80)}", and typing the title again would put it in twice (YouTube refuses that: "Tulis teks yang lebih singkat"), so nothing was typed and nothing was uploaded. See artifact yt-09-title-not-clean.`,
+          )
+        }
         afterTyping = await ctx.device.dump()
       }
+    }
+    if (onDetailsScreen(afterTyping) && titleRefused(afterTyping)) {
+      // YouTube's own red refusal under the title (0.38.3): Upload is disabled while it shows, so say why instead of "something covers Upload".
+      await capture(ctx, 'yt-09-title-refused', afterTyping)
+      fail(
+        'E_TITLE_REFUSED',
+        `YouTube refused the title ("Tulis teks yang lebih singkat" — write a shorter text) after ${title.length} characters were typed, so Upload stayed disabled and nothing was uploaded. See artifact yt-09-title-refused.`,
+      )
     }
     if (!onDetailsScreen(afterTyping)) {
       await capture(ctx, 'yt-09-not-details', afterTyping)

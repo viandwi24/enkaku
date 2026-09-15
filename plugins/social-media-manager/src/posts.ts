@@ -1436,12 +1436,14 @@ export function applyPostEdit(input: { post: Post; edit: PostEdit; sessionRows: 
   // hashtags; one written for that platform keeps its words, and the edit says so.
   const rule = input.rule ?? NO_HASHTAG_RULE
   const tagsOf = (row: Post): readonly string[] => hashtagsFor({ rule, line: row.hashtagLine, own: row.hashtags })
+  const required = rule.fixed
   if (next.caption !== post.caption || next.hashtags.join(' ') !== post.hashtags.join(' ')) {
     const follow = followSharedText({
       platforms: next.platforms,
       before: { caption: post.caption, hashtags: tagsOf(post) },
       after: { caption: next.caption, hashtags: tagsOf(next) },
       captions: next.platformCaptions,
+      required,
     })
     next = { ...next, platformCaptions: follow.captions }
     for (const id of follow.kept) {
@@ -1461,7 +1463,7 @@ export function applyPostEdit(input: { post: Post; edit: PostEdit; sessionRows: 
       const text = raw.trim()
       if (text === '') {
         // Emptied: the platform's caption is fitted from the shared text again (0.28.0), not removed.
-        const fitted = sharedTextFor(id, next.caption, tagsOf(next))
+        const fitted = sharedTextFor(id, next.caption, tagsOf(next), required)
         if (fitted === '') {
           if (captions[id] !== undefined) {
             delete captions[id]
@@ -1486,7 +1488,7 @@ export function applyPostEdit(input: { post: Post; edit: PostEdit; sessionRows: 
 
   // A platform just added, or a row from before 0.28.0, is given its caption now. Not a change on its own: the router fits
   // the same text for a row that has none, so nothing is written for it alone.
-  next = { ...next, platformCaptions: withPlatformCaptions({ platforms: next.platforms, caption: next.caption, hashtags: tagsOf(next), captions: next.platformCaptions }) }
+  next = { ...next, platformCaptions: withPlatformCaptions({ platforms: next.platforms, caption: next.caption, hashtags: tagsOf(next), captions: next.platformCaptions, required }) }
 
   return { ok: true, post: next, changed, warnings }
 }

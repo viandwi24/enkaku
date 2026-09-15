@@ -31,6 +31,9 @@ import {
   resumeDraftPrompt,
   trimDoneButton,
   updateRequired,
+  titleFieldText,
+  sameTitle,
+  titleRefused,
   uploadInProgress,
   viewChannelTarget,
 } from './post-video'
@@ -238,6 +241,33 @@ describe('onThumbnailEditor — where a mis-aimed details tap lands', () => {
   only the ids and labels production runs #6 and #7 dumped (Samsung farm, 2026-09-15); their bounds are placeholders
   in the centre of a 720x1600 screen.
 */
+describe('the title field after the thumbnail editor (0.38.3)', () => {
+  const screen = (children: UiNode[]): UiNode => node({ bounds: { left: 0, top: 0, right: 720, bottom: 1600 }, children })
+  const field = (text: string): UiNode => node({ className: 'android.widget.EditText', text, clickable: true, bounds: { left: 190, top: 190, right: 699, bottom: 380 } })
+  const title = 'Kenapa Zona Support Sering Jadi Liquidity Pool #AkademiBitorex #fyp #liquidity'
+
+  test('a field showing only its placeholder reads empty; one with text reads that text; no field reads null', () => {
+    expect(titleFieldText(screen([field('Caption your Short')]))).toBe('')
+    expect(titleFieldText(screen([field('Tambahkan teks pada video Shorts')]))).toBe('')
+    expect(titleFieldText(screen([field('Kenapa Zona Support')]))).toBe('Kenapa Zona Support')
+    expect(titleFieldText(screen([node({ text: 'Judul', bounds: { left: 190, top: 150, right: 260, bottom: 180 } })]))).toBeNull()
+  })
+
+  test('the whole title already there is the same title; part of it, or the title twice, is not', () => {
+    expect(sameTitle(`${title} `, title)).toBe(true)
+    expect(sameTitle('Kenapa Zona Support Sering Jadi Liquidity Pool #AkademiBitorex', title)).toBe(false)
+    // Production 4e4eac2b: the title typed on top of what had landed.
+    expect(sameTitle(`Kenapa Zona Support Sering Jadi Liquidity Pool #AkademiBitorex ${title}`, title)).toBe(false)
+  })
+
+  test('YouTube\'s red "Tulis teks yang lebih singkat" is recognised; the same words elsewhere are not', () => {
+    const refusal = node({ text: 'Tulis teks yang lebih singkat', bounds: { left: 190, top: 390, right: 520, bottom: 420 } })
+    expect(titleRefused(screen([field(`${title} ${title}`), refusal]))).toBe(true)
+    expect(titleRefused(screen([field(title)]))).toBe(false)
+    expect(titleRefused(screen([{ ...refusal, packageName: 'com.android.systemui' }]))).toBe(false)
+  })
+})
+
 describe('updateRequired — YouTube refusing to open until it is updated (0.38.0)', () => {
   const screen = (children: UiNode[]): UiNode => node({ bounds: { left: 0, top: 0, right: 720, bottom: 1600 }, children })
   // Production job 75895645 (2026-09-15): the whole screen, as its dump read it.

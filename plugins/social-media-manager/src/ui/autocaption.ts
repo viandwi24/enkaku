@@ -524,7 +524,7 @@ export async function autoCaption(input: {
     const written = await cap('ai.generate', { prompt, system, maxOutputTokens: tokens, temperature: 0.7 }, AiGenerateSchema, signal)
     const answer = parseAnswer(written.text, style.hashtags, fixed)
     if (answer.caption === '') return { status: 'failed', reason: 'The AI answered with no caption text.' }
-    const platformCaptions = fitPlatformCaptions({ platforms, caption: answer.caption, texts: answer.platformTexts, hashtags: [...fixed, ...answer.hashtags] })
+    const platformCaptions = fitPlatformCaptions({ platforms, caption: answer.caption, texts: answer.platformTexts, hashtags: [...fixed, ...answer.hashtags], required: fixed })
     return { status: 'done', caption: answer.caption, hashtags: answer.hashtags, transcript, platformTexts: answer.platformTexts, platformCaptions }
   } catch (e: unknown) {
     if (isAbort(e) || signal?.aborted) return { status: 'stopped' }

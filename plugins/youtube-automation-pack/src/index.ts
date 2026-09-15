@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.38.2',
+  version: '0.38.3',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,16 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.38.3 — the title is never typed twice.** Production 4e4eac2b and
+   * 9073e560 (2026-09-15): after the title opened the thumbnail editor, 0.36.0
+   * left the editor and typed the title again — but part of the first typing
+   * had already landed, so the field held the title twice, YouTube refused it
+   * in red ("Tulis teks yang lebih singkat") and Upload stayed disabled. The
+   * field is now read first: typed again only when it reads empty, left alone
+   * when it already holds the whole title, and otherwise the run stops, with
+   * nothing uploaded. YouTube's refusal itself is recognised too
+   * (E_TITLE_REFUSED) instead of reading as "something covers Upload".
    *
    * **0.38.2 — the details screen gets up to 2 min 30 s.** The owner
    * (2026-09-15): a slow phone still preparing a Short should be waited for,

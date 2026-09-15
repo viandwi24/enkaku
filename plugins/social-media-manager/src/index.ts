@@ -75,6 +75,18 @@ import {
  *
  * ## Changelog
  *
+ * - **0.31.0 — a caption never runs past its platform's limit, the session's
+ *   required hashtags always stay, and a cut caption ends in "...".** The owner
+ *   (2026-09-15): YouTube still refused some titles as too long, and a caption
+ *   joined with its hashtags must stay within the limit while keeping the
+ *   session's fixed hashtags. Fitting now takes those as required: they come
+ *   first and are never the ones dropped (YouTube keeps them even past its
+ *   usual three; TikTok and Instagram give way with hashtags written inside the
+ *   caption, so their five-hashtag cap cannot drop one), and when the text
+ *   must be cut it is cut at a word and ends in "..." (ASCII, which adb can
+ *   type). Applied everywhere a platform's text is fitted: auto caption, a new
+ *   session, an edit, and what the router and Retry send.
+ *
  * - **0.30.0 — a session's pacing can be changed after it was made.** The
  *   owner (2026-09-15): "4 at a time, 30–120 s apart" was fixed once a session
  *   existed. A session's page now has **Edit pacing** beside its pacing line,
@@ -1180,7 +1192,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.30.0',
+  version: '0.31.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

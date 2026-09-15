@@ -59,14 +59,14 @@ describe('fitting a text to one platform', () => {
     expect(title.startsWith('Belajar trading emas untuk pemula cara')).toBe(true)
     // Cut at a word, never inside one.
     const words = text.replace('🔥 ', '').split(' ')
-    const body = title.replace(/ #\S+/g, '')
+    const body = title.replace(/ #\S+/g, '').replace(/\.\.\.$/, '')
     expect(body.split(' ').every((w) => words.includes(w))).toBe(true)
   })
 
   test('YouTube: hashtags never take the first 40 characters of text, the rule the pack fits by', () => {
     const long = 'x'.repeat(90)
     expect(fitYouTubeTitle(long, ['#aaaaaaaaaa', '#bbbbbbbbbb', '#cccccccccc', '#dddddddddd', '#eeeeeeeeee', '#ffffffffff'])).toBe(
-      `${'x'.repeat(100 - 60)} #aaaaaaaaaa #bbbbbbbbbb #cccccccccc #dddddddddd #eeeeeeeeee`,
+      `${'x'.repeat(100 - 60 - 3)}... #aaaaaaaaaa #bbbbbbbbbb #cccccccccc #dddddddddd #eeeeeeeeee`,
     )
     expect(fitYouTubeTitle('short words', ['#a', '#b'])).toBe('short words #a #b')
   })
@@ -87,7 +87,32 @@ describe('fitting a text to one platform', () => {
     expect(tiktok).not.toContain('#fyp')
     const huge = fitPlatformCaption('instagram', { text: 'kata '.repeat(600), hashtags: [] })
     expect(huge.length).toBeLessThanOrEqual(INSTAGRAM_CAPTION_MAX)
-    expect(huge.endsWith('kata')).toBe(true)
+    expect(huge.endsWith('kata...')).toBe(true)
+  })
+
+  test('a cut caption ends in "..." and the session\'s required hashtags are never the ones dropped (0.31.0)', () => {
+    const long = 'Kenapa zona support sering jadi liquidity pool dan kenapa harga selalu balik lagi ke area yang sama setiap minggu'
+    const title = fitPlatformCaption('youtube', { text: long, hashtags: ['#AkademiBitorex', '#fyp', '#liquidity', '#trading'], required: ['#AkademiBitorex'] })
+    expect(title.length).toBeLessThanOrEqual(YOUTUBE_TITLE_MAX)
+    expect(title).toContain('#AkademiBitorex')
+    expect(title).toContain('...')
+    // Required hashtags stay even when they alone leave little room for words.
+    const requiredTags = ['#AkademiBitorex', '#BitorexIndonesia', '#TradingIndonesia', '#BelajarTrading']
+    const many = fitPlatformCaption('youtube', { text: long, hashtags: [], required: requiredTags })
+    expect(many.length).toBeLessThanOrEqual(YOUTUBE_TITLE_MAX)
+    for (const tag of requiredTags) expect(many).toContain(tag)
+    // TikTok: a caption past the limit with hashtags of its own keeps the required one and stays within 5 hashtags and 2200 characters.
+    const tiktok = fitPlatformCaption('tiktok', { text: `${'kata '.repeat(500).trim()} #a #b #c #d #e`, hashtags: ['#x'], required: ['#Wajib'] })
+    expect(tiktok.length).toBeLessThanOrEqual(TIKTOK_CAPTION_MAX)
+    expect(tiktok).toContain('#Wajib')
+    expect(tiktok).toContain('...')
+    expect(hashtagsIn(tiktok).length).toBeLessThanOrEqual(TIKTOK_HASHTAG_MAX)
+    // A session's post text carries the rule's fixed hashtag as required.
+    const row = post({ caption: long, hashtags: ['#one', '#two', '#three'], hashtagLine: null })
+    const sent = platformPostText(row, 'youtube', HashtagRuleSchema.parse({ fixed: ['#AkademiBitorex', '#BitorexIndonesia'], lines: [], randomLine: false }))
+    expect(sent.length).toBeLessThanOrEqual(YOUTUBE_TITLE_MAX)
+    expect(sent).toContain('#AkademiBitorex')
+    expect(sent).toContain('#BitorexIndonesia')
   })
 
   test('all at once: only the requested platforms, the shared caption where the writer gave nothing, nothing for an empty result', () => {
