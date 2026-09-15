@@ -441,9 +441,15 @@ describe('judgeGrid — a new post pushes every earlier cell one place along', (
     1.34.0: an empty "before" is no baseline. A grid read before its labels arrived is also empty, and
     reading that as "the profile had no videos" turned any later cell into a false `posted`.
   */
-  test('an empty baseline is no baseline — one video after it is never new', () => {
-    expect(judgeGrid([], ['0'])).toEqual({ kind: 'no-baseline', views: '0' })
-    expect(judgeGrid([], ['1.559', '118,6 rb'])).toEqual({ kind: 'no-baseline', views: '1.559' })
+  /*
+    1.40.0: `readOwnGrid` returns `[]` only for TikTok's own "no videos" state (an unloaded grid is `null`), so a
+    proven-empty profile is a baseline: the first cell after it is this post. An unreadable one is still no baseline.
+  */
+  test('a profile proven empty before posting makes its first finished cell new; an unreadable one does not', () => {
+    expect(judgeGrid([], ['0'])).toEqual({ kind: 'new' })
+    expect(judgeGrid([], ['4%'])).toEqual({ kind: 'uploading', percent: '4%' })
+    expect(judgeGrid([], [])).toEqual({ kind: 'none' })
+    expect(judgeGrid(null, ['0'])).toEqual({ kind: 'no-baseline', views: '0' })
   })
 
   test('an upload in flight is uploading, whatever the baseline', () => {

@@ -735,20 +735,24 @@ function sameCell(before: string, after: string): boolean {
  * - anything else → the newest label, worded as an older video; the caller
  *   reports `unverified`, never `posted`.
  *
- * `before === null` (unreadable) and `before` empty are both NO BASELINE
- * (1.34.0), and with no baseline nothing is ever `new`: the answer is
- * `no-baseline`, which the caller reports as `unverified`. Before 1.34.0 an
- * empty `before` read as "the profile had no videos" and any cell after it as
- * new — but a grid read 1.5 s after the header, before its labels arrived, is
- * also empty, and that turned an unloaded grid into a false `posted`. And a
- * missing baseline let any newest cell at 0 views count, which is exactly the
- * old test post the 2026-09-11 run fell for.
+ * `before === null` (unreadable) is NO BASELINE, and with no baseline nothing
+ * is ever `new`: the caller reports `unverified`. A missing baseline let any
+ * newest cell at 0 views count, which is exactly the old test post the
+ * 2026-09-11 run fell for. An EMPTY `before` is a baseline again (1.40.0): 1.34.0
+ * made it no-baseline because a grid read before its labels arrived was also
+ * empty, but `readOwnGrid` has since waited for a labelled cell or TikTok's own
+ * "no videos" state and returns `[]` only for the latter. On the owner's
+ * production farm (2026-09-15) every first post on a fresh account ended
+ * `unverified` this way although the video was live.
  */
 export function judgeGrid(before: string[] | null, after: string[]): NewestCell {
   const newest = after[0]
   if (newest === undefined) return { kind: 'none' }
   if (UPLOAD_PERCENT.test(newest)) return { kind: 'uploading', percent: newest }
-  if (before === null || before.length === 0) return { kind: 'no-baseline', views: newest }
+  if (before === null) return { kind: 'no-baseline', views: newest }
+  // An empty `before` is a profile PROVEN empty (1.40.0): `readOwnGrid` returns `[]` only on TikTok's own
+  // "no videos" state and `null` for a grid that never loaded, so a cell after it can only be this post.
+  if (before.length === 0) return { kind: 'new' }
   if (newest === '0' && before[0] !== '0') return { kind: 'new' }
 
   const inPlace = Math.min(before.length, after.length)
@@ -1404,11 +1408,15 @@ async function confirmPosted(
   before: string[] | null,
 ): Promise<{ confirmed: boolean; detail: string; securityCheck: boolean }> {
   const attempts = 6
+  // While the newest cell still reads an upload percentage, keep watching for longer (1.40.0): a slow
+  // upload finishing after the sixth look was reported `unverified` although it went live.
+  const attemptsWhileUploading = 18
   const intervalMs = 5_000
   const startedAt = Date.now()
 
   let lastSeen: NewestCell = { kind: 'none' }
-  for (let round = 0; round < attempts; round++) {
+  const limit = (): number => (lastSeen.kind === 'uploading' ? attemptsWhileUploading : attempts)
+  for (let round = 0; round < limit(); round++) {
     // Checked before the sweep, so the security check is reported by name and screenshotted here.
     if (await securityCheckShowing(ctx)) {
       await capture(ctx, 'security-check')
@@ -1436,9 +1444,9 @@ async function confirmPosted(
       lastSeen = judged
       // With no baseline no later reading can prove anything; an upload still in flight is the one reading worth waiting on.
       if (judged.kind === 'no-baseline') break
-      ctx.log.warn(`confirmPosted: the grid does not show this post yet (attempt ${round + 1}/${attempts})`, { judged: JSON.stringify(judged) })
+      ctx.log.warn(`confirmPosted: the grid does not show this post yet (attempt ${round + 1}/${limit()})`, { judged: JSON.stringify(judged) })
     }
-    if (round < attempts - 1) await sleep(intervalMs)
+    if (round < limit() - 1) await sleep(intervalMs)
   }
 
   await capture(ctx, 'unverified')

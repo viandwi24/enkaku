@@ -864,6 +864,12 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.40.0 — a first post on an empty account is confirmed, and a slow upload is watched longer. The owner's
+  //   production farm (2026-09-15, #12): the video went live but the run said "unverified" after 18 s. The profile
+  //   read "no videos" before posting, and 1.34.0 treated that empty grid as no baseline and stopped at once.
+  //   `readOwnGrid` only returns an empty grid for TikTok's own "no videos" state, so it is a baseline again and
+  //   the first finished cell after it is this post. While the newest cell still shows an upload percentage the
+  //   confirmation now looks up to 18 times instead of 6.
   // 1.39.0 — TikTok's contacts access is refused before every launch. The owner's production farm (2026-09-15):
   //   a warm-up sat under Android's "Izinkan TikTok mengakses kontak?", a system dialog the farm's reader cannot
   //   see, after TikTok's own "Temukan kontak" pitch. Every member that relaunches TikTok now refuses
@@ -1083,7 +1089,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.39.0',
+  version: '1.40.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
