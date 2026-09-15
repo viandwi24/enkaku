@@ -1,8 +1,9 @@
+import { getArtifactInfo } from '../artifacts/references'
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { DeviceCall } from '@enkaku/session'
 import { createDeviceExecutor, needsInspector, type TimingSettings, type TransferPort } from '@enkaku/session'
 import { newSession, type Session } from '@enkaku/harness'
-import { JobTraceEventSchema, type ActionRequest, type ActionResponse, type ActivityActor, type ActivityKind, type AgentRunStatus, type AgentStopReason, type ConnectionMedium, type DeviceInfo, type JobTraceEvent, type PolicyDecision, type ScriptListItem, type UiNode } from '@enkaku/protocol'
+import { JobTraceEventSchema, type ActionRequest, type ArtifactInfo, type ActionResponse, type ActivityActor, type ActivityKind, type AgentRunStatus, type AgentStopReason, type ConnectionMedium, type DeviceInfo, type JobTraceEvent, type PolicyDecision, type ScriptListItem, type UiNode } from '@enkaku/protocol'
 import type { SessionManager } from '@enkaku/session'
 import { can, canUseDevice, type Permission } from '../auth/acl'
 import type { Role } from '../auth/service'
@@ -107,6 +108,8 @@ export interface CapabilityContext {
   listDevices(): DeviceInfo[]
   getDevice(deviceId: string): DeviceInfo | null
   jobService: JobService
+  /** Read-only artifact lookup (`artifact.get`) — metadata only; bytes move through `deviceCall`'s push/install. */
+  artifacts?: { get(id: string): ArtifactInfo | null }
   scripts: ScriptCapabilityService
   /** `null` when this host cannot stage plugins (orchestrator mode, or a pre-plan-210 test literal). */
   plugins(): PluginStagePort | null
@@ -632,6 +635,7 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
     },
 
     jobService: deps.jobService,
+    artifacts: { get: (id) => getArtifactInfo(deps.db, id) },
     scripts,
     plugins: deps.plugins ?? (() => null),
     // `ScriptRef` (`@enkaku/protocol`) is `z.string().regex(...)` — the

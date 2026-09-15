@@ -1,6 +1,7 @@
 import { AGENT_TREE_CAPABILITIES } from './agent'
 import { ACTIONS_CAPABILITIES } from './actions'
 import { AI_CAPABILITIES } from './ai'
+import { ARTIFACT_CAPABILITIES } from './artifact'
 import { MEDIA_CAPABILITIES } from './media'
 import { NOTIFY_CAPABILITIES } from './notify'
 import { DEVICE_APP_CAPABILITIES } from './device-app'
@@ -32,6 +33,7 @@ const SOURCES: { file: string; caps: AnyCoreCapability[] }[] = [
   { file: 'capability/plugin.ts', caps: PLUGIN_CAPABILITIES },
   { file: 'capability/job.ts', caps: JOB_CAPABILITIES },
   { file: 'capability/job-trace.ts', caps: JOB_TRACE_CAPABILITIES },
+  { file: 'capability/artifact.ts', caps: ARTIFACT_CAPABILITIES },
   { file: 'capability/fs.ts', caps: FS_CAPABILITIES },
   { file: 'capability/file-tools.ts', caps: FILE_TOOLS_CAPABILITIES },
   { file: 'capability/skills.ts', caps: SKILLS_CAPABILITIES },

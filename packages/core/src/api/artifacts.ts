@@ -1,12 +1,17 @@
 import { mkdirSync, rmSync } from 'node:fs'
 import { join, normalize } from 'node:path'
 import { Hono } from 'hono'
-import { and, asc, eq, isNull, type SQL } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, type SQL } from 'drizzle-orm'
 import {
+  ArtifactBulkDeleteInputSchema,
+  ArtifactBulkDeleteResponseSchema,
   ArtifactDeleteResponseSchema,
+  ArtifactReferencesResponseSchema,
   ArtifactResponseSchema,
   ArtifactUpdateInputSchema,
   ArtifactsPageResponseSchema,
+  artifactFamilyOf,
+  type ArtifactBulkDeleteItem,
   type ArtifactInfo,
   type ShellMode,
 } from '@enkaku/protocol'
@@ -15,6 +20,7 @@ import { canUseFiles } from '../auth/acl'
 import type { AuditLogger } from '../auth/audit'
 import type { Db } from '../db'
 import { artifacts, type ArtifactRow } from '../db/schema'
+import { artifactRowToInfo, findArtifactReferences } from '../artifacts/references'
 import { artifactKindFor, probeMedia } from '../media/probe'
 import { EnkakuError } from '../util/errors'
 import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
@@ -83,21 +89,7 @@ export function createArtifactRoutes(deps: {
 }): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>()
 
-  const rowToItem = (r: ArtifactRow): ArtifactInfo => ({
-    id: r.id,
-    runId: r.runId,
-    deviceId: r.deviceId,
-    kind: r.kind as ArtifactInfo['kind'],
-    label: r.label,
-    path: r.path,
-    sizeBytes: r.sizeBytes,
-    createdAt: r.createdAt ? Math.floor(r.createdAt.getTime() / 1000) : 0,
-    pinned: r.pinned,
-    mimeType: r.mimeType,
-    width: r.width,
-    height: r.height,
-    durationMs: r.durationMs,
-  })
+  const rowToItem = artifactRowToInfo
 
   app.get('/', (c) => {
     const runId = c.req.query('runId')
@@ -265,6 +257,179 @@ export function createArtifactRoutes(deps: {
   }
 
   /**
+   * Remove one upload's bytes. Returns the error when the file could not be
+   * unlinked (a file already gone is not an error — `force: true`). A path
+   * that escapes the data directory is never touched.
+   */
+  function unlinkUpload(row: ArtifactRow): string | null {
+    const rel = normalize(row.path)
+    if (rel.startsWith('..')) return null
+    try {
+      rmSync(join(deps.dataDir, rel), { force: true })
+      return null
+    } catch (err) {
+      return String(err)
+    }
+  }
+
+  const isUpload = (row: ArtifactRow): boolean => row.runId === null && row.deviceId === null
+
+  /**
+   * `GET /api/artifacts/references` — every upload something still names
+   * (owner request 2026-09-16), so the Files screen can say "used by" on a tile
+   * and warn before a single delete. Gated like delete: the answer names plugin
+   * KV keys and job ids, which is management information.
+   */
+  app.get('/references', (c) => {
+    requireFiles(c)
+    const ids = deps.db
+      .select({ id: artifacts.id })
+      .from(artifacts)
+      .where(and(isNull(artifacts.runId), isNull(artifacts.deviceId)))
+      .all()
+      .map((r) => r.id)
+    const refs = findArtifactReferences(deps.db, ids)
+    return typedJson(c, ArtifactReferencesResponseSchema, { references: Object.fromEntries(refs) })
+  })
+
+  /**
+   * `POST /api/artifacts/delete` — bulk removal of UPLOADS (owner request
+   * 2026-09-16: the Social Media Manager and the post scripts upload a video
+   * per post, and old videos pile up with no way to clear them but one click
+   * per file).
+   *
+   * Every rule the single DELETE applies, applied per file, and reported per
+   * file rather than failing the whole request on the first refusal:
+   * - uploads only — a run's or a device's artifact is that run's evidence and
+   *   leaves only through retention (`not-upload`);
+   * - a pinned file is never deleted (`pinned`);
+   * - a file named by work happening now — a queued/running job, an active
+   *   batch — is never deleted, `force` or not (`in-use`);
+   * - a file named only by a record that may use it later — plugin data, an
+   *   enabled schedule, a saved workflow or preset — is skipped unless `force`
+   *   (`referenced`).
+   *
+   * The reference scan and the deletes run in one synchronous stretch after
+   * the body is parsed, so nothing can enqueue a job between the check and the
+   * unlink. A preview and the confirm that follows it are two requests, which
+   * is why the confirm re-checks everything instead of trusting the preview.
+   */
+  app.post('/delete', async (c) => {
+    const user = requireFiles(c)
+    const parsed = ArtifactBulkDeleteInputSchema.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) {
+      throw new EnkakuError('E_BAD_REQUEST', parsed.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; '))
+    }
+    const { ids, filter, preview, force } = parsed.data
+
+    const items: ArtifactBulkDeleteItem[] = []
+    let candidates: ArtifactRow[]
+    if (ids !== undefined) {
+      const unique = [...new Set(ids)]
+      const found = new Map<string, ArtifactRow>()
+      for (let i = 0; i < unique.length; i += 500) {
+        for (const row of deps.db.select().from(artifacts).where(inArray(artifacts.id, unique.slice(i, i + 500))).all()) found.set(row.id, row)
+      }
+      candidates = []
+      for (const id of unique) {
+        const row = found.get(id)
+        if (!row) {
+          items.push({ id, label: null, sizeBytes: null, outcome: 'skipped', reason: 'not-found', message: 'no such file', references: [] })
+        } else if (!isUpload(row)) {
+          items.push({
+            id,
+            label: row.label,
+            sizeBytes: row.sizeBytes,
+            outcome: 'skipped',
+            reason: 'not-upload',
+            message: 'belongs to a run or a device, and leaves only with it through retention',
+            references: [],
+          })
+        } else {
+          candidates.push(row)
+        }
+      }
+    } else {
+      const nowSec = Math.floor(Date.now() / 1000)
+      const q = filter?.query?.trim().toLowerCase() ?? ''
+      candidates = deps.db
+        .select()
+        .from(artifacts)
+        .where(and(isNull(artifacts.runId), isNull(artifacts.deviceId)))
+        .orderBy(asc(artifacts.createdAt), asc(artifacts.id))
+        .all()
+        .filter((row) => {
+          const info = rowToItem(row)
+          if (filter?.family !== undefined && artifactFamilyOf(info) !== filter.family) return false
+          if (filter?.olderThanSec !== undefined && info.createdAt > nowSec - filter.olderThanSec) return false
+          if (q.length > 0 && !(info.label ?? info.id).toLowerCase().includes(q)) return false
+          return true
+        })
+    }
+
+    const refs = findArtifactReferences(
+      deps.db,
+      candidates.map((r) => r.id),
+    )
+    const toDelete: string[] = []
+    let bytesFreed = 0
+    for (const row of candidates) {
+      const references = refs.get(row.id) ?? []
+      const base = { id: row.id, label: row.label, sizeBytes: row.sizeBytes, references }
+      if (row.pinned) {
+        items.push({ ...base, outcome: 'skipped', reason: 'pinned', message: 'pinned — unpin it first' })
+        continue
+      }
+      const blocking = references.filter((r) => r.blocking)
+      if (blocking.length > 0) {
+        items.push({ ...base, outcome: 'skipped', reason: 'in-use', message: `used by ${blocking.length === 1 ? 'a job or batch that is still running or queued' : `${blocking.length} jobs or batches still running or queued`}` })
+        continue
+      }
+      if (references.length > 0 && !force) {
+        items.push({ ...base, outcome: 'skipped', reason: 'referenced', message: 'still referenced by plugin data, a schedule, a workflow or a preset' })
+        continue
+      }
+      if (preview) {
+        items.push({ ...base, outcome: 'would-delete', reason: null, message: null })
+        bytesFreed += row.sizeBytes ?? 0
+        continue
+      }
+      const fileError = unlinkUpload(row)
+      if (fileError !== null) {
+        // The row is KEPT: its bytes are still on disk, and a file with no row
+        // is invisible and leaks disk forever. Visible, and retryable.
+        deps.upload?.audit.record({ userId: user.id, action: 'artifact.delete.file-failed', target: row.id, meta: { error: fileError, bulk: true } })
+        items.push({ ...base, outcome: 'failed', reason: 'file-error', message: fileError })
+        continue
+      }
+      toDelete.push(row.id)
+      bytesFreed += row.sizeBytes ?? 0
+      items.push({ ...base, outcome: 'deleted', reason: null, message: null })
+      deps.upload?.audit.record({
+        userId: user.id,
+        action: 'artifact.delete',
+        target: row.id,
+        meta: { label: row.label, sizeBytes: row.sizeBytes, bulk: true, ...(references.length > 0 ? { forcedReferences: references.length } : {}) },
+      })
+    }
+    for (let i = 0; i < toDelete.length; i += 500) {
+      deps.db.delete(artifacts).where(inArray(artifacts.id, toDelete.slice(i, i + 500))).run()
+    }
+
+    const deleted = items.filter((i) => i.outcome === 'deleted' || i.outcome === 'would-delete').length
+    const skipped = items.filter((i) => i.outcome === 'skipped').length
+    const failed = items.filter((i) => i.outcome === 'failed').length
+    if (!preview) {
+      deps.upload?.audit.record({
+        userId: user.id,
+        action: 'artifact.delete.bulk',
+        meta: { mode: ids !== undefined ? 'ids' : 'filter', ...(filter ? { filter } : {}), force, matched: items.length, deleted, bytesFreed, skipped, failed },
+      })
+    }
+    return typedJson(c, ArtifactBulkDeleteResponseSchema, { preview, matched: items.length, deleted, bytesFreed, skipped, failed, items })
+  })
+
+  /**
    * `PATCH /api/artifacts/:id` — rename, or pin against retention (plan 800
    * wave 5).
    *
@@ -333,6 +498,15 @@ export function createArtifactRoutes(deps: {
     if (row.pinned) {
       throw new EnkakuError('E_ARTIFACT_PINNED', 'this artifact is pinned — unpin it first if you really mean to delete it')
     }
+    // Work happening now that names this file — a queued/running job, an
+    // active batch — would fail the moment the bytes are gone. Refused here as
+    // in the bulk route; a non-blocking reference (plugin data, a schedule) is
+    // the client's to warn about, because only the operator knows whether that
+    // record will ever be acted on again.
+    const blocking = (findArtifactReferences(deps.db, [row.id]).get(row.id) ?? []).filter((r) => r.blocking)
+    if (blocking.length > 0) {
+      throw new EnkakuError('E_ARTIFACT_IN_USE', 'a queued or running job (or an active batch) still uses this file — wait for it to finish, or cancel it first')
+    }
 
     const rel = normalize(row.path)
     if (!rel.startsWith('..')) {
@@ -370,6 +544,7 @@ export function createArtifactRoutes(deps: {
     E_TRANSFER_TOO_LARGE: 413,
     E_ARTIFACT_PINNED: 409,
     E_ARTIFACT_NOT_DELETABLE: 409,
+    E_ARTIFACT_IN_USE: 409,
   }
 
   app.onError((err, c) => {

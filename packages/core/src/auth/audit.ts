@@ -159,6 +159,10 @@ export type AuditAction =
   // rather than a flag on `artifact.delete`: this is the case that leaks disk,
   // and it must be findable without reading every delete's meta.
   | 'artifact.delete.file-failed'
+  // One bulk removal from the Files page (owner request 2026-09-16) — the
+  // summary row. Every file it removed also gets its own `artifact.delete`,
+  // exactly as a single delete does, so a per-file search still finds it.
+  | 'artifact.delete.bulk'
   // A browser upload into the workspace (plan 115 §4.3) — the ONE way bytes
   // enter the workspace from outside `fs.write`, gated and audited exactly
   // like `artifact.upload` above; `meta` carries the size and content type,
