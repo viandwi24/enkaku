@@ -6,6 +6,7 @@ import downloadHome from './download-home'
 import searchPlay from './search-play'
 import watchVideo from './watch-video'
 import postVideo from './post-video'
+import clearDrafts from './clear-drafts'
 
 /**
  * YouTube automation pack.
@@ -83,17 +84,27 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.38.3',
+  version: '0.39.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
   description: 'Search, browse, watch, like, read comments, download, and post Shorts in the YouTube app on a farm device.',
-  scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay, watchVideo, postVideo],
+  scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay, watchVideo, postVideo, clearDrafts],
 
   /**
    * ## Changelog
    *
-   * **0.38.3 — the title is never typed twice.** Production 4e4eac2b and
+   * **0.39.0 — `clear-drafts`: every draft on the channel, deleted on its own.**
+ * The owner asked (2026-09-16) for draft cleaning as a script of its own on every
+ * platform, triggered from the Social Media Manager page. Measured on the owner's
+ * moto that night: Anda → "Lihat channel" → the channel's "Draf" cell → each
+ * draft's "Action menu" → "Hapus" → "Hapus draf ini?" → "Hapus". Every deletion
+ * is proven by the page's count or its empty message; a tap that did not take is
+ * tried again. A dry run counts. The title is still typed in one go: typed at a
+ * person's pace, only "Market hari ini agak aneh, ki" of a 69-character title
+ * landed on the moto before the field let go of focus.
+ *
+ * **0.38.3 — the title is never typed twice.** Production 4e4eac2b and
    * 9073e560 (2026-09-15): after the title opened the thumbnail editor, 0.36.0
    * left the editor and typed the title again — but part of the first typing
    * had already landed, so the field held the title twice, YouTube refused it

@@ -696,7 +696,7 @@ function fail(code: string, message: string): never {
   throw Object.assign(new Error(message), { code })
 }
 
-async function tapCentre(ctx: ScriptContext<unknown>, node: UiNode): Promise<void> {
+export async function tapCentre(ctx: ScriptContext<unknown>, node: UiNode): Promise<void> {
   await ctx.device.tap({ point: centre(node) })
 }
 
@@ -725,7 +725,7 @@ export function channelHeaderShown(tree: UiNode): boolean {
   return shown(tree, 'Edit channel').length > 0 || shown(tree, 'Edit saluran').length > 0
 }
 
-function accountTab(tree: UiNode): UiNode | null {
+export function accountTab(tree: UiNode): UiNode | null {
   return shown(tree, 'Anda').find((n) => n.clickable) ?? shown(tree, 'You').find((n) => n.clickable) ?? null
 }
 
