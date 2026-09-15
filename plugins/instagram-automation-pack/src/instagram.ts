@@ -111,9 +111,25 @@ async function grantMediaBeforeLaunch(ctx: ScriptContext<unknown>): Promise<void
  * ever returned: the primary one opts the account into whatever is announced.
  */
 export function promoDismissButton(tree: UiNode): UiNode | null {
-  if (rowsById(tree, 'igds_headline_primary_action_button').length === 0) return null
-  return rowsById(tree, 'igds_headline_secondary_action_text_button').find((n) => n.clickable) ?? null
+  if (rowsById(tree, 'igds_headline_primary_action_button').length > 0) {
+    return rowsById(tree, 'igds_headline_secondary_action_text_button').find((n) => n.clickable) ?? null
+  }
+  /*
+    0.5.0 — the camera-shortcut announcement ("Abadikan momen dengan pintasan kamera baru"), seen
+    over the Reel editor on the owner's Samsung production farm (2026-09-15, screenshot only): its
+    primary button is "Buka pengaturan perangkat", which would leave Instagram for the system
+    settings. Should that sheet ever be drawn without the igds ids, it is still recognised by that
+    primary label, and only its "Lain kali" is returned.
+  */
+  const nodes = flatten(tree)
+  const label = (n: UiNode): string => n.desc.trim() || n.text.trim()
+  if (!nodes.some((n) => PROMO_LEAVES_APP_LABELS.includes(label(n)))) return null
+  return nodes.find((n) => n.clickable && PROMO_DISMISS_LABELS.includes(label(n))) ?? null
 }
+
+/** An announcement's primary button that opens the system settings — never tapped. */
+const PROMO_LEAVES_APP_LABELS = ['Buka pengaturan perangkat', 'Open device settings']
+const PROMO_DISMISS_LABELS = ['Lain kali', 'Not now']
 
 /** Close any announcement sheet on screen (at most `times` in a row). Returns the tree left behind. */
 export async function dismissPromos(ctx: ScriptContext<unknown>, times = 2): Promise<UiNode> {

@@ -51,7 +51,7 @@ import postVideo from './post-video'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.4.5',
+  version: '0.5.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -60,6 +60,15 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.5.0 — an announcement over the Reel editor is closed.** The owner's
+   * Samsung production farm (2026-09-15): posts stopped at "the Reel editor's
+   * Berikutnya did not appear" with Instagram's camera-shortcut announcement
+   * ("Abadikan momen dengan pintasan kamera baru") over the editor. The editor
+   * wait now stops on such a sheet, closes it with "Lain kali" — never "Buka
+   * pengaturan perangkat", which leaves Instagram — and waits for the editor
+   * again. The sheet is also recognised by that settings label if drawn without
+   * Instagram's igds ids.
    *
    * **0.4.5 — the farm's keyboard, a covered Share, and no draft left behind.**
    * From the exported timelines of the 2026-09-14 Samsung production run:

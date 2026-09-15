@@ -267,6 +267,24 @@ describe('warm-up readings', () => {
     expect(cells.every((c) => !c.desc.startsWith('Foto oleh'))).toBe(true)
   })
 
+  test('the camera-shortcut announcement over the editor is closed by "Lain kali", with or without its igds ids (0.5.0)', async () => {
+    // Synthetic, from the inbox sheet's real dump: the same igds component with the camera-shortcut words.
+    const promo = await fixture('screen-inbox-promo-sheet.json')
+    const reword = (n: UiNode, stripIds: boolean): UiNode => {
+      const id = n.resourceId
+      const desc = id.endsWith('igds_headline_primary_action_button') ? 'Buka pengaturan perangkat' : n.desc
+      const text = n.text === 'Coba' ? 'Buka pengaturan perangkat' : n.text === 'Memperkenalkan instan' ? 'Abadikan momen dengan pintasan kamera baru' : n.text
+      return { ...n, resourceId: stripIds && id.includes('igds') ? '' : id, desc, text, children: n.children.map((c) => reword(c, stripIds)) }
+    }
+    for (const stripIds of [false, true]) {
+      const button = promoDismissButton(reword(promo, stripIds))
+      expect(button?.desc).toBe('Lain kali')
+      expect(button?.clickable).toBe(true)
+    }
+    // A screen that merely says "Lain kali" somewhere, with no settings button, is not an announcement.
+    expect(promoDismissButton(await fixture('screen-reel-editor.json'))).toBeNull()
+  })
+
   test('an announcement sheet is closed by "not now", never by its primary button, and only IG nodes are read', async () => {
     const promo = await fixture('screen-inbox-promo-sheet.json')
     const button = promoDismissButton(promo)

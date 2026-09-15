@@ -3,7 +3,7 @@ import { ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { all, rowsById, treeFrame, within } from './tree'
-import { INSTAGRAM_PACKAGE, backToNav, capture, centre, isReady, openTab, readableInstagramNodes, relaunch, sleep, waitForTree } from './instagram'
+import { INSTAGRAM_PACKAGE, backToNav, capture, centre, isReady, openTab, readableInstagramNodes, promoDismissButton, relaunch, sleep, waitForTree } from './instagram'
 
 /**
  * `post-video` — upload one video as an Instagram Reel, for the Social Media
@@ -630,10 +630,29 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     await tapCentre(ctx, cell.node)
 
     // --- editor -> share --------------------------------------------------------
-    const editor = await waitForTree(ctx, (t) => editorNextButton(t) !== null, { budgetMs: 25_000 })
-    if (!editor.ok) {
+    /*
+      0.5.0 — an announcement sheet can land over the editor (Samsung production, 2026-09-15: "Abadikan
+      momen dengan pintasan kamera baru"). "Berikutnya" may still be in the tree underneath it, so a
+      Next tap would hit the sheet. The wait stops on either, the sheet is closed with "Lain kali"
+      (never its "Buka pengaturan perangkat"), and the editor is waited for again.
+    */
+    const editorReady = (t: UiNode): boolean => editorNextButton(t) !== null && promoDismissButton(t) === null
+    let editor = await waitForTree(ctx, (t) => editorReady(t) || promoDismissButton(t) !== null, { budgetMs: 25_000 })
+    for (let round = 0; round < 3; round++) {
+      const notNow = promoDismissButton(editor.tree)
+      if (!notNow) break
+      ctx.log.warn('an Instagram announcement sheet covered the Reel editor — closing it with "Lain kali"', { headline: rowsById(editor.tree, 'igds_headline_headline')[0]?.text ?? '' })
+      await tapCentre(ctx, notNow)
+      editor = await waitForTree(ctx, (t) => editorReady(t) || promoDismissButton(t) !== null, { budgetMs: 15_000 })
+    }
+    if (!editor.ok || !editorReady(editor.tree)) {
       await capture(ctx, 'ig-05-editor', editor.tree)
-      fail('E_ANCHOR_NOT_FOUND', 'the Reel editor\'s "Berikutnya" did not appear after picking the video — see artifact ig-05-editor.')
+      fail(
+        'E_ANCHOR_NOT_FOUND',
+        promoDismissButton(editor.tree)
+          ? 'an Instagram announcement sheet kept covering the Reel editor after "Lain kali" — see artifact ig-05-editor.'
+          : 'the Reel editor\'s "Berikutnya" did not appear after picking the video — see artifact ig-05-editor.',
+      )
     }
     screens.push('editor')
     await tapCentre(ctx, editorNextButton(editor.tree) as UiNode)
