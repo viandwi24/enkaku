@@ -75,6 +75,13 @@ import {
  *
  * ## Changelog
  *
+ * - **0.32.0 — a Drafts tab clears drafts on the phones picked.** The owner's
+ *   request (2026-09-16): draft cleaning as a script on every platform, triggered
+ *   from this page. The tab sends each pack's `clear-drafts` member (TikTok
+ *   1.46.0, Instagram 0.10.0) to every phone carrying the platform's label, or to
+ *   the phones chosen, asks before a real deletion, and follows each job to the
+ *   reason its result gives. YouTube is listed and cannot be picked yet: its
+ *   drafts screens are not measured.
  * - **0.31.0 — a caption never runs past its platform's limit, the session's
  *   required hashtags always stay, and a cut caption ends in "...".** The owner
  *   (2026-09-15): YouTube still refused some titles as too long, and a caption
@@ -1192,7 +1199,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.31.0',
+  version: '0.32.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

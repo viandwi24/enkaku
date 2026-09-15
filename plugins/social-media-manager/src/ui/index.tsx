@@ -3,6 +3,7 @@ import { ArrowsClockwiseIcon, Button, Spinner, Tabs, TabsContent, TabsList, Tabs
 import { ComposePanel } from './parts/compose'
 import { SessionDetail, SessionsPanel } from './parts/sessions'
 import { OpenSpeechContext, SpeechPanel } from './parts/speech'
+import { DraftsPanel } from './parts/drafts'
 
 /**
  * One screen for the whole job: upload the videos, say where they go, name the
@@ -56,7 +57,7 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
   const [refreshKey, setRefreshKey] = useState(0)
 
   const openSessionId = params.session ?? null
-  const tab = params.tab === 'new' || params.tab === 'speech' ? params.tab : 'sessions'
+  const tab = params.tab === 'new' || params.tab === 'speech' || params.tab === 'drafts' ? params.tab : 'sessions'
 
   const openSession = useCallback((groupId: string) => setParams({ session: groupId }), [setParams])
   const backToList = useCallback(() => setParams({ session: null }), [setParams])
@@ -103,15 +104,16 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
   */
   return (
     <OpenSpeechContext.Provider value={openSpeech}>
-      <Tabs value={tab} onValueChange={(next) => setParams({ tab: next === 'new' || next === 'speech' ? next : null })} className="gap-3">
+      <Tabs value={tab} onValueChange={(next) => setParams({ tab: next === 'new' || next === 'speech' || next === 'drafts' ? next : null })} className="gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <TabsList variant="line">
             <TabsTrigger value="sessions">Sessions</TabsTrigger>
             <TabsTrigger value="new">New session</TabsTrigger>
             <TabsTrigger value="speech">Speech</TabsTrigger>
+            <TabsTrigger value="drafts">Drafts</TabsTrigger>
           </TabsList>
           <div className="grow" />
-          {tab !== 'new' ? (
+          {tab !== 'new' && tab !== 'drafts' ? (
             <>
               {refreshing ? <Spinner className="size-3.5 text-faint" /> : null}
               <Button variant="outline" size="sm" onClick={refresh}>
@@ -130,6 +132,10 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
         </TabsContent>
         <TabsContent value="speech">
           <SpeechPanel refreshKey={refreshKey} onRefreshingChange={setRefreshing} />
+        </TabsContent>
+        {/* Drafts (0.32.0): each platform pack's clear-drafts member, sent to the phones picked here. */}
+        <TabsContent value="drafts">
+          <DraftsPanel />
         </TabsContent>
       </Tabs>
     </OpenSpeechContext.Provider>
