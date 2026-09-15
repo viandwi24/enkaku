@@ -35,11 +35,11 @@ import { CORE, deviceName, listDevices, platformLabel, type Device, type Platfor
 
 type PhoneMode = 'labelled' | 'devices'
 
-/** The platforms whose pack has a `clear-drafts` member. YouTube's is not measured yet — see the note it renders. */
+/** The platforms whose pack has a `clear-drafts` member — all three since 0.33.0 (YouTube 0.39.0). */
 const CLEANABLE: readonly { id: PlatformId; title: string; ready: boolean }[] = [
   { id: 'tiktok', title: 'TikTok', ready: true },
   { id: 'instagram', title: 'Instagram', ready: true },
-  { id: 'youtube', title: 'YouTube', ready: false },
+  { id: 'youtube', title: 'YouTube', ready: true },
 ]
 
 const RunScriptResult = z.object({
@@ -80,7 +80,7 @@ export function DraftsPanel(): ReactElement {
   }, [])
   useEffect(load, [load])
 
-  const [platforms, setPlatforms] = useState<Set<PlatformId>>(new Set(['tiktok', 'instagram']))
+  const [platforms, setPlatforms] = useState<Set<PlatformId>>(new Set(['tiktok', 'instagram', 'youtube']))
   const [mode, setMode] = useState<PhoneMode>('labelled')
   const [chosen, setChosen] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
@@ -202,7 +202,6 @@ export function DraftsPanel(): ReactElement {
                 </label>
               ))}
             </div>
-            <p className="text-[11.5px] text-dim">YouTube cannot be picked yet: its drafts screens have not been measured on a phone, so this build has no YouTube clear-drafts script.</p>
           </div>
 
           <div className="space-y-1.5">

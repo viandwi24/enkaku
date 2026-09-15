@@ -75,6 +75,8 @@ import {
  *
  * ## Changelog
  *
+ * - **0.33.0 — YouTube can be picked in the Drafts tab.** Its pack's
+ *   `clear-drafts` (YouTube 0.39.0) was measured on the owner's moto and ships now.
  * - **0.32.0 — a Drafts tab clears drafts on the phones picked.** The owner's
  *   request (2026-09-16): draft cleaning as a script on every platform, triggered
  *   from this page. The tab sends each pack's `clear-drafts` member (TikTok
@@ -1199,7 +1201,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.32.0',
+  version: '0.33.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
