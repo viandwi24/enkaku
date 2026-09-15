@@ -1,6 +1,8 @@
 import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
+import { GroupSchema, groupKeyFor } from './groups'
+import { NO_HASHTAG_RULE } from './hashtags'
 import { PLATFORM_CAPTION_STORED_MAX } from './platform-captions'
 import { PLATFORM_IDS } from './platforms'
 import { POST_PREFIX, PostSchema, applyPostEdit, postKeyFor, type Post } from './posts'
@@ -35,7 +37,7 @@ const params = z.object({
     })
     .strict()
     .optional()
-    .describe('A text per platform, posted there instead of the caption and hashtags. An empty text removes that platform\'s own caption; a platform left out is unchanged.')
+    .describe('A text per platform, posted there instead of the caption and hashtags. An empty text fits that platform\'s caption from the caption and hashtags again; a platform left out is unchanged.')
     .meta(ui({ title: 'Caption per platform' })),
 })
 
@@ -82,7 +84,9 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       ...(ctx.params.hashtags !== undefined ? { hashtags: ctx.params.hashtags } : {}),
       ...(ctx.params.platformCaptions !== undefined ? { platformCaptions: ctx.params.platformCaptions } : {}),
     }
-    const outcome = applyPostEdit({ post, edit, sessionRows })
+    // The session's hashtag rule, so a caption edit re-fits each platform's caption with the hashtags it posts with (0.28.0).
+    const group = post.groupId !== null ? await ctx.storage.global.get(groupKeyFor(post.groupId), GroupSchema).catch(() => null) : null
+    const outcome = applyPostEdit({ post, edit, sessionRows, rule: group?.hashtags ?? NO_HASHTAG_RULE })
     if (!outcome.ok) throw Object.assign(new Error(outcome.message), { code: outcome.code })
 
     if (outcome.changed.length > 0) {

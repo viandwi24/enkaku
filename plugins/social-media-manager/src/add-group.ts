@@ -232,15 +232,15 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       // Picked once, here, so every attempt and every retry of this video posts the same line.
       next.hashtagLine = pickHashtagLine(hashtagRule)
       // Fitted here, after the line is picked, so each platform's own caption carries the same hashtags the shared text would (0.27.0).
+      // Every video gets one per platform (0.28.0), not only a video auto caption wrote words for: a caption from a file or typed
+      // by hand is fitted to each platform the same way, so no platform is ever sent a text past its limits.
       const texts = ctx.params.videoPlatformTexts?.[videoArtifactId]
-      if (texts !== undefined) {
-        next.platformCaptions = fitPlatformCaptions({
-          platforms: next.platforms,
-          caption,
-          texts,
-          hashtags: hashtagsFor({ rule: hashtagRule, line: next.hashtagLine, own: next.hashtags }),
-        })
-      }
+      next.platformCaptions = fitPlatformCaptions({
+        platforms: next.platforms,
+        caption,
+        ...(texts !== undefined ? { texts } : {}),
+        hashtags: hashtagsFor({ rule: hashtagRule, line: next.hashtagLine, own: next.hashtags }),
+      })
 
       if (existing) {
         for (const id of next.platforms) {

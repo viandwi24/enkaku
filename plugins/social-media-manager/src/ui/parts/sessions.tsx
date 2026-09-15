@@ -36,7 +36,7 @@ import {
   z,
   type ComboboxOption,
 } from '@enkaku/ui'
-import { PLATFORM_CAPTION_LIMITS, checkPlatformCaption, isCaptionPlatform } from '../../platform-captions'
+import { PLATFORM_CAPTION_LIMITS, checkPlatformCaption, isCaptionPlatform, sharedTextFor } from '../../platform-captions'
 import { PLATFORM_IDS, type PlatformId } from '../../platforms'
 import { autoCaption } from '../autocaption'
 import {
@@ -2269,7 +2269,7 @@ function VideoDetail({
               {state?.note ? <p className="text-[11px] leading-relaxed text-dim">{state.note}</p> : null}
               {isCaptionPlatform(platform) && (post.platformCaptions[platform] ?? '') !== '' ? (
                 <p className="line-clamp-3 text-[11px] leading-relaxed whitespace-pre-wrap text-text-2 wrap-anywhere" title={post.platformCaptions[platform]}>
-                  <span className="text-faint">Posts its own caption: </span>
+                  <span className="text-faint">Caption: </span>
                   {post.platformCaptions[platform]}
                 </p>
               ) : null}
@@ -2399,11 +2399,25 @@ function EditPostForm({
   const [phone, setPhone] = useState<string | null>(post.assignedDeviceId)
   const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set(post.platforms))
   const [caption, setCaption] = useState(post.caption)
-  const [ownTexts, setOwnTexts] = useState<Record<PlatformId, string>>(() => ({
-    tiktok: post.platformCaptions.tiktok ?? '',
-    instagram: post.platformCaptions.instagram ?? '',
-    youtube: post.platformCaptions.youtube ?? '',
-  }))
+  // Every platform shows the caption it posts (0.28.0): its own, or the caption fitted to it while the row has none yet.
+  const initialOwn = useMemo<Record<PlatformId, string>>(
+    () => ({
+      tiktok: post.platformCaptions.tiktok ?? sharedTextFor('tiktok', post.caption, tags),
+      instagram: post.platformCaptions.instagram ?? sharedTextFor('instagram', post.caption, tags),
+      youtube: post.platformCaptions.youtube ?? sharedTextFor('youtube', post.caption, tags),
+    }),
+    [post, tags],
+  )
+  const [ownTexts, setOwnTexts] = useState<Record<PlatformId, string>>(initialOwn)
+  /** A new caption carries along every platform text that was still just the old caption fitted to that platform. */
+  const changeCaption = (value: string): void => {
+    setOwnTexts((prev) => {
+      const out = { ...prev }
+      for (const id of PLATFORM_IDS) if (prev[id].trim() === sharedTextFor(id, caption, tags).trim()) out[id] = sharedTextFor(id, value, tags)
+      return out
+    })
+    setCaption(value)
+  }
   const [ownTab, setOwnTab] = useState('')
 
   const options = useMemo(() => phoneOptions(post, fleet, devices, owners), [post, fleet, devices, owners])
@@ -2418,7 +2432,7 @@ function EditPostForm({
   if (!sameSet(nextPlatforms, post.platforms)) changes.platforms = nextPlatforms
   if (caption !== post.caption) changes.caption = caption
   const ownChanges: Partial<Record<PlatformId, string>> = {}
-  for (const id of PLATFORM_IDS) if (ownTexts[id].trim() !== (post.platformCaptions[id] ?? '')) ownChanges[id] = ownTexts[id]
+  for (const id of PLATFORM_IDS) if (ownTexts[id].trim() !== initialOwn[id].trim()) ownChanges[id] = ownTexts[id]
   if (Object.keys(ownChanges).length > 0) changes.platformCaptions = ownChanges
   const dirty = Object.keys(changes).length > 0
   const ownProblem = PLATFORM_IDS.map((id) => (ownTexts[id].trim() === '' ? null : checkPlatformCaption(id, ownTexts[id]).error)).find((e) => e !== null) ?? null
@@ -2511,7 +2525,7 @@ function EditPostForm({
             {caption.length} / {CAPTION_MAX}
           </span>
         </div>
-        <Textarea id={`${ids}-caption`} value={caption} onChange={(e) => setCaption(e.target.value)} rows={3} disabled={saving} />
+        <Textarea id={`${ids}-caption`} value={caption} onChange={(e) => changeCaption(e.target.value)} rows={3} disabled={saving} />
         {captionProblem !== null ? <p className="text-[11px] text-danger">{captionProblem}</p> : null}
       </div>
 
@@ -2519,8 +2533,8 @@ function EditPostForm({
         <div className="space-y-1">
           <p className="text-[11.5px] font-medium text-text-2">Caption per platform</p>
           <p className="max-w-prose text-[11px] leading-relaxed text-dim">
-            Optional. A platform with its own caption posts exactly that text, hashtags included, instead of the caption and hashtags above. Leave it
-            empty to post the shared text.
+            Each platform posts its own caption, hashtags included, fitted to that platform’s limits from the caption and hashtags above. Editing
+            the caption above updates every platform you have not edited by hand.
           </p>
           <Tabs value={activeTab} onValueChange={setOwnTab}>
             <TabsList>
@@ -2541,7 +2555,7 @@ function EditPostForm({
                 <PlatformCaptionField
                   platform={id}
                   value={ownTexts[id]}
-                  shared={postedText(caption, tags)}
+                  shared={sharedTextFor(id, caption, tags)}
                   disabled={saving}
                   onChange={(text) => setOwnTexts((prev) => ({ ...prev, [id]: text }))}
                 />
@@ -2585,7 +2599,7 @@ function limitLine(platform: PlatformId): string {
   const limit = PLATFORM_CAPTION_LIMITS[platform]
   if (platform === 'youtube') return `Typed as the Short’s title through adb: at most ${limit.maxLength} characters, one line, no emoji.`
   if (platform === 'instagram') return `Typed through adb: at most ${limit.maxLength} characters and ${limit.maxHashtags} hashtags, no emoji.`
-  return `At most ${limit.maxLength} characters; the upload flow keeps the first ${limit.maxHashtags} hashtags. Emoji are fine.`
+  return `At most ${limit.maxLength} characters and ${limit.maxHashtags} hashtags. Emoji are fine.`
 }
 
 /** One platform's own caption in the edit form: the text, its count against that platform's limit, and what the pack will drop. */
@@ -2598,7 +2612,7 @@ function PlatformCaptionField({
 }: {
   platform: PlatformId
   value: string
-  /** What the platform posts while this is empty. */
+  /** The caption and hashtags above, fitted to this platform — what an empty text is saved as. */
   shared: string
   disabled: boolean
   onChange: (text: string) => void
@@ -2616,9 +2630,9 @@ function PlatformCaptionField({
         <span className={cn('readout text-[11px] tabular-nums', text.length > limit.maxLength ? 'text-danger' : 'text-faint')}>
           {text.length} / {limit.maxLength}
         </span>
-        {text !== '' ? (
-          <Button type="button" variant="ghost" size="sm" className="ml-auto" disabled={disabled} onClick={() => onChange('')}>
-            Use the shared text
+        {shared !== '' && text !== shared.trim() ? (
+          <Button type="button" variant="ghost" size="sm" className="ml-auto" disabled={disabled} onClick={() => onChange(shared)}>
+            Fit from the caption
           </Button>
         ) : null}
       </div>
@@ -2628,11 +2642,11 @@ function PlatformCaptionField({
         onChange={(e) => onChange(e.target.value)}
         rows={platform === 'youtube' ? 2 : 3}
         disabled={disabled}
-        placeholder="Empty — posts the shared text"
+        placeholder="Empty — nothing to post here yet"
       />
-      {text === '' ? (
+      {text === '' && shared !== '' ? (
         <p className="line-clamp-3 text-[11px] whitespace-pre-line text-faint wrap-anywhere" title={shared}>
-          Posts the shared text: {shared === '' ? '—' : shared}
+          Saved as: {shared}
         </p>
       ) : null}
       <p className="text-[11px] text-faint">{limitLine(platform)}</p>

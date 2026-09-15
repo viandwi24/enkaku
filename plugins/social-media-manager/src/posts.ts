@@ -1,6 +1,14 @@
 import { z } from 'zod'
-import { normalizeHashtags } from './hashtags'
-import { PlatformCaptionsSchema, checkPlatformCaption, type PlatformCaptions } from './platform-captions'
+import { NO_HASHTAG_RULE, hashtagsFor, normalizeHashtags, type HashtagRule } from './hashtags'
+import {
+  PlatformCaptionsSchema,
+  captionPlatformTitle,
+  checkPlatformCaption,
+  followSharedText,
+  sharedTextFor,
+  withPlatformCaptions,
+  type PlatformCaptions,
+} from './platform-captions'
 import { PLATFORM_IDS, PlatformIdSchema, deviceCarriesPlatform, platformById, type PlatformId } from './platforms'
 
 /**
@@ -1359,7 +1367,7 @@ export type PostEditOutcome = { ok: true; post: Post; changed: string[]; warning
  *   record and is simply no longer sent. Failed attempts are NOT re-sent by an edit — that is still
  *   the operator's explicit Retry, which now goes to the new phone.
  */
-export function applyPostEdit(input: { post: Post; edit: PostEdit; sessionRows: readonly Post[] }): PostEditOutcome {
+export function applyPostEdit(input: { post: Post; edit: PostEdit; sessionRows: readonly Post[]; rule?: HashtagRule }): PostEditOutcome {
   const { post, edit } = input
   const warnings: string[] = []
   const running = post.platforms.flatMap((id) => (post.dispatch[id]?.attempts ?? []).filter((a) => a.state === 'queued'))
@@ -1424,6 +1432,25 @@ export function applyPostEdit(input: { post: Post; edit: PostEdit; sessionRows: 
     }
   }
 
+  // Every platform has its own caption (0.28.0). One that was still the shared text fitted to it follows a changed caption or
+  // hashtags; one written for that platform keeps its words, and the edit says so.
+  const rule = input.rule ?? NO_HASHTAG_RULE
+  const tagsOf = (row: Post): readonly string[] => hashtagsFor({ rule, line: row.hashtagLine, own: row.hashtags })
+  if (next.caption !== post.caption || next.hashtags.join(' ') !== post.hashtags.join(' ')) {
+    const follow = followSharedText({
+      platforms: next.platforms,
+      before: { caption: post.caption, hashtags: tagsOf(post) },
+      after: { caption: next.caption, hashtags: tagsOf(next) },
+      captions: next.platformCaptions,
+    })
+    next = { ...next, platformCaptions: follow.captions }
+    for (const id of follow.kept) {
+      if (edit.platformCaptions?.[id] !== undefined) continue
+      const title = captionPlatformTitle(id)
+      warnings.push(`${title} keeps the caption written for it, so it did not change with this edit. Edit ${title}'s caption to change what posts there.`)
+    }
+  }
+
   if (edit.platformCaptions !== undefined) {
     // Refused only past the platform's own length (a YouTube title over 100); emoji and extra hashtags the pack
     // survives are warned about, never refused.
@@ -1433,8 +1460,15 @@ export function applyPostEdit(input: { post: Post; edit: PostEdit; sessionRows: 
       if (raw === undefined) continue
       const text = raw.trim()
       if (text === '') {
-        if (captions[id] !== undefined) {
-          delete captions[id]
+        // Emptied: the platform's caption is fitted from the shared text again (0.28.0), not removed.
+        const fitted = sharedTextFor(id, next.caption, tagsOf(next))
+        if (fitted === '') {
+          if (captions[id] !== undefined) {
+            delete captions[id]
+            changed.push(`${id} caption`)
+          }
+        } else if (captions[id] !== fitted) {
+          captions[id] = fitted
           changed.push(`${id} caption`)
         }
         continue
@@ -1449,6 +1483,10 @@ export function applyPostEdit(input: { post: Post; edit: PostEdit; sessionRows: 
     }
     next = { ...next, platformCaptions: captions }
   }
+
+  // A platform just added, or a row from before 0.28.0, is given its caption now. Not a change on its own: the router fits
+  // the same text for a row that has none, so nothing is written for it alone.
+  next = { ...next, platformCaptions: withPlatformCaptions({ platforms: next.platforms, caption: next.caption, hashtags: tagsOf(next), captions: next.platformCaptions }) }
 
   return { ok: true, post: next, changed, warnings }
 }

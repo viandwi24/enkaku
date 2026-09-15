@@ -136,6 +136,27 @@ function asciiHashtags(tags: readonly string[]): string[] {
   return normalizeHashtags(tags.map((t) => `#${t.replace(/^#+/, '').normalize('NFKD').replace(/\p{M}/gu, '').replace(/[^A-Za-z0-9_]/g, '')}`))
 }
 
+/**
+ * `text` with every hashtag word past the first `max` left out (0.28.0). A caption written with seven hashtags inside
+ * it used to keep all seven, and TikTok's post screen answered with its own "at most 5 hashtags" alert on the phone.
+ */
+function keepFirstHashtags(text: string, max: number): string {
+  let seen = 0
+  return text
+    .split('\n')
+    .map((line) =>
+      line
+        .split(' ')
+        .filter((word) => !TAG_WORD.test(word) || ++seen <= max)
+        .join(' ')
+        .replace(/ {2,}/g, ' ')
+        .trim(),
+    )
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 /** `text` cut to `max` characters at a word boundary when one is reasonably near, trailing punctuation dropped. */
 function cutAtWord(text: string, max: number): string {
   if (text.length <= max) return text
@@ -199,7 +220,7 @@ export function fitPlatformCaption(platform: PlatformId, input: { text: string; 
     const tags = asciiHashtags([...inline, ...input.hashtags]).slice(0, limit.maxHashtags)
     return fitYouTubeTitle(words.join(' '), tags, limit.maxLength)
   }
-  const body = limit.asciiOnly ? asciiText(input.text, limit.singleLine) : input.text.replace(/\r\n?/g, '\n').trim()
+  const body = keepFirstHashtags(limit.asciiOnly ? asciiText(input.text, limit.singleLine) : input.text.replace(/\r\n?/g, '\n').trim(), limit.maxHashtags)
   const inline = hashtagsIn(body)
   const taken = new Set(inline.map((t) => t.toLowerCase()))
   const candidates = (limit.asciiOnly ? asciiHashtags(input.hashtags) : normalizeHashtags(input.hashtags)).filter((t) => !taken.has(t.toLowerCase()))
@@ -266,14 +287,75 @@ export interface PostTextSource {
 
 /**
  * The text ONE platform's job receives (0.27.0): that platform's own caption when the post has one, otherwise the
- * shared text — the caption, the session's fixed hashtags, the line this video was given and its own
- * (`composePostText`, as since 0.19.0). The router and Retry failed both send exactly this. Empty means there is
- * nothing to post there.
+ * shared text — the caption, the session's fixed hashtags, the line this video was given and its own — FITTED to
+ * the platform (0.28.0, `fitPlatformCaption`). The router and Retry failed both send exactly this. Empty means there
+ * is nothing to post there.
+ *
+ * Fitted because the owner's rule is that this plugin knows each platform's limits (2026-09-15): the shared text
+ * went out whole to a post with no caption of its own — a caption file, or a row from before 0.27.0 — and TikTok
+ * was sent seven hashtags. A platform this build has no limits for still gets the shared text as it is.
  */
 export function platformPostText(post: PostTextSource, platform: string, rule: HashtagRule): string {
-  const own = isCaptionPlatform(platform) ? post.platformCaptions?.[platform]?.trim() : undefined
-  if (own !== undefined && own !== '') return own
-  return composePostText(post.caption, hashtagsFor({ rule, line: post.hashtagLine, own: post.hashtags }))
+  const hashtags = hashtagsFor({ rule, line: post.hashtagLine, own: post.hashtags })
+  if (!isCaptionPlatform(platform)) return composePostText(post.caption, hashtags)
+  const own = post.platformCaptions?.[platform]?.trim()
+  if (own === undefined || own === '') return sharedTextFor(platform, post.caption, hashtags)
+  // A text written by hand keeps every word, but never more hashtags than the platform takes. YouTube's pack fits its own title.
+  const max = PLATFORM_CAPTION_LIMITS[platform].maxHashtags
+  return platform !== 'youtube' && hashtagsIn(own).length > max ? keepFirstHashtags(own, max) : own
+}
+
+/** The shared caption and hashtags fitted to one platform — what fills a platform's own caption. Also the page's preview. */
+export function sharedTextFor(platform: PlatformId, caption: string, hashtags: readonly string[]): string {
+  return fitPlatformCaption(platform, { text: caption, hashtags })
+}
+
+/** A caption platform's name as the page writes it. */
+export function captionPlatformTitle(platform: PlatformId): string {
+  return TITLES[platform]
+}
+
+/**
+ * Every chosen platform with a caption of its own (0.28.0): a platform that has none gets the shared caption and
+ * hashtags fitted to it. The owner (2026-09-15): TikTok, YouTube and Instagram each have their own caption, so each fits
+ * its own platform — it is never one text for all three. A platform whose fitted text is empty (nothing to post there)
+ * stays without one, and the router holds it.
+ */
+export function withPlatformCaptions(input: { platforms: readonly string[]; caption: string; hashtags: readonly string[]; captions: PlatformCaptions }): PlatformCaptions {
+  const out: PlatformCaptions = { ...input.captions }
+  for (const id of PLATFORM_IDS) {
+    if (!input.platforms.includes(id) || (out[id] ?? '').trim() !== '') continue
+    const fitted = sharedTextFor(id, input.caption, input.hashtags)
+    if (fitted !== '') out[id] = fitted
+  }
+  return out
+}
+
+/**
+ * The platform captions after the shared caption or hashtags changed (0.28.0). A platform whose caption was still the OLD
+ * shared text fitted to it follows the new one; a platform whose caption was written for it — by hand or by auto caption —
+ * keeps it, and is named in `kept` so the edit can say so.
+ */
+export function followSharedText(input: {
+  platforms: readonly string[]
+  before: { caption: string; hashtags: readonly string[] }
+  after: { caption: string; hashtags: readonly string[] }
+  captions: PlatformCaptions
+}): { captions: PlatformCaptions; kept: PlatformId[] } {
+  const out: PlatformCaptions = { ...input.captions }
+  const kept: PlatformId[] = []
+  for (const id of PLATFORM_IDS) {
+    if (!input.platforms.includes(id)) continue
+    const stored = out[id]
+    const fitted = sharedTextFor(id, input.after.caption, input.after.hashtags)
+    if (stored !== undefined && stored !== sharedTextFor(id, input.before.caption, input.before.hashtags)) {
+      if (stored !== fitted) kept.push(id)
+      continue
+    }
+    if (fitted === '') delete out[id]
+    else out[id] = fitted
+  }
+  return { captions: out, kept }
 }
 
 /** Every targeted platform's text, and which of them have nothing to post — what the router decides a hold from. */

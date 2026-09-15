@@ -15,6 +15,7 @@ import {
   hashtagsIn,
   platformPostText,
   platformPostTexts,
+  withPlatformCaptions,
 } from './platform-captions'
 import { PENDING_STATE, PostSchema, applyPostEdit, newPost, postKeyFor, type Post } from './posts'
 import retryFailed from './retry-failed'
@@ -121,17 +122,18 @@ describe('the stored row', () => {
     expect(PostSchema.safeParse({ ...fresh, platformCaptions: { tiktok: '' } }).success).toBe(false)
   })
 
-  test('an edit sets, replaces and clears a platform caption, and refuses a YouTube title over 100', () => {
+  test('an edit sets and replaces a platform caption, fits an emptied one again, and refuses a YouTube title over 100', () => {
     const set = applyPostEdit({ post: post(), edit: { platformCaptions: { youtube: '  Title #fyp ', instagram: 'Caption 🔥' } }, sessionRows: [] })
     expect(set).toMatchObject({ ok: true, changed: ['instagram caption', 'youtube caption'] })
     if (!set.ok) throw new Error('refused')
-    expect(set.post.platformCaptions).toEqual({ youtube: 'Title #fyp', instagram: 'Caption 🔥' })
+    // TikTok had none, so it is given the shared text fitted to it (0.28.0).
+    expect(set.post.platformCaptions).toEqual({ youtube: 'Title #fyp', instagram: 'Caption 🔥', tiktok: 'Shared words' })
     expect(set.warnings.join(' ')).toContain('emoji')
     expect(PostSchema.parse(set.post)).toEqual(set.post)
 
     const cleared = applyPostEdit({ post: set.post, edit: { platformCaptions: { youtube: '', tiktok: '' } }, sessionRows: [] })
     expect(cleared).toMatchObject({ ok: true, changed: ['youtube caption'] })
-    if (cleared.ok) expect(cleared.post.platformCaptions).toEqual({ instagram: 'Caption 🔥' })
+    if (cleared.ok) expect(cleared.post.platformCaptions).toEqual({ instagram: 'Caption 🔥', youtube: 'Shared words', tiktok: 'Shared words' })
 
     const same = applyPostEdit({ post: set.post, edit: { platformCaptions: { youtube: 'Title #fyp' } }, sessionRows: [] })
     expect(same).toMatchObject({ ok: true, changed: [] })
@@ -199,5 +201,35 @@ describe('what each platform is sent', () => {
       ['tiktok/post-video@latest', 'Shared words\n\n#fyp'],
       ['youtube/post-video@latest', 'Short title #fyp'],
     ])
+  })
+
+  /** 0.28.0 — the owner (2026-09-15): every platform has its own caption, and this plugin knows each platform's limits. */
+  test('a platform with no caption of its own is sent the shared text fitted to it — never more hashtags than it takes', () => {
+    const row = post({ caption: 'Market aneh 😅 #a #b #c #d #e #f #g' })
+    expect(platformPostText(row, 'tiktok', NO_HASHTAG_RULE)).toBe('Market aneh 😅 #a #b #c #d #e')
+    expect(platformPostText(row, 'instagram', NO_HASHTAG_RULE)).toBe('Market aneh #a #b #c #d #e')
+    expect(platformPostText(row, 'youtube', NO_HASHTAG_RULE)).toBe('Market aneh #a #b #c')
+    const tagged = post({ hashtags: ['#xau', '#one', '#two', '#three'], hashtagLine: 0 })
+    expect(platformPostText(tagged, 'tiktok', rule)).toBe('Shared words\n\n#fyp #trading #gold #xau #one')
+  })
+
+  test('a caption written for TikTok keeps its words but is sent at most 5 hashtags', () => {
+    const row = post({ platformCaptions: { tiktok: 'Buat TikTok 🔥 #a #b #c #d #e #f #g' } })
+    expect(platformPostText(row, 'tiktok', NO_HASHTAG_RULE)).toBe('Buat TikTok 🔥 #a #b #c #d #e')
+  })
+
+  test('an edited caption carries along every platform caption that was only fitted, and names the one written for its platform', () => {
+    const start = post({ caption: 'Old words', platformCaptions: { tiktok: 'Old words', instagram: 'Old words', youtube: 'My own title' } })
+    const out = applyPostEdit({ post: start, edit: { caption: 'New words' }, sessionRows: [], rule: NO_HASHTAG_RULE })
+    if (!out.ok) throw new Error('refused')
+    expect(out.post.platformCaptions).toEqual({ tiktok: 'New words', instagram: 'New words', youtube: 'My own title' })
+    expect(out.warnings.join(' ')).toContain('YouTube keeps the caption written for it')
+  })
+
+  test('every chosen platform gets a caption of its own, fitted from the shared text; one it has is kept', () => {
+    expect(withPlatformCaptions({ platforms: ['tiktok', 'youtube'], caption: 'Mantap 😍', hashtags: ['#fyp'], captions: { youtube: 'Title' } })).toEqual({
+      tiktok: 'Mantap 😍\n\n#fyp',
+      youtube: 'Title',
+    })
   })
 })

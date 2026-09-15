@@ -208,6 +208,9 @@ const VIDEO_SCREEN_DWELL_MS = 4_000
 /** Android keycodes, sent as raw numbers because `KeyCode` accepts them (`packages/protocol/src/ui-node.ts`) and the named set carries no cursor/delete entries. */
 const KEY_MOVE_END = 123
 const KEY_DEL = 67
+const KEY_FORWARD_DEL = 112
+/** The most key presses one clearing pass is sized for: the member's own caption `.max(2_200)`, plus the margin. */
+const CLEAR_MAX_STROKES = 2_205
 
 /**
  * Empties the caption field before typing into it.
@@ -220,7 +223,13 @@ const KEY_DEL = 67
  *
  * MOVE_END then DEL, once per character plus a small margin, rather than a select-all: Android has
  * no select-all keycode, and long-press-to-select opens a menu that is one more surface to read.
- * Bounded, so a mis-read field length cannot become hundreds of key events.
+ *
+ * Read back, and never typed over (1.43.0). On the moto g06 (2026-09-15) a 205-character caption was
+ * cleared with at most 120 DELs, and MOVE_END only reaches the end of the LINE the tap left the cursor
+ * on, not the end of the text: the retype landed inside what was left ("Sambil Sambil nunggu…"), two
+ * captions and ten hashtags in one field, which is the shape TikTok answers with its "at most 5
+ * hashtags" alert. So a pass is sized to the whole text, anything left after the cursor goes with
+ * FORWARD_DEL, and a field that still holds text stops the run before a single character is typed.
  */
 /**
  * What the caption field ACTUALLY holds — its placeholder is not content (1.31.0).
@@ -241,13 +250,29 @@ export function captionTextToClear(field: Pick<UiNode, 'text'>): string {
 /** TikTok's caption placeholders, lowercased without trailing dots. Only seen text belongs here. */
 const CAPTION_PLACEHOLDERS = ['tambah deskripsi', 'add description']
 
-async function clearCaptionField(ctx: ScriptContext<unknown>, field: UiNode): Promise<void> {
-  const existing = captionTextToClear(field)
-  if (existing.length === 0) return
-  const strokes = Math.min(existing.length + 5, 120)
-  await ctx.device.key(KEY_MOVE_END)
-  for (let i = 0; i < strokes; i += 1) await ctx.device.key(KEY_DEL)
-  ctx.log.info('cleared the caption field before typing', { had: existing.slice(0, 40), strokes })
+async function clearCaptionField(ctx: ScriptContext<unknown>, frame: { width: number; height: number }, field: UiNode): Promise<void> {
+  const had = captionTextToClear(field)
+  if (had.length === 0) return
+  let left = had
+  let tree: UiNode | null = null
+  for (const key of [KEY_DEL, KEY_FORWARD_DEL]) {
+    if (key === KEY_DEL) await ctx.device.key(KEY_MOVE_END)
+    const strokes = Math.min([...left].length + 5, CLEAR_MAX_STROKES)
+    for (let i = 0; i < strokes; i += 1) await ctx.device.key(key)
+    tree = await readPostScreen(ctx, 'clearing the caption field')
+    const now = onScreenCaptionField(tree, frame.width)
+    if (!now) break
+    left = captionTextToClear(now)
+    if (left.length === 0) {
+      ctx.log.info('cleared the caption field before typing', { had: had.slice(0, 40), pass: key === KEY_DEL ? 'backward' : 'forward' })
+      return
+    }
+  }
+  if (tree) await capture(ctx, 'caption-not-cleared', tree)
+  throw Object.assign(
+    new Error(`the caption field still holds "${left.slice(0, 120)}" after clearing it — typing over it would post two captions run together, so nothing was typed and Post was not tapped`),
+    { code: 'E_CAPTION_MISMATCH' },
+  )
 }
 
 /**
@@ -333,6 +358,11 @@ const FRAME_SLACK_PX = 2
  */
 export function normaliseCaption(text: string): string {
   return text.replace(/[\s\u200b-\u200d\u2060\ufeff]+/gu, ' ').trim()
+}
+
+/** `caption` with only what the key-event typing paths carry: printable ASCII and whitespace (1.43.0). */
+export function withoutUntypeable(caption: string): string {
+  return caption.replace(/[^\x20-\x7e\s]/gu, '')
 }
 
 /** True when the caption field holds exactly `intended`, by `normaliseCaption`. A field showing only its placeholder holds nothing. */
@@ -1643,7 +1673,7 @@ async function enterCaption(ctx: ScriptContext<unknown>, frame: { width: number;
   let target = field
   for (let round = 1; round <= 2; round++) {
     await ctx.device.tap({ point: centreOf(target) })
-    await clearCaptionField(ctx, target)
+    await clearCaptionField(ctx, frame, target)
     const via = await typeCaption(ctx, caption)
     ctx.log.info('typed the caption', { via, attempt: round, hashtags: (caption.match(/#[^\s#]+/g) ?? []).length })
     await sleep(800)
@@ -1653,6 +1683,16 @@ async function enterCaption(ctx: ScriptContext<unknown>, frame: { width: number;
     const now = onScreenCaptionField(tree, frame.width)
     if (now && captionLanded(now, caption)) return captionTextToClear(now)
     const holds = now ? captionTextToClear(now) : '(no caption field on screen)'
+    if (round === 1 && via !== 'agent-ime' && now && captionLanded(now, withoutUntypeable(caption))) {
+      // Everything landed except the emoji and accents (1.43.0): typing it again the same way can only lose them again.
+      await capture(ctx, 'caption-mismatch', tree)
+      throw Object.assign(
+        new Error(
+          `the caption's emoji or accented letters did not land: this phone typed through ${via}, which cannot carry them, because the farm's own keyboard (the guest agent IME) is not its active keyboard — Post was not tapped, so nothing was posted. Make the guest agent keyboard active on this phone, or post a caption without emoji.`,
+        ),
+        { code: 'E_CAPTION_MISMATCH' },
+      )
+    }
     if (round === 2) {
       await capture(ctx, 'caption-mismatch', tree)
       throw Object.assign(

@@ -864,6 +864,14 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.43.0 — the caption field is emptied before it is typed into, or nothing is typed. The owner saw TikTok's "at most 5
+  //   hashtags" alert on phones whose run had capped the caption at five (2026-09-15). The moto g06 dry run showed why:
+  //   a retype cleared at most 120 characters with DEL after MOVE_END, which reaches only the end of the tapped LINE, so
+  //   the 205-character caption was typed into what was left of the first — "Sambil Sambil nunggu…", two captions and
+  //   ten hashtags in one field. A clear is now sized to the whole text, removes what follows the cursor with
+  //   FORWARD_DEL, reads the field back, and stops with E_CAPTION_MISMATCH when text is still there. And a first
+  //   typing that lost only the emoji or accents (a phone typing through scrcpy-text or adb, not the guest agent
+  //   keyboard) stops at once with that reason, instead of clearing and retyping a text that can only land the same.
   // Also in 1.42.0 — the "Riwayat penonton diaktifkan" sheet over the own profile is closed. Production #9 (2026-09-15)
   //   stopped at "the own profile could not be opened to look for drafts" with that sheet (a viewer-history toggle, a
   //   "Simpan" button, an unlabelled close) hiding "Menu profil". It is a new interruption, `tt.viewer-history`, and
@@ -1106,7 +1114,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.42.0',
+  version: '1.43.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

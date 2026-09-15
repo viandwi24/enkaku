@@ -74,6 +74,23 @@ import {
  *
  * ## Changelog
  *
+ * - **0.28.0 — every platform always has its own caption, fitted to it.**
+ *   The owner (2026-09-15): TikTok, YouTube and Instagram each need their own
+ *   caption, and this plugin must know each platform's limits. In 0.27.0 a
+ *   per-platform caption existed only when auto caption wrote one; a video
+ *   captioned from a file, by hand, or before 0.27.0 sent the shared text whole,
+ *   and TikTok was sent seven hashtags. Now `add-group` fits a caption per
+ *   platform for every video; the router and Retry failed fit the shared text
+ *   for a row that still has none, and cap a hand-written TikTok or Instagram
+ *   caption at five hashtags; hashtags written INSIDE a caption count toward
+ *   the five (they were kept whole before). Editing the caption or hashtags
+ *   re-fits every platform whose caption was still the fitted one, and names
+ *   the platforms that keep a caption written for them. Edit fills every
+ *   platform tab with the caption that platform posts, carries the tabs along
+ *   as the caption is typed, and "Fit from the caption" replaces "Use the
+ *   shared text"; an emptied tab is saved as the fitted caption. Stored rows
+ *   are unchanged in shape.
+ *
  * - **0.27.0 — regenerate captions, and a caption per platform.** The owner
  *   (2026-09-15): auto caption could only fill EMPTY captions, and one text
  *   fitted no platform — YouTube types it as a 100-character title through
@@ -1129,7 +1146,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.27.0',
+  version: '0.28.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
