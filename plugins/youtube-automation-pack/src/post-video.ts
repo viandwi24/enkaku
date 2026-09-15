@@ -163,6 +163,8 @@ export function detailsGeometry(tree: UiNode): DetailsGeometry {
 
 /** How many times the channel is read after Upload, ten seconds apart. */
 const CONFIRM_ROUNDS = 6
+/** How long a run that saw its upload in flight keeps looking at the channel, counted from the first look (0.33.0). */
+const CONFIRM_BUDGET_MS = 5 * 60_000
 
 /**
  * How long the title tap gets before the text is typed.
@@ -1308,11 +1310,22 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       later one re-opens the channel through the Anda tab. An unreadable channel brings YouTube to
       the front with a plain launch, which does not stop the app.
     */
+    /*
+      Watched longer once the upload was seen in flight (0.33.0). On the owner's production farm (2026-09-15, #12)
+      the first look after Upload read "Mengirim file • 10%", and the channel re-opened through the Anda tab does
+      not list a Short until YouTube has sent and processed it: five more looks over ~90 s read the channel as
+      before, the run said "unverified", and the Short went live afterwards. So after `CONFIRM_ROUNDS`, a run
+      that saw its upload in flight keeps looking until `CONFIRM_BUDGET_MS`.
+    */
+    let inFlightWords: string | null = null
+    const confirmStarted = Date.now()
     try {
-      for (let round = 0; round < CONFIRM_ROUNDS; round++) {
-        if (round > 0) await sleep(10_000)
+      for (let round = 0; ; round++) {
+        if (round >= CONFIRM_ROUNDS && (inFlightWords === null || Date.now() - confirmStarted >= CONFIRM_BUDGET_MS)) break
+        if (round > 0) await sleep(round >= CONFIRM_ROUNDS ? 15_000 : 10_000)
         const after = await readOwnChannel(ctx, `yt-11-channel-after-${round + 1}`, { readIfShown: round === 0 })
         last = judgeChannel(before, after, title, { seenUploading })
+        if (last.kind === 'processing') inFlightWords = last.words
         if (last.kind === 'processing' && last.titled && after !== null) {
           seenUploading = Math.max(seenUploading ?? 0, after.filter((cell) => cellShowsTitle(cell, title)).length)
         }
@@ -1336,7 +1349,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
           ctx.log.warn('the channel could not be read — bringing YouTube to the front without restarting it', { round: round + 1 })
           await ctx.device.app.launch(YOUTUBE_PACKAGE).catch((err: unknown) => ctx.log.warn('could not bring YouTube to the front', { error: String(err) }))
         }
-        ctx.log.warn(`the channel does not show this Short as live yet (attempt ${round + 1}/${CONFIRM_ROUNDS})`, { judged: JSON.stringify(last) })
+        ctx.log.warn(`the channel does not show this Short as live yet (attempt ${round + 1}${inFlightWords === null ? `/${CONFIRM_ROUNDS}` : `, watching the upload for up to ${CONFIRM_BUDGET_MS / 60_000} min`})`, { judged: JSON.stringify(last) })
       }
     } catch (err) {
       confirmError = err instanceof Error ? err.message : String(err)
@@ -1351,6 +1364,8 @@ const script: PluginMemberScript<typeof params, typeof result> = {
             ? `YouTube shows the upload of a cell carrying this title as failed ("${last.words.slice(0, 80)}").`
           : last.kind === 'untitled-new'
             ? 'a video appeared but its title was not confirmed — it does not carry this title (the title may not have been typed in full).'
+            : last.kind === 'same' && inFlightWords !== null
+              ? `it was seen uploading ("${inFlightWords.slice(0, 80)}"), and the channel had not listed it after ${Math.round((Date.now() - confirmStarted) / 1000)}s — most likely still sending or processing on this phone's network.`
             : last.kind === 'no-baseline'
               ? last.titled
                 ? 'a cell with this title is on the channel, but the channel could not be read before Upload, so it is not proven to be this Short.'

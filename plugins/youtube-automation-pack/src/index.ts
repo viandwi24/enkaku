@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.32.0',
+  version: '0.33.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,15 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.33.0 — an upload seen in flight is watched until it lands.** The
+   * owner's production farm (2026-09-15, #12): the first look after Upload read
+   * "Mengirim file • 10%", the channel re-opened through the Anda tab lists a
+   * Short only once it is sent and processed, and five more looks over ~90 s
+   * ended "unverified" — the Short went live afterwards. A run that saw its
+   * upload in flight now keeps looking every 15 s for up to 5 minutes, and an
+   * unverified result says it was still uploading instead of "the channel page
+   * was as it was before Upload".
    *
    * **0.32.0 — a Google account page over YouTube at launch is left with BACK.**
    * The owner's Samsung production farm (2026-09-15): posts failed "YouTube's
