@@ -74,7 +74,8 @@ function setUp(): { db: Db; deps: ActionsDeps } {
     record: () => {},
     broadcast: () => {},
     activities: { list: () => [] } as unknown as ActionsDeps['activities'],
-    controlSettings: () => unused('controlSettings'),
+    // run verbs are admitted through the activity policy (policyKind 'run'), so this is read
+    controlSettings: () => ({ overControl: 'warn', idleSec: 30 }),
     states: {
       current: (deviceId) => (db.select({ status: devices.status }).from(devices).where(eq(devices.id, deviceId)).get()?.status ?? null) as 'online' | 'offline' | 'quarantined' | null,
     },
