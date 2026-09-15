@@ -75,7 +75,11 @@ export default definePlugin({
    * it, although both had been refused before launch; hidden from the reader,
    * the run saw only System UI and failed "bottom navigation is not on
    * screen". A launch that reads as System UI alone now presses BACK — which
-   * refuses such a dialog — and waits again, up to three times.
+   * refuses such a dialog — and waits again, up to three times. And once past
+   * that dialog, #3 still failed "does not hold all of it" with the whole
+   * caption in the field: its reader returned the two ENTERs as `&#10;`, which
+   * the check squashed to "#10#10". The check now reads such a reference as
+   * the space it is (and the core's XML reader decodes it too).
    *
    * **Also in 0.7.0 — three production failures (2026-09-15).** Phone #3:
    * Android's hidden "Izinkan Instagram mengambil gambar dan merekam video?"

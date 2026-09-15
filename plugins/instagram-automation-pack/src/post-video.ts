@@ -259,7 +259,13 @@ export function captionLanded(tree: UiNode, caption: string): boolean {
   const field = rowsById(tree, 'caption_input_text_view')[0]
   if (!field) return false
   // `#` and `@` count: a hashtag that lost its `#` ("#liquidity tradingindonesia") is not the caption that was asked for.
-  const squash = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}#@]+/gu, '')
+  // `&#10;` is a newline a reader did not decode (0.7.1, production #3: "habis!&#10;&#10;#AkademiBitorex"); without this
+  // it squashes to "#10#10" and a caption that landed reads as one that did not.
+  const squash = (s: string): string =>
+    s
+      .replace(/&#(?:\d+|x[0-9a-f]+);/gi, ' ')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}#@]+/gu, '')
   // The WHOLE caption, not its first words: on a routed run (2026-09-14) the hashtags came out
   // "#fyp #tra rtro" — Instagram's hashtag suggestions ate the rest — and a 24-character check passed it.
   const want = squash(caption)

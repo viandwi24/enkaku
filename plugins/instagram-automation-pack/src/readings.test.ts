@@ -269,6 +269,8 @@ describe('post-video — the walk, screen by screen', () => {
     const withText = (text: string): UiNode => ({ resourceId: 'com.instagram.android:id/caption_input_text_view', text, desc: '', className: 'android.widget.AutoCompleteTextView', packageName: 'com.instagram.android', bounds: { left: 28, top: 712, right: 692, bottom: 796 }, clickable: true, enabled: true, focused: false, index: 0, children: [] })
     expect(captionLanded(withText('enkaku dry run #test'), 'enkaku dry run #test')).toBe(true)
     expect(captionLanded(withText('Enkaku  dry run  # test'), 'enkaku dry run #test')).toBe(true)
+    // Production #3 (0.7.1): the reader left the two ENTERs as `&#10;` — the caption had landed.
+    expect(captionLanded(withText('Simak sampai habis!&#10;&#10;#AkademiBitorex #fyp'), 'Simak sampai habis!\n\n#AkademiBitorex #fyp')).toBe(true)
     expect(captionLanded(withText('Tulis keterangan dan tambahkan tagar...'), 'enkaku dry run #test')).toBe(false)
   })
 

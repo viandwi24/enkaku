@@ -35,11 +35,23 @@ interface RawNode {
   node?: RawNode[]
 }
 
+/**
+ * Numeric character references back to their characters. `uiautomator` writes a newline inside an attribute as
+ * `&#10;`, and the parser decodes only the five named XML entities, so a caption typed with ENTER read back as
+ * "habis!&#10;&#10;#AkademiBitorex" (production SM-A075F #3, 2026-09-15) — correct on the phone, a mismatch to every
+ * check that compared it with the text that was typed, and the run failed without sharing a caption that had landed.
+ */
+export function decodeCharRefs(value: string): string {
+  if (!value.includes('&#')) return value
+  const toChar = (code: number): string => (Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '')
+  return value.replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => toChar(Number.parseInt(hex, 16))).replace(/&#(\d+);/g, (_, dec: string) => toChar(Number.parseInt(dec, 10)))
+}
+
 function toUiNode(raw: RawNode): UiNode {
   return {
     resourceId: raw['@resource-id'] ?? '',
-    text: raw['@text'] ?? '',
-    desc: raw['@content-desc'] ?? '',
+    text: decodeCharRefs(raw['@text'] ?? ''),
+    desc: decodeCharRefs(raw['@content-desc'] ?? ''),
     className: raw['@class'] ?? '',
     packageName: raw['@package'] ?? '',
     bounds: parseBounds(raw['@bounds']),
