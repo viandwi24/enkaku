@@ -178,9 +178,26 @@ export const TIKTOK_MODALS: ModalEntry[] = [
     // 2026-08-17 walk — stopped at the Post button — never saw it), and it is squarely the kind of
     // thing this register exists for: harmless, unrelated to the task, and fatal to an unattended
     // run that has no answer for it. `deny` declines; nothing here ever adds a widget.
-    match: { textIncludes: ['Sentuh lama widget', 'Kamera TikTok', 'Touch and hold the widget', 'TikTok Camera'] },
+    // Not the launcher's own confirmation (`tt.widget-pin`, 1.38.0): that sheet names "Kamera TikTok" too,
+    // and without `notWith` this entry's identity fallback could tap the clickable widget preview on it
+    // — which ADDS the widget.
+    match: {
+      textIncludes: ['Sentuh lama widget', 'Kamera TikTok', 'Touch and hold the widget', 'TikTok Camera'],
+      notWith: ['Tambah ke Layar depan', 'Add to Home screen'],
+    },
     actions: { deny: { text: 'Tidak, terima kasih' } },
     seen: SEEN_POST,
+  },
+  {
+    id: 'tt.widget-pin',
+    // Seen on the owner's production farm (Samsung One UI, 2026-09-15), in front of TikTok's feed before
+    // the camera opened: the launcher's "Tambah ke Layar depan?" sheet for the "Kamera TikTok" 1x1
+    // widget, with "Batal" and "Tambah". It is One UI's confirmation of the widget `tt.widget-prompt`
+    // offers, so that entry's "Tidak, terima kasih" is not on it. `deny` cancels; nothing here ever adds
+    // a widget. From a screenshot only: no dump of this sheet is checked in yet.
+    match: { textIncludes: ['Tambah ke Layar depan', 'Add to Home screen'] },
+    actions: { deny: { text: 'Batal' } },
+    seen: { device: 'Samsung SM-A075F (production screenshot)', app: 'com.sec.android.app.launcher', locale: 'id-ID', at: '2026-09-15' },
   },
   {
     id: 'tt.contacts',
@@ -329,6 +346,7 @@ export const UPLOAD_MODAL_POLICIES: Record<string, ModalPolicy> = {
   // 2026-08-17 walk never met them, and why an unattended run that only knew the pre-post modals
   // would have stalled on the very first screen it reached after succeeding.
   'tt.widget-prompt': 'deny',
+  'tt.widget-pin': 'deny',
   'tt.contacts': 'deny',
   'tt.phone-prompt': 'deny',
   // Never answered by a run — see the entry. `abort` is what turns it into a named stop.

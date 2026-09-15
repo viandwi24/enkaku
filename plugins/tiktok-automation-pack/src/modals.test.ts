@@ -37,6 +37,41 @@ function mkNode(partial: Partial<UiNode>): UiNode {
   }
 }
 
+describe('tt.widget-pin — One UI\'s "Tambah ke Layar depan?" sheet (1.38.0)', () => {
+  // Synthetic: built from a production screenshot, no dump of this sheet is checked in yet.
+  const sheet = () =>
+    mkNode({
+      bounds: { left: 0, top: 0, right: 720, bottom: 1600 },
+      children: [
+        mkNode({ text: 'Tambah ke Layar depan?', bounds: { left: 40, top: 940, right: 680, bottom: 990 } }),
+        mkNode({ text: 'Sentuh dan tahan ikon atau ketuk Tambah untuk menambahkannya ke Layar depan.', bounds: { left: 40, top: 1000, right: 680, bottom: 1080 } }),
+        mkNode({ text: 'Kamera TikTok', clickable: true, bounds: { left: 40, top: 1100, right: 680, bottom: 1320 } }),
+        mkNode({ text: 'Batal', clickable: true, bounds: { left: 40, top: 1360, right: 340, bottom: 1440 } }),
+        mkNode({ text: 'Tambah', clickable: true, bounds: { left: 380, top: 1360, right: 680, bottom: 1440 } }),
+      ],
+    })
+
+  test('matches only tt.widget-pin, not tt.widget-prompt, so the widget preview is never the fallback tap', () => {
+    expect(matchModals(sheet()).map((e) => e.id)).toEqual(['tt.widget-pin'])
+  })
+
+  test('the upload sweep answers it with "Batal" and never "Tambah"', async () => {
+    let dumps = 0
+    const taps: unknown[] = []
+    const ctx = {
+      device: {
+        dump: async () => (dumps++ === 0 ? sheet() : mkNode({})),
+        tap: async (t: unknown) => void taps.push(t),
+      },
+      artifact: { screenshot: async () => ({ artifactId: 'a' }) },
+      log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    } as unknown as ScriptContext<unknown>
+    const { cleared } = await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
+    expect(cleared).toEqual(['tt.widget-pin'])
+    expect(taps).toEqual([{ point: { x: 190, y: 1400 } }])
+  })
+})
+
 describe('TIKTOK_MODALS — matched against the real device dumps they were written from (plan 113 §6 criterion 3)', () => {
   test('sys.camera matches the camera permission dump, and NOT the media permission dump', () => {
     const camera = loadFixture('screen-sys-camera-permission.json')
