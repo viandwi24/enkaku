@@ -864,6 +864,15 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.44.0 — dialogs over the feed are refused before the Profil tab is looked for. Two production sessions
+  //   (2026-09-15) stopped 19 times with "the own profile could not be opened to look for drafts". Their dumps: 6 under
+  //   the viewer-history sheet (known, but only closed after Profil was tapped), 4 under "Simpan info login untuk lain
+  //   waktu?", 4 under "Izinkan TikTok mengakses daftar teman Facebook dan email Anda", 1 under "Izinkan lokasi
+  //   presisi", and 4 where only System UI was readable (a hidden system dialog). The new interruptions carry their own
+  //   refusal ("Tidak sekarang", "Jangan izinkan" — never "Simpan info login" or "OK"; the location dialog has none and
+  //   is closed with BACK), and opening the own profile now closes known dialogs first, then again — with BACK for a
+  //   hidden system dialog — while the tab is missing. The same dialogs over the profile are why some runs said "no
+  //   readable video grid" after Post.
   // 1.43.1 — a wait for an on-screen tab reads the screen at least three times, however slow each read is, and logs
   //   why the last read failed. A moto g06 dry run on a loaded host (2026-09-15) stopped with "the own profile could
   //   not be opened to look for drafts" while "Profil" was on screen: its 10 s wait ended on the first slow read.
@@ -1117,7 +1126,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.43.1',
+  version: '1.44.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

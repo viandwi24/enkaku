@@ -343,6 +343,30 @@ export function hiddenWindow(tree: UiNode): 'none' | 'dialog' | 'details' {
 }
 
 /**
+ * YouTube's details screen drawn READABLE (0.37.0). The walk on the moto met it hidden from the reader, and every check
+ * here assumed that. Production SM-A075F phones (2026-09-15, 13 of 16 "the details screen did not open") showed it in
+ * plain view: the header "Tambahkan detail", the title area "Tambahkan teks pada video Shorts" beside the thumbnail, and
+ * `upload_bottom_button` "Upload video Shorts" (one build puts `upload_menu_button` in the toolbar instead). The run
+ * waited 30 s for a hidden screen that was never going to come.
+ */
+export function readableDetails(tree: UiNode): { upload: UiNode | null; title: UiNode | null } | null {
+  const visible = onScreenIn(tree)
+  const nodes = all(tree, (n) => fromYouTube(n) && visible(n))
+  const upload = nodes.find((n) => hasId(n, 'upload_bottom_button') || hasId(n, 'upload_menu_button')) ?? null
+  const header = nodes.some((n) => /^(tambahkan detail|add details)$/i.test(n.text.trim()) || /^(tambahkan detail|add details)$/i.test(n.desc.trim()))
+  if (!upload && !header) return null
+  const title = nodes.find((n) => n.clickable && /tambahkan teks pada video shorts|caption your short|tambahkan judul|add a title|create a title/i.test(`${n.text} ${n.desc}`)) ?? null
+  return { upload, title }
+}
+
+/** The details screen, hidden from the reader (the moto) or readable (production Samsung) — see `readableDetails`. */
+export function onDetailsScreen(tree: UiNode): boolean {
+  return hiddenWindow(tree) === 'details' || readableDetails(tree) !== null
+}
+
+const middleOf = (n: UiNode): { x: number; y: number } => ({ x: Math.round((n.bounds.left + n.bounds.right) / 2), y: Math.round((n.bounds.top + n.bounds.bottom) / 2) })
+
+/**
  * A hidden permission dialog, believed only after `readings` consecutive trees
  * show it (0.30.0). One empty tree is also what a transition frame looks like:
  * a run that took one for a dialog threw `E_PERMISSION_DIALOG_HIDDEN` with the
@@ -949,7 +973,7 @@ async function putKeyboardAway(ctx: ScriptContext<unknown>, reference: Uint8Arra
     return { band, tree, keyboard, gone: band === 'same' && !keyboard }
   }
   const stillOnDetails = async (state: { tree: UiNode }, after: string): Promise<void> => {
-    if (hiddenWindow(state.tree) === 'details') return
+    if (onDetailsScreen(state.tree)) return
     await capture(ctx, 'yt-09-keyboard-left-details', state.tree)
     fail('E_DETAILS_LAYOUT', `${after} left the details screen before Upload was pressed — nothing was uploaded. See artifact yt-09-keyboard-left-details.`)
   }
@@ -1005,7 +1029,7 @@ async function watchUploadTap(ctx: ScriptContext<unknown>, reference: Uint8Array
   let changed = false
   for (;;) {
     const tree = await ctx.device.dump()
-    if (hiddenWindow(tree) !== 'details') return { kind: 'left', tree }
+    if (!onDetailsScreen(tree)) return { kind: 'left', tree }
     if (compareShots(reference, await ctx.device.screenshot(), content) !== 'same') changed = true
     if (Date.now() >= deadline) return { kind: changed ? 'changed' : 'unchanged', tree }
     await sleep(1_000)
@@ -1321,7 +1345,19 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     await tapCentre(ctx, editor.node)
     screens.push('editor')
 
-    const details = await waitForTree(ctx, (t) => hiddenWindow(t) === 'details', { budgetMs: 30_000 })
+    let details = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: 30_000 })
+    for (let retap = 0; retap < 2 && !details.ok; retap++) {
+      /*
+        A "Berikutnya" YouTube did not act on (0.37.0). Production #25 and #57 (2026-09-15) were still on the Shorts editor,
+        its button in view, 30 s after the tap. While the editor and its button are still there — and YouTube is not
+        processing — the button is tapped again, as a person would.
+      */
+      const again = rowsById(details.tree, 'shorts_post_bottom_button')[0]
+      if (!again || processingOverlay(details.tree) !== null) break
+      ctx.log.warn('still on the Shorts editor after "Berikutnya" — tapping it again', { retap: retap + 1 })
+      await tapCentre(ctx, again)
+      details = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: 20_000 })
+    }
     if (!details.ok) {
       // The tree too, not only a screenshot (0.35.0): production phone #2 (2026-09-15) showed the details screen
       // plainly on its screenshot while this wait failed, and with no dump the cause could not be read.
@@ -1333,7 +1369,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     await ctx.artifact.screenshot('yt-08-details')
     if (!still.still) fail('E_DETAILS_NOT_READY', 'the details screen never stopped loading within 45s, so no tap was aimed at it — nothing was uploaded. See artifact yt-08-details.')
     const settled = await ctx.device.dump()
-    if (hiddenWindow(settled) !== 'details') fail('E_ANCHOR_NOT_FOUND', 'the details screen closed while it loaded — nothing was uploaded. See artifact yt-08-details.')
+    if (!onDetailsScreen(settled)) fail('E_ANCHOR_NOT_FOUND', 'the details screen closed while it loaded — nothing was uploaded. See artifact yt-08-details.')
     /*
       The orientation again, on the screen the taps are aimed at (0.31.0). The home check passes a
       phone that turns on its side later in the walk, and every point below is measured in portrait.
@@ -1355,7 +1391,10 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     screens.push('details')
 
     // --- the blind part (see the header) ---------------------------------------
-    const titlePoint = geometry.title
+    // On a readable details screen the title area and Upload are aimed at by their own bounds (0.37.0); hidden, by the measure.
+    const readable = readableDetails(settled)
+    const titlePoint = readable?.title ? middleOf(readable.title) : geometry.title
+    if (readable) ctx.log.info('the details screen is readable — aiming at its own title area and Upload button', { title: readable.title !== null, upload: readable.upload !== null })
     /*
       Focus cannot be PROVEN on this screen, so it is not claimed.
 
@@ -1396,7 +1435,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     // A tap that missed the field left focus on the thumbnail; the space in the title then opened
     // the thumbnail editor. That is what this catches — and it means nothing was uploaded.
     let afterTyping = await ctx.device.dump()
-    const exitEditor = hiddenWindow(afterTyping) !== 'details' && onThumbnailEditor(afterTyping) ? thumbnailEditorExit(afterTyping) : null
+    const exitEditor = !onDetailsScreen(afterTyping) && onThumbnailEditor(afterTyping) ? thumbnailEditorExit(afterTyping) : null
     if (exitEditor) {
       /*
         Once more, from the details screen (0.36.0). Production phone #13 (2026-09-15) met this after YouTube's
@@ -1407,7 +1446,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       await capture(ctx, 'yt-09-thumbnail-editor', afterTyping)
       ctx.log.warn('the title opened the thumbnail editor instead of reaching the field — leaving the editor and typing the title once more')
       await tapCentre(ctx, exitEditor)
-      const back = await waitForTree(ctx, (t) => hiddenWindow(t) === 'details', { budgetMs: 8_000 })
+      const back = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: 8_000 })
       if (back.ok) {
         await sleep(1_000)
         await ctx.device.tap({ point: titlePoint }, { via: 'adb' })
@@ -1418,7 +1457,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         afterTyping = await ctx.device.dump()
       }
     }
-    if (hiddenWindow(afterTyping) !== 'details') {
+    if (!onDetailsScreen(afterTyping)) {
       await capture(ctx, 'yt-09-not-details', afterTyping)
       fail(
         'E_DETAILS_LAYOUT',
@@ -1443,7 +1482,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       }
     }
 
-    const uploadPoint = geometry.upload
+    const uploadPoint = readable?.upload ? middleOf(readable.upload) : geometry.upload
     const beforeUpload = await ctx.device.screenshot()
     await ctx.device.tap({ point: uploadPoint }, { via: 'adb' })
     ctx.log.info('tapped Upload — confirming on the channel rather than trusting the tap')
@@ -1606,7 +1645,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       ctx.log.warn('YouTube is still uploading a video — leaving it open rather than force-stopping it')
       return undefined
     }
-    if (tree !== null && (hiddenWindow(tree) === 'details' || onThumbnailEditor(tree) || DETAILS_ERRORS.includes(ctx.error.code))) {
+    if (tree !== null && (onDetailsScreen(tree) || onThumbnailEditor(tree) || DETAILS_ERRORS.includes(ctx.error.code))) {
       // A force-stop on the details screen keeps the Short as a draft (0.31.0).
       await backOutWithoutDraft(ctx).catch((err: unknown) => ctx.log.warn('could not back out of the Shorts creation flow', { error: String(err) }))
     }

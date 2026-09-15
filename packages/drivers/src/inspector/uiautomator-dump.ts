@@ -62,7 +62,13 @@ export class UiautomatorDumpInspector implements Inspector {
       this.useTty = false
     }
     // Fallback: dump to a file, then cat it.
-    const path = '/sdcard/enkaku-dump.xml'
+    /*
+      A file of its own per dump. It was one fixed `/sdcard/enkaku-dump.xml`, and a phone usually has two sessions (the
+      wall's and Device Control's): when both read through this engine, one `rm -f` could delete the other's file between
+      its `uiautomator dump` and its `cat` — exactly "cat: /sdcard/enkaku-dump.xml: No such file or directory", which
+      ended five production YouTube runs on 2026-09-15.
+    */
+    const path = `/sdcard/enkaku-dump-${crypto.randomUUID().slice(0, 8)}.xml`
     /**
      * `uiautomator dump` prints its verdict and this used to ignore it, so a
      * failed dump was followed by `cat` on a file that was never written and
@@ -96,13 +102,16 @@ export class UiautomatorDumpInspector implements Inspector {
 
   async dump(): Promise<UiNode> {
     let lastError = ''
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt > 0) await Bun.sleep(500)
+    // Four tries, backing off 0.5 s, 1 s, 2 s: a screen still animating (YouTube's Shorts editor) needs longer than three
+    // flat half-second retries to go idle.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt > 0) await Bun.sleep(500 * 2 ** (attempt - 1))
       let raw: string
       try {
         raw = await this.rawDump()
       } catch (err) {
         lastError = String(err)
+        if (lastError.includes('could not get idle state')) this.onLog?.('debug', `uiautomator: could not get idle state — retry ${attempt + 1}/4`)
         continue
       }
       if (raw.includes('could not get idle state')) {

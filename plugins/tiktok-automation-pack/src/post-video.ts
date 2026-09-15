@@ -10,7 +10,7 @@ import { tiktokQueue, type TikTokQueueClaim } from './queue'
 import { readCaptionsFile, pickCaption } from './captions'
 import { resolveVideoFromFolder, recordVideoPosted } from './folder'
 import { TIKTOK_PACKAGE, PROFIL_TAB, MENU_PROFIL } from './sheet'
-import { dismissInterruptions } from './interruptions'
+import { dismissInterruptions, withheldBySystemDialog } from './interruptions'
 
 /**
  * Posts a video to TikTok — the member plan 113 exists to build (§1, §4.3). Pushes an uploaded
@@ -1045,7 +1045,29 @@ async function readOwnGrid(
  * `readOwnGrid` and `clearDrafts` (1.36.0).
  */
 async function openOwnProfile(ctx: ScriptContext<unknown>, frameWidth: number): Promise<UiNode | null> {
-  const profilNode = await waitForOnScreen(ctx, frameWidth, [descOf(PROFIL_TAB), 'Profile'], 10_000)
+  /*
+    A dialog over the feed hides the Profil tab itself (1.44.0): production SM-A075F phones (2026-09-15) stopped 19 times
+    under "Simpan info login", "Izinkan TikTok mengakses daftar teman Facebook", "Izinkan lokasi presisi", the viewer
+    history sheet, or a system dialog the reader cannot see — and the sheets were only ever closed AFTER the tab was
+    tapped. So known dialogs are refused first, and again (BACK for a hidden system dialog) while the tab is missing.
+  */
+  await dismissInterruptions(ctx)
+  let profilNode = await waitForOnScreen(ctx, frameWidth, [descOf(PROFIL_TAB), 'Profile'], 10_000)
+  for (let round = 0; round < 2 && !profilNode; round++) {
+    const tree = await ctx.device.dump().catch(() => null)
+    if (!tree) break
+    const { dismissed } = await dismissInterruptions(ctx, tree)
+    if (dismissed.length > 0) {
+      ctx.log.info('closed a TikTok dialog that hid the Profil tab', { dismissed: dismissed.join(', ') })
+    } else if (withheldBySystemDialog(tree)) {
+      ctx.log.warn('only System UI is readable over TikTok — a hidden system dialog; refusing it with BACK')
+      await ctx.device.key('BACK')
+      await sleep(1_500)
+    } else {
+      break
+    }
+    profilNode = await waitForOnScreen(ctx, frameWidth, [descOf(PROFIL_TAB), 'Profile'], 8_000)
+  }
   if (!profilNode) {
     await capture(ctx, 'profil-tab-missing')
     ctx.log.warn('the Profil tab is not on screen')

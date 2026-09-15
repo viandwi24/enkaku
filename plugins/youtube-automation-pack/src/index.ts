@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.36.0',
+  version: '0.37.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,18 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.37.0 — the details screen is recognised when it is readable.** Two
+   * production sessions (2026-09-15) failed 16 times "the details screen did
+   * not open after the editor". In 13 the screen was open and in plain view —
+   * "Tambahkan detail", the title area "Tambahkan teks pada video Shorts" and
+   * `upload_bottom_button` "Upload video Shorts" — but every check was written
+   * for the moto, where the screen is hidden from the reader. `onDetailsScreen`
+   * now accepts either, and on a readable screen the title area and Upload
+   * (or the toolbar's `upload_menu_button`) are tapped by their own bounds
+   * instead of the moto's measured offsets. In 2 more the Shorts editor was
+   * still up after "Berikutnya": while it and its button are still there, and
+   * YouTube is not processing, the button is tapped again, twice at most.
    *
    * **0.36.0 — three production failures after 0.35.0 (2026-09-15).** Phone
    * #10: YouTube kept coming up as a small Shorts player over the launcher, even

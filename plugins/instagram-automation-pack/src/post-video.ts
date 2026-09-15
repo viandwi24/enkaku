@@ -665,7 +665,27 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     screens.push('gallery')
 
     if (gallerySurface(opened.tree) === 'post') {
-      const reelTab = reelDestinationTab(opened.tree)
+      let reelTab = reelDestinationTab(opened.tree)
+      if (!reelTab) {
+        /*
+          The destination bar is tucked away (0.8.0). Production #22, #33, #59 (2026-09-15): "Postingan baru" was open, its
+          POSTINGAN / CERITA / REEL bar floating over the grid on one screenshot and missing on the others, and in every
+          dump the bar was `tab_bar` at zero width off the right edge — no `cam_dest_clips` at all. Instagram draws it
+          back after a moment or when the grid moves, so wait for it, then drag the grid down a little (a drag, never a
+          tap on a cell) and look again, before failing as before.
+        */
+        const waited = await waitForTree(ctx, (t) => reelDestinationTab(t) !== null, { budgetMs: 6_000 })
+        reelTab = reelDestinationTab(waited.tree)
+        if (!reelTab) {
+          const f = treeFrame(waited.tree)
+          ctx.log.info('the new-post gallery shows no REEL tab — moving the grid a little to bring its destination bar back')
+          await ctx.device.swipe({ x: Math.round(f.width / 2), y: Math.round(f.height * 0.62) }, { x: Math.round(f.width / 2), y: Math.round(f.height * 0.72) }, 450)
+          await sleep(800)
+          const nudged = await waitForTree(ctx, (t) => reelDestinationTab(t) !== null, { budgetMs: 6_000 })
+          reelTab = reelDestinationTab(nudged.tree)
+          opened = nudged
+        }
+      }
       if (!reelTab) {
         await capture(ctx, 'ig-04-new-post', opened.tree)
         fail('E_ANCHOR_NOT_FOUND', 'the new-post gallery has no REEL destination tab — see artifact ig-04-new-post.')
@@ -939,7 +959,27 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       await tapCentre(ctx, nux)
       after = await waitForTree(ctx, (t) => shareButton(t) === null, { budgetMs: 20_000 })
     }
-    if (!after.ok && shareButton(after.tree) !== null && shareNuxButton(after.tree) === null && rowsById(after.tree, 'layout_container_bottom_sheet').length === 0) {
+    const stillOnShare = (t: UiNode): boolean => shareButton(t) !== null && shareNuxButton(t) === null && rowsById(t, 'layout_container_bottom_sheet').length === 0
+    for (let retap = 0; retap < 2 && !after.ok && stillOnShare(after.tree); retap++) {
+      /*
+        A "Selanjutnya" Instagram did not act on (0.8.0). Production #21, #25, #27, #31, #65 (2026-09-15): the share screen
+        stayed, button in view, nothing over it, the caption field still holding its cursor — the first tap only took the
+        focus off the caption. While that screen is still up, nothing has been shared, so the button is tapped again.
+      */
+      const again = shareButton(after.tree)
+      if (!again || coveredByAnotherWindow(after.tree, again)) break
+      ctx.log.warn('still on the share screen after Share — tapping it again', { retap: retap + 1 })
+      await sleep(600 + Math.round(Math.random() * 600))
+      await tapCentre(ctx, again)
+      after = await waitForTree(ctx, leftShare, { budgetMs: 20_000 })
+      const lateNux = shareNuxButton(after.tree)
+      if (lateNux) {
+        await capture(ctx, 'ig-09-reels-sheet', after.tree)
+        await tapCentre(ctx, lateNux)
+        after = await waitForTree(ctx, (t) => shareButton(t) === null, { budgetMs: 20_000 })
+      }
+    }
+    if (!after.ok && stillOnShare(after.tree)) {
       await capture(ctx, 'ig-09-still-share', after.tree)
       fail('E_SHARE_TAP_NOT_TAKEN', 'Share was tapped but Instagram stayed on the share screen with nothing over it, so nothing was shared. See artifact ig-09-still-share.')
     }

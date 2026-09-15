@@ -30,6 +30,11 @@ export interface Interruption {
   what: string
   /** Words any one of which, in a node's text or description, identifies it. */
   identity: readonly string[]
+  /**
+   * The dialog's own REFUSAL, by exact label (1.44.0): tapped when on screen, before any close button or BACK. Only a
+   * refusal belongs here — never a label that grants, saves, continues or agrees.
+   */
+  refuse?: readonly string[]
 }
 
 export const TIKTOK_INTERRUPTIONS: readonly Interruption[] = [
@@ -48,7 +53,49 @@ export const TIKTOK_INTERRUPTIONS: readonly Interruption[] = [
     what: 'the "profile view history turned on" sheet',
     identity: ['Riwayat penonton diaktifkan', 'Profile view history is on', 'Profile view history turned on'],
   },
+  /*
+    Three more dialogs over the feed that hid the Profil tab (1.44.0), from production SM-A075F dumps (2026-09-15): of 19
+    runs that stopped with "the own profile could not be opened", 4 sat under "Simpan info login untuk lain waktu?", 4 under
+    "Izinkan TikTok mengakses daftar teman Facebook dan email Anda", and 1 under "Izinkan lokasi presisi" (6 more under
+    `tt.viewer-history`, 4 under a system dialog the reader cannot see — `withheldBySystemDialog`). English wording unverified.
+  */
+  {
+    // Buttons measured: "Simpan info login" [97,930][622,1019] and "Tidak sekarang" [97,1020][622,1109].
+    id: 'tt.save-login',
+    what: 'the "save login info" dialog',
+    identity: ['Simpan info login untuk lain waktu', 'Save login info for next time'],
+    refuse: ['Tidak sekarang', 'Not now'],
+  },
+  {
+    // Buttons measured: "Jangan izinkan" [97,946][359,1035] and "OK" [360,946][622,1035]. "OK" is never tapped.
+    id: 'tt.friends-access',
+    what: 'the "let TikTok access your friends list" dialog',
+    identity: ['Izinkan TikTok mengakses daftar teman Facebook', 'Izinkan TikTok mengakses daftar kontak', 'Allow TikTok to access your Facebook friends', 'Allow TikTok to access your contacts'],
+    refuse: ['Jangan izinkan', "Don't allow"],
+  },
+  {
+    // Buttons measured: "Izinkan" and "Buka pengaturan" — neither refuses, so it is closed with BACK.
+    id: 'tt.precise-location',
+    what: 'the "allow precise location" dialog',
+    identity: ['Izinkan lokasi presisi', 'Allow precise location'],
+  },
 ]
+
+/** A known dialog's refusal on screen — a visible, clickable node labelled exactly one of its `refuse` words. */
+export function refusalButton(tree: UiNode, interruption: Interruption): UiNode | null {
+  const labels = (interruption.refuse ?? []).map((l) => l.toLowerCase())
+  if (labels.length === 0) return null
+  return flatten(tree).filter(visible).find((n) => n.clickable && words(n).some((w) => labels.includes(w.toLowerCase()))) ?? null
+}
+
+/**
+ * Only System UI is readable (1.44.0): a system dialog Android hides from the reader is over TikTok — 4 production runs
+ * (2026-09-15) whose Profil tab "was not on screen" read nothing else. BACK refuses such a dialog.
+ */
+export function withheldBySystemDialog(tree: UiNode): boolean {
+  const nodes = flatten(tree)
+  return nodes.some((n) => n.packageName === 'com.android.systemui') && !nodes.some((n) => n.packageName !== '' && n.packageName !== 'com.android.systemui')
+}
 
 /** The labels a sheet's close control carries. Nothing that continues, agrees or submits. */
 export const CLOSE_LABELS = ['Tutup', 'Close'] as const
@@ -99,8 +146,12 @@ export async function dismissInterruptions(ctx: ScriptContext<unknown>, tree?: U
   for (let round = 0; round < (opts?.maxRounds ?? 3); round++) {
     const found = findInterruption(current)
     if (!found) return { tree: current, dismissed }
-    const close = closeNear(current, found.anchor)
-    if (close) {
+    const refusal = refusalButton(current, found.interruption)
+    const close = refusal ? null : closeNear(current, found.anchor)
+    if (refusal) {
+      await ctx.device.tap({ point: centerOf(refusal.bounds) })
+      ctx.log.info(`refused ${found.interruption.what} with "${(refusal.text || refusal.desc).trim()}"`, { interruption: found.interruption.id })
+    } else if (close) {
       await ctx.device.tap({ point: centerOf(close.bounds) })
       ctx.log.info(`closed ${found.interruption.what} with its close button`, { interruption: found.interruption.id })
     } else {

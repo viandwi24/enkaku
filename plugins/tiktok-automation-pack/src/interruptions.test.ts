@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import { UiNodeSchema, type UiNode } from '@enkaku/protocol'
-import { CLOSE_LABELS, closeNear, findInterruption } from './interruptions'
+import { CLOSE_LABELS, closeNear, findInterruption, refusalButton, withheldBySystemDialog } from './interruptions'
 
 /**
  * The "add phone number" sheet, as the owner's Inspector showed it on a production SM-A075F (2026-09-14), in both the
@@ -74,6 +74,64 @@ describe('the "Riwayat penonton diaktifkan" sheet over the profile', () => {
     const found = findInterruption(viewerSheet())
     expect(found?.interruption.id).toBe('tt.viewer-history')
     expect(closeNear(viewerSheet(), found!.anchor)).toBeNull()
+  })
+})
+
+describe('dialogs that hid the Profil tab on production (1.44.0)', () => {
+  // The nodes of production SM-A075F dumps (2026-09-15), bounds as measured.
+  const dialog = (title: string, body: string, buttons: Array<[string, number, number, number, number]>): UiNode =>
+    node({
+      className: 'hierarchy',
+      children: [
+        node({ className: 'android.widget.TextView', desc: 'Profil', bounds: { left: 576, top: 1470, right: 720, bottom: 1556 } }),
+        node({
+          className: 'android.widget.FrameLayout',
+          desc: 'Dialog',
+          bounds: { left: 97, top: 465, right: 622, bottom: 1109 },
+          children: [
+            node({ className: 'android.widget.TextView', text: title, bounds: { left: 135, top: 630, right: 584, bottom: 724 } }),
+            node({ className: 'android.widget.TextView', text: body, bounds: { left: 135, top: 747, right: 576, bottom: 891 } }),
+            ...buttons.map(([label, left, top, right, bottom]) => node({ className: 'android.widget.Button', text: label, clickable: true, bounds: { left, top, right, bottom } })),
+          ],
+        }),
+      ],
+    })
+
+  test('"Simpan info login" is refused with "Tidak sekarang", never saved', () => {
+    const tree = dialog('Simpan info login untuk lain waktu?', 'Masuk ke akun di perangkat ini tanpa perlu memasukkan info Anda.', [
+      ['Simpan info login', 97, 930, 622, 1019],
+      ['Tidak sekarang', 97, 1020, 622, 1109],
+    ])
+    const found = findInterruption(tree)
+    expect(found?.interruption.id).toBe('tt.save-login')
+    expect(refusalButton(tree, found!.interruption)?.text).toBe('Tidak sekarang')
+  })
+
+  test('the friends-list access dialog is refused with "Jangan izinkan", never "OK"', () => {
+    const tree = dialog('Izinkan TikTok mengakses daftar teman Facebook dan email Anda', 'Informasi', [
+      ['Jangan izinkan', 97, 946, 359, 1035],
+      ['OK', 360, 946, 622, 1035],
+    ])
+    const found = findInterruption(tree)
+    expect(found?.interruption.id).toBe('tt.friends-access')
+    expect(refusalButton(tree, found!.interruption)?.text).toBe('Jangan izinkan')
+  })
+
+  test('"Izinkan lokasi presisi" has no refusal to tap — it is closed with BACK, never "Izinkan"', () => {
+    const tree = dialog('Izinkan lokasi presisi', 'Kamu sebelumnya telah menonaktifkan lokasi presisi untuk akunmu.', [
+      ['Izinkan', 97, 946, 622, 1020],
+      ['Buka pengaturan', 97, 1021, 622, 1100],
+    ])
+    const found = findInterruption(tree)
+    expect(found?.interruption.id).toBe('tt.precise-location')
+    expect(refusalButton(tree, found!.interruption)).toBeNull()
+    expect(closeNear(tree, found!.anchor)).toBeNull()
+  })
+
+  test('a reading with only System UI is a hidden system dialog; one with TikTok or nothing is not', () => {
+    expect(withheldBySystemDialog(node({ packageName: '', children: [node({ packageName: 'com.android.systemui' })] }))).toBe(true)
+    expect(withheldBySystemDialog(node({ packageName: '', children: [node({ packageName: 'com.android.systemui' }), node({})] }))).toBe(false)
+    expect(withheldBySystemDialog(node({ packageName: '', children: [] }))).toBe(false)
   })
 })
 

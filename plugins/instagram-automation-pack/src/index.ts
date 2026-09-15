@@ -51,7 +51,7 @@ import postVideo from './post-video'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.7.1',
+  version: '0.8.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -60,6 +60,17 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.8.0 — Share is tapped again when it did not take, and a hidden REEL
+   * tab is brought back.** Two production sessions (2026-09-15): 5 runs failed
+   * "Share was tapped but Instagram stayed on the share screen" with
+   * "Selanjutnya" in view, nothing over it and the caption still holding its
+   * cursor — the tap only took the focus off the caption. While the share
+   * screen is still up (so nothing was shared), the button is tapped again,
+   * twice at most. 3 runs failed "the new-post gallery has no REEL destination
+   * tab": the POSTINGAN / CERITA / REEL bar was tucked away (`tab_bar` at zero
+   * width, off screen). The run now waits for it, then drags the grid down a
+   * little and looks again, before failing as before.
    *
    * **0.7.1 — the caption is typed only into a focused field.** The owner
    * watched production phone #20 (2026-09-15) on the share screen: the page

@@ -22,6 +22,8 @@ import {
   keyboardDismissPoint,
   keyboardShowing,
   onThumbnailEditor,
+  onDetailsScreen,
+  readableDetails,
   thumbnailEditorExit,
   premiumPage,
   processingOverlay,
@@ -235,6 +237,30 @@ describe('onThumbnailEditor — where a mis-aimed details tap lands', () => {
   only the ids and labels production runs #6 and #7 dumped (Samsung farm, 2026-09-15); their bounds are placeholders
   in the centre of a 720x1600 screen.
 */
+describe('the details screen drawn readable (0.37.0)', () => {
+  const rid = (short: string): string => `com.google.android.youtube:id/${short}`
+  const screen = (children: UiNode[]): UiNode => node({ bounds: { left: 0, top: 0, right: 720, bottom: 1600 }, children })
+  // Production SM-A075F #71 (2026-09-15): the whole screen readable, as its screenshot showed it.
+  const header = node({ text: 'Tambahkan detail', bounds: { left: 140, top: 110, right: 460, bottom: 170 } })
+  const titleArea = node({ desc: 'Tambahkan teks pada video Shorts', clickable: true, bounds: { left: 190, top: 190, right: 699, bottom: 258 } })
+  const upload = node({ resourceId: rid('upload_bottom_button'), text: 'Upload video Shorts', clickable: true, bounds: { left: 370, top: 1465, right: 699, bottom: 1535 } })
+
+  test('reads as the details screen, with its own title area and Upload button to aim at', () => {
+    const tree = screen([header, titleArea, upload])
+    expect(onDetailsScreen(tree)).toBe(true)
+    expect(readableDetails(tree)).toEqual({ upload, title: titleArea })
+    // The toolbar variant (#66): the header and `upload_menu_button`, no bottom button.
+    const toolbar = node({ resourceId: rid('upload_menu_button'), bounds: { left: 600, top: 100, right: 700, bottom: 180 } })
+    expect(readableDetails(screen([header, toolbar]))?.upload).toEqual(toolbar)
+  })
+
+  test('the hidden details screen still counts; the Shorts editor and another app\'s header do not', () => {
+    expect(onDetailsScreen(screen([node({ resourceId: rid('content'), bounds: { left: 0, top: 70, right: 720, bottom: 1556 } })]))).toBe(true)
+    expect(onDetailsScreen(screen([node({ resourceId: rid('shorts_post_bottom_button'), text: 'Berikutnya', clickable: true, bounds: { left: 500, top: 1450, right: 700, bottom: 1530 } })]))).toBe(false)
+    expect(readableDetails(screen([{ ...header, packageName: 'com.android.systemui' }]))).toBeNull()
+  })
+})
+
 describe('processingOverlay — YouTube still working on the trimmed video', () => {
   const rid = (short: string): string => `com.google.android.youtube:id/${short}`
   const overlay = [
