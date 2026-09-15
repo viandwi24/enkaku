@@ -15,6 +15,7 @@ import listAccounts from './list-accounts'
 import postVideo from './post-video'
 import enqueueVideo from './enqueue-video'
 import searchKeyword from './search-keyword'
+import clearDraftsScript from './clear-drafts'
 import keywordVideos from './keyword-videos'
 import liveBrowse from './live-browse'
 import shopBrowse from './shop-browse'
@@ -24,7 +25,7 @@ import notificationActivity from './notification-activity'
 describe('tiktok-automation-pack manifest', () => {
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('1.45.3')
+    expect(plugin.version).toBe('1.46.0')
     expect(plugin.version).toBe(pkg.version)
   })
 })
@@ -293,6 +294,7 @@ describe('every member is presentable (plan 108 P8)', () => {
     liveBrowse,
     shopBrowse,
     notificationActivity,
+    clearDraftsScript,
   ]
 
   test('the spelled-out list is exactly the plugin\'s own members', () => {

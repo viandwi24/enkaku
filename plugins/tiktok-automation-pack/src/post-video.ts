@@ -174,7 +174,7 @@ function measureSurface(root: UiNode): { width: number; height: number } | null 
  * half-parsed accessibility dump can. The dump measurement stays as the fallback for a farm whose
  * plugin has not been granted the capability.
  */
-async function measureFrame(ctx: ScriptContext<unknown>): Promise<{ width: number; height: number }> {
+export async function measureFrame(ctx: ScriptContext<unknown>): Promise<{ width: number; height: number }> {
   try {
     const device = await ctx.farm.call(
       'device.get',
@@ -974,7 +974,7 @@ export function feedNavOnScreen(tree: UiNode, frameWidth: number): boolean {
  * screen later. A dump that fails over an autoplaying feed (E3) is not a reason to stop: the run
  * continues and the next screen's own sweep looks again.
  */
-async function clearOverFeed(ctx: ScriptContext<unknown>, before: string): Promise<void> {
+export async function clearOverFeed(ctx: ScriptContext<unknown>, before: string): Promise<void> {
   try {
     const swept = await sweepModals(ctx, UPLOAD_MODAL_POLICIES)
     recordCleared(swept.cleared)
@@ -1240,7 +1240,7 @@ const DRAFTS_GONE_WAIT_MS = 10_000
 const DRAFTS_PROFILE_CHECK_MS = 6_000
 
 const DRAFTS_BY_HAND =
-  'Nothing was posted. On the phone, open TikTok → Profil → "Draf", tap "Pilih" → "Pilih semua" → "Hapus" to delete the drafts by hand (or turn off "Clear drafts first"), then re-run.'
+  'On the phone, open TikTok → Profil → "Draf", tap "Pilih" → "Pilih semua" → "Hapus" to delete the drafts by hand, or run the clear-drafts script again.'
 
 function nodeLabel(n: UiNode): string {
   return (n.text || n.desc).trim()
@@ -1405,12 +1405,28 @@ export interface DraftsCleared {
   dryRun: boolean
 }
 
-function draftsPhrase(count: number | null): string {
+export function draftsPhrase(count: number | null): string {
   return count === null ? 'the drafts (count unreadable)' : `${count} draft${count === 1 ? '' : 's'}`
 }
 
 /**
- * Deletes every TikTok draft on this account before anything is posted (1.36.0) — the owner's decision, and
+ * The drafts step after Post (1.46.0): `clearDrafts` for real, with its failure logged and returned as a note rather
+ * than thrown — the video is already posted, and a run that failed here would be retried into a duplicate post. What is
+ * left is cleared by the next run or by the `clear-drafts` script.
+ */
+async function clearDraftsAfterPost(ctx: ScriptContext<unknown>, frame: { width: number; height: number }): Promise<string> {
+  try {
+    const drafts = await clearDrafts(ctx, { frame, dryRun: false })
+    return drafts.found === 0 ? 'no drafts to delete' : `deleted ${draftsPhrase(drafts.removed)} after posting`
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    ctx.log.warn('the drafts could not be cleared after posting — the post stands; the next run or the clear-drafts script clears them', { error: message })
+    return `not cleared after posting (${message.slice(0, 140)})`
+  }
+}
+
+/**
+ * Deletes every TikTok draft on this account (1.36.0; after posting since 1.46.0, and the `clear-drafts` script) — the owner's decision, and
  * permanent. Own profile → "Draf: N" → the Drafts folder → "Pilih" → "Pilih semua" → "Hapus" → the
  * confirmation's own "Hapus" (never "Batalkan"/"Batal") → back on the profile with no drafts left, or the
  * folder reading 0.
@@ -1422,12 +1438,12 @@ function draftsPhrase(count: number | null): string {
  * screenshot, before anything is posted. A profile that shows no drafts entry at all is taken as no drafts —
  * what a profile with none shows is not measured, so that reading is logged as such.
  */
-async function clearDrafts(ctx: ScriptContext<unknown>, opts: { frame: { width: number; height: number }; dryRun: boolean }): Promise<DraftsCleared> {
+export async function clearDrafts(ctx: ScriptContext<unknown>, opts: { frame: { width: number; height: number }; dryRun: boolean }): Promise<DraftsCleared> {
   const { frame, dryRun } = opts
   const fail = async (label: string, why: string, tree?: UiNode | null, leave = true): Promise<never> => {
     await capture(ctx, `drafts-${label}`, tree)
     if (leave) await leaveDraftsFolder(ctx, frame)
-    throw Object.assign(new Error(`The account's TikTok drafts could not be cleared before posting: ${why} ${DRAFTS_BY_HAND}`), { code: 'E_DRAFTS_NOT_CLEARED' })
+    throw Object.assign(new Error(`The account's TikTok drafts could not be cleared: ${why} ${DRAFTS_BY_HAND}`), { code: 'E_DRAFTS_NOT_CLEARED' })
   }
 
   const menu = await openOwnProfile(ctx, frame.width)
@@ -1520,7 +1536,7 @@ async function clearDrafts(ctx: ScriptContext<unknown>, opts: { frame: { width: 
 
   // The screen's own buttons, so the confirmation is never mistaken for them.
   const exclude = [deleteButton.bounds, ...[controls.cancel, controls.selectAll].flatMap((n) => (n ? [n.bounds] : []))]
-  ctx.log.warn(`deleting ${drafts} from this account before posting — permanent, as the owner decided`)
+  ctx.log.warn(`deleting ${drafts} from this account — permanent, as the owner decided`)
   await ctx.device.tap({ point: centreOf(deleteButton) })
 
   const asked = await pollTree(ctx, DRAFTS_CONFIRM_WAIT_MS, (tree): UiNode | 'gone' | null =>
@@ -1570,7 +1586,7 @@ async function clearDrafts(ctx: ScriptContext<unknown>, opts: { frame: { width: 
     }
     ctx.log.warn('the Drafts folder read 0 drafts, but the own profile could not be read afterwards — carrying on, the folder is the evidence')
   }
-  ctx.log.info(`deleted ${drafts} from this account before posting`, { confirmed })
+  ctx.log.info(`deleted ${drafts} from this account`, { confirmed })
   return { found: count, removed: count, dryRun }
 }
 
@@ -2121,9 +2137,9 @@ const params = z.object({
     .boolean()
     .default(true)
     .describe(
-      'Before posting, delete ALL TikTok drafts on this account (Profil → Draf → Pilih semua → Hapus). Permanent: deleted drafts cannot be recovered. An unfinished post TikTok offers to resume is deleted with them. A dry run deletes nothing and reports how many it would delete.',
+      'After posting, delete ALL TikTok drafts on this account (Profil → Draf → Pilih semua → Hapus). Permanent. A failure here never fails the post. A dry run deletes nothing and reports how many there are.',
     )
-    .meta(ui({ title: 'Clear drafts first', group: 'Post' })),
+    .meta(ui({ title: 'Clear drafts after posting', group: 'Post' })),
 })
 
 /** §4.1, verbatim — `outcome` is the four-state enum §3.6 needs, never a boolean. */
@@ -2427,19 +2443,18 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       }
     }
 
-    // Every draft on the account is deleted before anything is posted (1.36.0, the owner's decision) — after the
-    // baseline, so the run is already on the profile. A dry run only counts them. `E_DRAFTS_NOT_CLEARED` stops the run here.
+    /*
+      Drafts are cleared AFTER posting (1.46.0, the owner's decision 2026-09-16), no longer before. Clearing first put a
+      profile visit and a folder walk in front of every post, and on production (2026-09-15) "the own profile could not be
+      opened" before posting failed ~39 runs that had not posted anything yet. A dry run posts nothing, so it still only
+      COUNTS the drafts here, proving the controls without leaving the post flow it is about to walk.
+    */
     let draftsNote = 'drafts were left alone (clearDrafts is off)'
-    if (ctx.params.clearDrafts) {
-      const drafts = await clearDrafts(ctx, { frame, dryRun: ctx.params.dryRun })
-      draftsNote =
-        drafts.found === 0
-          ? 'no drafts to delete'
-          : ctx.params.dryRun
-            ? `would delete ${draftsPhrase(drafts.found)}`
-            : `deleted ${draftsPhrase(drafts.removed)}`
-    } else {
+    if (!ctx.params.clearDrafts) {
       ctx.log.info('clearDrafts is off — leaving the account\'s drafts alone')
+    } else if (ctx.params.dryRun) {
+      const drafts = await clearDrafts(ctx, { frame, dryRun: true })
+      draftsNote = drafts.found === 0 ? 'no drafts to delete' : `would delete ${draftsPhrase(drafts.found)} after posting`
     }
 
     await clearOverFeed(ctx, 'tapping "+"')
@@ -2751,6 +2766,9 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       ctx.log.warn('could not record the post in the queue or folder memory — the outcome below still stands', { error: err instanceof Error ? err.message : String(err) })
     }
 
+    // After Post, never before it (1.46.0) — and never while a security check is up, which is left on screen for a person.
+    if (ctx.params.clearDrafts && !confirmation.securityCheck) draftsNote = await clearDraftsAfterPost(ctx, frame)
+
     return {
       outcome: confirmation.confirmed ? 'posted' : 'unverified',
       videoArtifactId: attempt.videoArtifactId,
@@ -2760,9 +2778,11 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       remotePath: attempt.remotePath,
       screens: attempt.screens,
       modalsHandled: attempt.modalsHandled,
-      reason: confirmation.confirmed
-        ? `the picker's duration check was a heuristic (sort order + a readable duration), not a measured match — see this file's own header comment`
-        : confirmation.detail,
+      reason: `${
+        confirmation.confirmed
+          ? `the picker's duration check was a heuristic (sort order + a readable duration), not a measured match — see this file's own header comment`
+          : confirmation.detail
+      } Drafts: ${draftsNote}.`,
     }
   },
 
