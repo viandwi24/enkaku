@@ -295,8 +295,16 @@ describe('describePlatform — where it ran and how it went', () => {
     expect(describePlatform(state({ state: 'unsupported', note: 'x' }))).toBe('Not supported in this build')
     expect(describePlatform(state({ state: 'dispatched', attempts: [attempt({ deviceId: 'd1' }), attempt({ deviceId: 'd2' })] }))).toBe('2 phones · all posted')
     expect(
-      describePlatform(state({ state: 'dispatched', attempts: [attempt({ deviceId: 'd1', state: 'queued' }), attempt({ deviceId: 'd2', state: 'queued' })] })),
+      describePlatform(state({ state: 'dispatched', attempts: [attempt({ deviceId: 'd1', state: 'queued', startedAt: 1 }), attempt({ deviceId: 'd2', state: 'queued', startedAt: 1 })] })),
     ).toBe('2 phones · running')
+  })
+
+  test('a job its phone has not started yet is "queued", not "running" (0.26.0)', () => {
+    expect(describePlatform(state({ state: 'dispatched', attempts: [attempt({ deviceId: 'd1', deviceName: '#12 SM-A065F', state: 'queued' })] }))).toBe('#12 SM-A065F · queued on the phone')
+    expect(describePlatform(state({ state: 'dispatched', attempts: [attempt({ deviceId: 'd1', deviceName: '#12 SM-A065F', state: 'queued', startedAt: 5 })] }))).toBe('#12 SM-A065F · running')
+    expect(
+      describePlatform(state({ state: 'dispatched', attempts: [attempt({ deviceId: 'd1', state: 'queued', startedAt: 5 }), attempt({ deviceId: 'd2', state: 'queued' })] })),
+    ).toBe('2 phones · 1 running, 1 queued')
   })
 
   test('a row written before attempts were recorded still says how many it went to', () => {

@@ -176,6 +176,8 @@ export const AttemptSchema = z.object({
   at: z.number().nullable().default(null),
   /** Unix seconds the job reached an outcome; `null` while it is queued or running, and on older rows. */
   settledAt: z.number().nullable().default(null),
+  /** Unix seconds its phone actually started the job (0.26.0); `null` while it waits behind another job, and on older rows. */
+  startedAt: z.number().nullable().default(null),
   /** 1 = the first send on this platform, 2 = the first retry, … Older rows are all first sends. */
   round: z.number().default(1),
   /**

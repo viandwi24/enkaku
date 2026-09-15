@@ -73,6 +73,16 @@ import {
  *
  * ## Changelog
  *
+ * - **0.26.0 — "Queued on phone" is not "Running", and a retry goes one at a time.**
+ *   The owner (2026-09-15): after Retry failed, one phone showed TikTok,
+ *   YouTube and Instagram all "Running" — it looked like three scripts driving
+ *   one phone. The farm ran them one after another; the other two were queued.
+ *   A cell now says "Queued on phone" until the phone actually starts its job
+ *   (the router records `startedAt` the first time `job.get` reads `running`),
+ *   and "for …" counts from that start. Retry failed on a session row now hands
+ *   its failed platforms back to the router as waiting, so they are sent one
+ *   at a time as the phone frees up, like the first send.
+ *
  * - **0.25.0 — one Social job per phone at a time.** The owner (2026-09-15):
  *   one phone showed TikTok, YouTube and Instagram all "Running" together.
  *   The router sent every platform of a row in the same tick, so the farm
@@ -557,7 +567,7 @@ function fleetNames(fleet: z.infer<typeof DeviceListOutput>): Map<string, string
 
 const JobRunOutput = z.object({ jobId: z.string() })
 /** Only the fields the reconciler reads. Validated at this boundary because the farm's own shape may move under a published plugin. */
-const JobGetOutput = z.object({ status: z.string(), error: z.string().nullable().optional(), result: z.unknown().optional() })
+const JobGetOutput = z.object({ status: z.string(), error: z.string().nullable().optional(), result: z.unknown().optional(), startedAt: z.number().nullable().optional() })
 
 /*
   Settling a finished job into an attempt state is `posts.ts`'s `settleJob` — pure, with the whole
@@ -599,6 +609,13 @@ async function reconcilePost(ctx: PluginServiceContext, post: Post): Promise<Pos
         const job = await ctx.farm.call('job.get', { jobId: attempt.jobId }, JobGetOutput)
         const next = settleJob(job)
         if (!next) {
+          // Still in flight. The first tick that sees the phone actually RUNNING it records when
+          // (0.26.0), so the page can tell "running" from "queued behind another job on this phone".
+          if (job.status === 'running' && attempt.startedAt == null) {
+            settled.push({ ...attempt, startedAt: typeof job.startedAt === 'number' ? job.startedAt : Math.floor(Date.now() / 1000) })
+            moved = true
+            continue
+          }
           settled.push(attempt)
           continue
         }
@@ -1071,7 +1088,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.25.0',
+  version: '0.26.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

@@ -2024,7 +2024,16 @@ function PlatformCell({
   const failedNow = attempts.filter((a) => a.state === 'failed')
   // "Not confirmed" is its own word on the pill when that is all that is wrong: nothing failed, and at
   // least one phone could not be confirmed. "Needs a look" stays for a real mix and for unsupported.
-  const info = unconfirmed.length > 0 && failedNow.length === 0 ? { ...bucketInfo('look'), word: 'Not confirmed', meaning: UNVERIFIED_MEANING } : bucketInfo(bucket)
+  // "Queued on phone" (0.26.0) while the phone has not started any of this cell's jobs yet: it is busy
+  // with another job, and the farm runs one job per phone at a time. "Running" only once it started.
+  const inFlight = attempts.filter((a) => a.state === 'queued')
+  const queuedOnly = bucket === 'running' && inFlight.length > 0 && inFlight.every((a) => a.startedAt == null)
+  const info =
+    unconfirmed.length > 0 && failedNow.length === 0
+      ? { ...bucketInfo('look'), word: 'Not confirmed', meaning: UNVERIFIED_MEANING }
+      : queuedOnly
+        ? { ...bucketInfo('running'), word: 'Queued on phone', meaning: 'Sent to its phone, which is finishing another job first. The farm runs one job per phone at a time.' }
+        : bucketInfo(bucket)
   const history = state?.history ?? []
   const round = roundOf(state)
   const nowSec = Math.floor(now / 1000)
@@ -2038,9 +2047,11 @@ function PlatformCell({
   let when: string | null = null
   let whenTitle: string | undefined
   if (bucket === 'running') {
-    const starts = attempts.filter((a) => a.state === 'queued' && a.at !== null).map((a) => a.at!)
-    const since = starts.length > 0 ? Math.min(...starts) : (state?.at ?? null)
-    when = since === null ? 'running' : `for ${span(nowSec - since)}`
+    const started = inFlight.map((a) => a.startedAt).filter((s): s is number => typeof s === 'number')
+    const sent = inFlight.filter((a) => a.at !== null).map((a) => a.at!)
+    const sentAt = sent.length > 0 ? Math.min(...sent) : (state?.at ?? null)
+    if (started.length > 0) when = `for ${span(nowSec - Math.min(...started))}`
+    else when = sentAt === null ? 'waiting for its phone' : `waiting ${span(nowSec - sentAt)} for its phone`
   } else if (bucket === 'waiting') {
     if (post.notBeforeAt === null) when = 'session not started'
     else if (post.notBeforeAt > nowSec + 4) when = `turn ${fromNow(post.notBeforeAt, now)}`

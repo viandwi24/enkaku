@@ -222,6 +222,13 @@ export const AttemptSchema = z
     at: z.number().int().nonnegative().nullable().default(null),
     /** Unix seconds the job reached an outcome; `null` while it is queued or running. */
     settledAt: z.number().int().nonnegative().nullable().default(null),
+    /**
+     * Unix seconds the phone actually STARTED the job (0.26.0); absent while it waits in the farm's
+     * queue behind another job on the same phone. A `queued` attempt covers both, and the page used to
+     * call both "Running" — three platforms on one phone read as three scripts driving it at once,
+     * while the farm ran them one after another (owner, 2026-09-15).
+     */
+    startedAt: z.number().int().nonnegative().nullable().optional(),
     /** 1 for the first send on this platform, 2 for the first retry, and so on. */
     round: z.number().int().positive().default(1),
   })
@@ -343,22 +350,30 @@ export function describePlatform(state: PlatformState): string {
   }
 
   const first = attempts[0]
-  if (attempts.length === 1 && first) return `${attemptPhone(first)} · ${ATTEMPT_WORDS[first.state]}`
+  if (attempts.length === 1 && first) return `${attemptPhone(first)} · ${attemptWord(first)}`
 
   const count = (s: AttemptState) => attempts.filter((a) => a.state === s).length
-  const running = count('queued')
+  const inFlight = count('queued')
+  const running = attempts.filter((a) => a.state === 'queued' && a.startedAt != null).length
   const ok = count('success')
   const bad = count('failed')
   const unsure = count('unverified')
   const phones = `${attempts.length} phones`
-  if (running === attempts.length) return `${phones} · running`
+  if (inFlight === attempts.length) return running === inFlight ? `${phones} · running` : running === 0 ? `${phones} · queued on the phones` : `${phones} · ${running} running, ${inFlight - running} queued`
   if (ok === attempts.length) return `${phones} · all posted`
   const parts: string[] = []
   if (ok > 0) parts.push(`${ok} posted`)
   if (bad > 0) parts.push(`${bad} failed`)
   if (unsure > 0) parts.push(`${unsure} not confirmed`)
   if (running > 0) parts.push(`${running} running`)
+  if (inFlight - running > 0) parts.push(`${inFlight - running} queued`)
   return `${phones} · ${parts.join(', ')}`
+}
+
+/** One attempt's word: a queued attempt is "running" only once its phone has started it (0.26.0). */
+export function attemptWord(attempt: Attempt): string {
+  if (attempt.state === 'queued') return attempt.startedAt != null ? 'running' : 'queued on the phone'
+  return ATTEMPT_WORDS[attempt.state]
 }
 
 /**

@@ -137,6 +137,18 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         skipped.push(`${platformId}: this video has no caption or hashtags yet — write one before retrying`)
         continue
       }
+      /*
+        One job per phone at a time (0.26.0). A session row's phone is the only phone it may use, so
+        its failed platforms are handed back to the router as waiting, and the router sends them one
+        after another as the phone frees up — the same as the first send (0.25.0). Enqueuing all of
+        them here put three jobs on one phone at once, which the table called three "Running".
+      */
+      if (sessionRow) {
+        dispatch[platformId] = withSummary({ ...state, attempts: kept, history: withRetired(state.history, retired), state: rollUp(kept), deviceCount: kept.length, note: null })
+        platforms.push(platformId)
+        requeued += failed.length
+        continue
+      }
       for (const deviceId of failed) {
         try {
           const job = await ctx.farm.call(
