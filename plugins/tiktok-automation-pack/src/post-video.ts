@@ -1800,13 +1800,40 @@ export function captionPieces(caption: string, max: number = CAPTION_PIECE_CODE_
   return pieces
 }
 
+/**
+ * How a person types a caption (1.46.0). The owner, watching production (2026-09-16): captions went in "like a robot, or
+ * like copy and paste" — slower is fine, and the pauses should vary, at spaces too. The SDK's `human` typing gives a
+ * slower per-character cadence, a longer beat at the end of each word, a "thinking" pause every few words and the odd
+ * corrected typo. Typos stay rare and are off inside a `#tag`/`@name` piece, where a backspace can land in TikTok's
+ * suggestion list. On the guest agent's IME rung only the cadence applies (it commits a piece whole), which is why the
+ * pieces are short and the pause between them is the run's own.
+ */
+export const HUMAN_CAPTION_TYPING = {
+  perCharMs: [85, 240] as [number, number],
+  extraPerWordMs: [120, 450] as [number, number],
+  thinkingPause: { probability: 0.25, everyWords: 4, ms: [600, 2_200] as [number, number] },
+  typo: { probability: 0.04, noticeAfterChars: [0, 2] as [number, number] },
+  maxTotalMs: 180_000,
+}
+/** A piece of a human-typed caption: a few words, so an IME rung that commits whole pieces still pauses between them. */
+export const HUMAN_CAPTION_PIECE_CODE_POINTS = 24
+
+/** The pause between two pieces: mostly a word's beat, now and then a longer look at what was written. */
+export function pauseBetweenPieces(rng: () => number = Math.random): number {
+  return rng() < 0.2 ? 1_000 + Math.round(rng() * 1_800) : 220 + Math.round(rng() * 680)
+}
+
 /** Types the caption in pieces (`captionPieces`), then one space when it ends in `#tag`/`@name` — see the comment at the call site. Returns the typing rung that ran. */
 async function typeCaption(ctx: ScriptContext<unknown>, caption: string): Promise<string> {
   // The field is read back once, after the last piece, by `enterCaption` — as before.
-  const pieces = caption === '' ? [caption] : captionPieces(caption)
+  const pieces = caption === '' ? [caption] : captionPieces(caption, HUMAN_CAPTION_PIECE_CODE_POINTS)
   let via = ''
-  for (const piece of pieces) via = (await ctx.device.type(piece)).via
-  if (pieces.length > 1) ctx.log.info('typed the caption in pieces', { pieces: pieces.length, codePoints: [...caption].length })
+  for (const [i, piece] of pieces.entries()) {
+    if (i > 0) await sleep(pauseBetweenPieces())
+    const tagged = /[#@]/.test(piece)
+    via = (await ctx.device.type(piece, { human: tagged ? { ...HUMAN_CAPTION_TYPING, typo: { probability: 0 } } : HUMAN_CAPTION_TYPING })).via
+  }
+  if (pieces.length > 1) ctx.log.info('typed the caption in pieces, at a person\'s pace', { pieces: pieces.length, codePoints: [...caption].length })
   if (endsInTagToken(caption)) {
     // A caption ending in `#tag` or `@name` leaves TikTok's suggestion list open, and that list
     // REPLACES the post screen — no Post button anywhere in the tree (observed 2026-09-11 with

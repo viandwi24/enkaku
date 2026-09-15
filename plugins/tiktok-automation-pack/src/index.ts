@@ -872,6 +872,10 @@ export default definePlugin({
   //   because a retried run would post the video twice — while a dry run still only counts them up front. The new
   //   `clear-drafts` member runs the same `clearDrafts` on its own, for the Social Media Manager's "Clear drafts" menu.
   //   The param is now titled "Clear drafts after posting".
+  //   And the caption is typed at a person's pace (the owner, 2026-09-16: "like a robot, or like copy and paste"): pieces
+  //   of a few words through the SDK's `human` typing — a slower cadence, a longer beat at each word's end, a thinking
+  //   pause every few words, the odd corrected typo (none inside a #tag/@name piece) — with the run's own varied pause
+  //   between pieces, which is what still paces the guest agent's IME rung.
   // 1.45.3 — the camera's gallery button is found beside the capture-mode strip when its id is gone. The English
   //   production camera (Samsung, 2026-09-15) carried no `upload_hot_area`; 1.45.2 recognised the camera but stopped at
   //   its gallery button. Measured on the owner's moto g06 with TikTok 46.6.3 switched to English
