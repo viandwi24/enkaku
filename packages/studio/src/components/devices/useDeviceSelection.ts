@@ -35,6 +35,33 @@ export const CLICK_DEFER_MS = 200
 /** "A 5px threshold distinguishes a drag from a click." */
 export const DRAG_THRESHOLD_PX = 5
 
+/**
+ * Controls that own their own mousedown. A press on one of these is never a
+ * row/card click and never the start of a marquee: the table's checkboxes,
+ * a card's agent chip, any link or field. Without this, a press on the
+ * header's select-all checkbox started a marquee that cleared the selection
+ * on mouseup, a moment before the checkbox's own click re-applied it.
+ */
+const INTERACTIVE_SELECTOR =
+  'button, a[href], input, textarea, select, label, [role="checkbox"], [role="button"], [role="menuitem"], [contenteditable=""], [contenteditable="true"], [data-no-marquee]'
+
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(INTERACTIVE_SELECTOR) !== null
+}
+
+/**
+ * Whether a press landed on the scroller's own scrollbar. The scrollbar is
+ * part of the element, so `e.target` is the scroller itself and nothing else
+ * can tell a scrollbar drag from a marquee — which would select every row the
+ * pointer swept past while the operator was only scrolling.
+ */
+function onScrollbar(e: React.MouseEvent): boolean {
+  const el = e.currentTarget
+  if (!(el instanceof HTMLElement) || e.target !== el) return false
+  const r = el.getBoundingClientRect()
+  return e.clientX >= r.left + el.clientLeft + el.clientWidth || e.clientY >= r.top + el.clientTop + el.clientHeight
+}
+
 export interface DeviceSelection {
   selected: ReadonlySet<string>
   /** Replaces the whole set. */
@@ -46,7 +73,11 @@ export interface DeviceSelection {
   onItemMouseDown: (id: string, e: React.MouseEvent) => void
   /** Row/card `onDoubleClick`: cancels a pending collapse and calls `onOpenControl` with the selection as it stands. */
   onItemDoubleClick: (id: string) => void
-  /** The scroller's `onMouseDown`: starts a marquee when the target is not inside a `[data-device-id]`. */
+  /**
+   * The scroller's `onMouseDown` — the table's and the Screens grid's alike:
+   * starts a marquee when the target is not inside a `[data-device-id]`, not
+   * an interactive control, and not the scroller's own scrollbar.
+   */
   onMarqueeMouseDown: (e: React.MouseEvent) => void
   /** The overlay rectangle, or null. */
   rect: { left: number; top: number; width: number; height: number } | null
@@ -211,7 +242,7 @@ export function useDeviceSelection(opts: {
 
   const onItemMouseDown = useCallback(
     (id: string, e: React.MouseEvent) => {
-      if (e.button !== 0) return
+      if (e.button !== 0 || isInteractiveTarget(e.target)) return
       clearPending()
       const additive = e.shiftKey || e.metaKey || e.ctrlKey
       const x = e.clientX
@@ -289,6 +320,7 @@ export function useDeviceSelection(opts: {
     (e: React.MouseEvent) => {
       const target = e.target
       if (target instanceof Element && target.closest('[data-device-id]')) return
+      if (isInteractiveTarget(target) || onScrollbar(e)) return
       startDrag(e)
     },
     [startDrag],

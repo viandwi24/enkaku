@@ -24,6 +24,10 @@ import { z } from 'zod'
  * schema default rather than throwing into a render).
  */
 
+/** The Screens card-width slider's bounds, in px. Shared with the slider itself, so a stored value is always one it can show. */
+export const CARD_WIDTH_MIN_PX = 96
+export const CARD_WIDTH_MAX_PX = 400
+
 const SESSION_STORAGE_KEY = 'enkaku:session-prefs'
 const LOCAL_STORAGE_KEY = 'enkaku:local-prefs'
 
@@ -72,6 +76,15 @@ const LocalPrefsSchema = z.object({
    * `latencyOverlay` above.
    */
   cardWidth: z.enum(['s', 'm', 'l', 'xl']).default('m'),
+  /**
+   * The Screens view's exact card width in px, set by the View menu's slider
+   * (owner, 2026-09-15). Absent until the operator first moves the slider or
+   * picks a preset, in which case `cardWidth` above still decides — so a
+   * browser that saved only a preset keeps it. Out of range or corrupt reads
+   * as absent (`.catch`) rather than failing the whole object, which would
+   * also throw away `latencyOverlay` and `deviceControlHeight`.
+   */
+  cardWidthPx: z.number().int().min(CARD_WIDTH_MIN_PX).max(CARD_WIDTH_MAX_PX).optional().catch(undefined),
   /**
    * Device Control's dragged height, in px. The width is derived from it and
    * the live aspect ratio (`device-control/geometry.ts`), so one number is the

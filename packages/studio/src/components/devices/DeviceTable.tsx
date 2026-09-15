@@ -35,6 +35,7 @@ export function DeviceTable({
   selected,
   onItemMouseDown,
   onItemDoubleClick,
+  onMarqueeMouseDown,
   onItemContextMenu,
   onToggle,
   onSelectAll,
@@ -44,6 +45,13 @@ export function DeviceTable({
   selected: ReadonlySet<string>
   onItemMouseDown: (id: string, e: React.MouseEvent) => void
   onItemDoubleClick: (id: string) => void
+  /**
+   * The scroller's mousedown — the same marquee the Screens grid draws, from
+   * the same hook, into the same selection. A drag that starts on a row
+   * still promotes to a marquee through `onItemMouseDown`; this one covers
+   * the header and the empty space below the last row.
+   */
+  onMarqueeMouseDown: (e: React.MouseEvent) => void
   /** Right-click on a row: opens the device context menu at the cursor. */
   onItemContextMenu: (id: string, e: React.MouseEvent) => void
   /** The checkbox's own direct toggle — immediate, not the deferred row click. */
@@ -54,7 +62,7 @@ export function DeviceTable({
   const allSelected = devices.length > 0 && devices.every((d) => selected.has(d.id))
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto">
+    <div className="min-h-0 flex-1 select-none overflow-auto" onMouseDown={onMarqueeMouseDown}>
       <div role="table" className="min-w-[1460px]">
         <div role="row" className={cn(COLS, 'sticky top-0 z-10 h-[38px] border-b border-line bg-panel-2')}>
           <div className="flex items-center justify-center">

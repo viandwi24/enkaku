@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react'
 import { AdbStatsResponseSchema, type DeviceInfo } from '@enkaku/protocol'
 import { api } from '@enkaku/ui'
-import { CARD_WIDTH_PX, type CardWidth } from './DevicesToolbar'
 import { DeviceScreenCard } from './DeviceScreenCard'
 import { useLiveSet } from './useLiveSet'
 import type { DeviceSelection } from './useDeviceSelection'
@@ -32,7 +31,8 @@ export function ScreensGrid({
   onItemContextMenu,
 }: {
   devices: DeviceInfo[]
-  cardWidth: CardWidth
+  /** The card width in px — a preset or the View menu's slider. */
+  cardWidth: number
   selection: DeviceSelection
   /** Right-click on a card: the same device context menu the table rows open. */
   onItemContextMenu: (id: string, e: React.MouseEvent) => void
@@ -58,7 +58,11 @@ export function ScreensGrid({
     <div className="min-h-0 flex-1 select-none overflow-auto p-[14px]" onMouseDown={selection.onMarqueeMouseDown}>
       <div
         className="grid gap-3"
-        style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${CARD_WIDTH_PX[cardWidth]}px, 1fr))` }}
+        // Exactly `cardWidth` per column, not `minmax(w, 1fr)`: the slider
+        // promises a precise width, and a stretched track would render a card
+        // up to twice what it reads. `min(…, 100%)` keeps one card inside a
+        // phone-width scroller instead of overflowing it sideways.
+        style={{ gridTemplateColumns: `repeat(auto-fill, min(${cardWidth}px, 100%))` }}
       >
         {devices.map((device) => (
           <DeviceScreenCard

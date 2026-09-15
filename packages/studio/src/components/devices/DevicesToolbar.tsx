@@ -21,6 +21,7 @@ import {
   matchesDeviceQuery,
 } from '@enkaku/ui'
 import { useOverlay } from '@/lib/overlays'
+import { CARD_WIDTH_MAX_PX, CARD_WIDTH_MIN_PX } from '@/lib/prefs'
 import { LabelManager } from '@/components/labels/LabelManager'
 import type { LabelsState } from '@/lib/labels'
 import { GroupTabs } from './GroupTabs'
@@ -92,8 +93,9 @@ export function DevicesToolbar({
   onGroupsMutated: () => void
   view: DevicesView
   onViewChange: (v: DevicesView) => void
-  cardWidth: CardWidth
-  onCardWidthChange: (w: CardWidth) => void
+  /** The Screens card width in px. The presets are shortcuts onto the same number the slider sets. */
+  cardWidth: number
+  onCardWidthChange: (px: number) => void
   filter: DevicesFilter
   onFilterChange: (f: DevicesFilter) => void
   /** Every label in the farm, plus the reload the manager needs after a mutation (plan 225 §4.7). */
@@ -333,23 +335,34 @@ export function DevicesToolbar({
               <div className="mt-1 border-t border-line px-[10px] py-2">
                 <div className="flex items-center justify-between text-meta text-faint">
                   <span>Card width</span>
-                  <span className="font-mono">{CARD_WIDTH_PX[cardWidth]}</span>
+                  <span className="font-mono">{cardWidth}px</span>
                 </div>
                 <div className="mt-1.5 flex gap-1">
                   {(Object.keys(CARD_WIDTH_PX) as CardWidth[]).map((w) => (
                     <button
                       key={w}
                       type="button"
-                      onClick={() => onCardWidthChange(w)}
+                      onClick={() => onCardWidthChange(CARD_WIDTH_PX[w])}
                       className={cn(
                         'flex-1 rounded-button py-1 text-label uppercase transition-colors',
-                        w === cardWidth ? 'bg-accent-soft text-accent' : 'bg-muted text-faint hover:text-text',
+                        CARD_WIDTH_PX[w] === cardWidth ? 'bg-accent-soft text-accent' : 'bg-muted text-faint hover:text-text',
                       )}
                     >
                       {w}
                     </button>
                   ))}
                 </div>
+                <input
+                  type="range"
+                  min={CARD_WIDTH_MIN_PX}
+                  max={CARD_WIDTH_MAX_PX}
+                  step={1}
+                  value={cardWidth}
+                  onChange={(e) => onCardWidthChange(Number(e.target.value))}
+                  className="mt-2.5 h-1.5 w-full cursor-pointer accent-accent"
+                  aria-label="Card width"
+                  aria-valuetext={`${cardWidth} pixels`}
+                />
               </div>
             )}
           </div>

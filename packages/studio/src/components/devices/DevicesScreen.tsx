@@ -15,7 +15,7 @@ import { DeviceTable } from './DeviceTable'
 import { DiscoverySheet } from './DiscoverySheet'
 import { OtgSwitchDialog } from './OtgSwitchDialog'
 import { ScanNetworkDialog } from './ScanNetworkDialog'
-import { DevicesToolbar, matchesDevice, type CardWidth, type DevicesFilter, type DevicesView } from './DevicesToolbar'
+import { CARD_WIDTH_PX, DevicesToolbar, matchesDevice, type DevicesFilter, type DevicesView } from './DevicesToolbar'
 import { isDeviceState, reconnectingAttempt } from './device-state'
 import { ScreensGrid } from './ScreensGrid'
 import { taskLabelOf } from './TaskCell'
@@ -41,7 +41,12 @@ export function DevicesScreen() {
 
   const [activeGroup, setActiveGroup] = useState(params.get('group') ?? 'all')
   const [view, setView] = useState<DevicesView>(() => (params.get('view') as DevicesView) || readSessionPrefs().devicesView || 'table')
-  const [cardWidth, setCardWidth] = useState<CardWidth>(() => readLocalPrefs().cardWidth)
+  // The exact px the slider last set, or — for a browser that only ever saved
+  // a preset — that preset's px.
+  const [cardWidth, setCardWidth] = useState<number>(() => {
+    const prefs = readLocalPrefs()
+    return prefs.cardWidthPx ?? CARD_WIDTH_PX[prefs.cardWidth]
+  })
   const [filter, setFilter] = useState<DevicesFilter>('all')
   /**
    * The label filter, AND across ids: a device must carry EVERY selected
@@ -122,9 +127,9 @@ export function DevicesScreen() {
     else deviceControl.close()
   }
 
-  const setCardWidthAndPersist = (w: CardWidth) => {
-    setCardWidth(w)
-    writeLocalPrefs({ cardWidth: w })
+  const setCardWidthAndPersist = (px: number) => {
+    setCardWidth(px)
+    writeLocalPrefs({ cardWidthPx: px })
   }
 
   const groupScoped = useMemo(
@@ -285,6 +290,7 @@ export function DevicesScreen() {
           selected={selection.selected}
           onItemMouseDown={selection.onItemMouseDown}
           onItemDoubleClick={selection.onItemDoubleClick}
+          onMarqueeMouseDown={selection.onMarqueeMouseDown}
           onItemContextMenu={openContextMenu}
           onToggle={selection.toggle}
           onSelectAll={(checked) => (checked ? selection.set(filteredIds) : selection.clear())}
