@@ -177,6 +177,11 @@ const CONFIRM_MIN_MS = 3 * 60_000
 export const CONFIRM_PLAN: ConfirmPlan = { waitMs: [8_000, 16_000], homeChance: 0.35, pullAfterHome: 1 }
 /** How long YouTube's "Memproses" overlay after the trim screen's "Selesai" is waited out for the editor (0.35.0). */
 const TRIM_PROCESSING_MS = 3 * 60_000
+/**
+ * How long the details screen gets to open and to finish loading (0.38.2). It was 30 s to open and 45 s to load; the owner
+ * (2026-09-15) asked for up to 2 min 30 s, because a slow phone still processing a Short is not a failed post.
+ */
+const DETAILS_LOAD_MS = 150_000
 
 /**
  * How long the title tap gets before the text is typed.
@@ -1122,7 +1127,9 @@ const script: PluginMemberScript<typeof params, typeof result> = {
   description: 'Uploads one video from Files as a YouTube Short with the caption as its title, then confirms it on the channel page.',
   params,
   result,
-  timeout: 10 * 60_000,
+  // 15 minutes (0.38.2): processing (up to 3 min), the details screen (up to 2 min 30 s to open and again to load) and the
+  // confirmation (up to 5 min) no longer fit the 10 minutes this was.
+  timeout: 15 * 60_000,
 
   async prepare(ctx) {
     await relaunch(ctx)
@@ -1376,6 +1383,11 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       await tapCentre(ctx, again)
       details = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: 20_000 })
     }
+    if (!details.ok && rowsById(details.tree, 'shorts_post_bottom_button').length === 0) {
+      // "Berikutnya" was taken and YouTube is still getting the details screen ready (0.38.2): wait for it, up to DETAILS_LOAD_MS.
+      ctx.log.info(`the Shorts editor is gone but the details screen is not up yet — waiting up to ${DETAILS_LOAD_MS / 1000}s for it`)
+      details = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: DETAILS_LOAD_MS })
+    }
     if (!details.ok) {
       // The tree too, not only a screenshot (0.35.0): production phone #2 (2026-09-15) showed the details screen
       // plainly on its screenshot while this wait failed, and with no dump the cause could not be read.
@@ -1383,11 +1395,11 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       fail('E_ANCHOR_NOT_FOUND', 'the details screen did not open after the editor — see artifact yt-08-details.')
     }
     // It opens as a header over a spinner; aim nothing until it has finished drawing.
-    const still = await waitForStillScreen(ctx, 45_000)
+    const still = await waitForStillScreen(ctx, DETAILS_LOAD_MS)
     await ctx.artifact.screenshot('yt-08-details')
     // A READABLE details screen with its Upload button drawn has finished loading (0.38.1): on production (2026-09-15, 3 runs)
     // its thumbnail preview kept playing, so the screen was never pixel-still and the run failed with the screen ready.
-    if (!still.still && !readableDetails(await ctx.device.dump())?.upload) fail('E_DETAILS_NOT_READY', 'the details screen never stopped loading within 45s, so no tap was aimed at it — nothing was uploaded. See artifact yt-08-details.')
+    if (!still.still && !readableDetails(await ctx.device.dump())?.upload) fail('E_DETAILS_NOT_READY', `the details screen never stopped loading within ${DETAILS_LOAD_MS / 1000}s, so no tap was aimed at it — nothing was uploaded. See artifact yt-08-details.`)
     const settled = await ctx.device.dump()
     if (!onDetailsScreen(settled)) fail('E_ANCHOR_NOT_FOUND', 'the details screen closed while it loaded — nothing was uploaded. See artifact yt-08-details.')
     /*

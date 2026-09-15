@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.38.1',
+  version: '0.38.2',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,14 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.38.2 — the details screen gets up to 2 min 30 s.** The owner
+   * (2026-09-15): a slow phone still preparing a Short should be waited for,
+   * not failed. The details screen now gets up to 150 s to open once the
+   * Shorts editor is gone (it was 30 s, plus the retaps of "Berikutnya") and up
+   * to 150 s to finish loading (it was 45 s). The job's time limit is 15
+   * minutes (it was 10) so processing, the details screen and the confirmation
+   * all still fit.
    *
    * **0.38.1 — two corrections to 0.37.0's readable details screen.**
    * Production session g-1789475048-2bac (2026-09-15, 0.38.0): 2 runs typed the
