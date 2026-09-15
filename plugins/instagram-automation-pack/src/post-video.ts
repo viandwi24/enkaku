@@ -165,15 +165,22 @@ export function homeCreateButton(tree: UiNode): UiNode | null {
 
 /** Which create gallery is on screen: the Reel gallery, the "new post" gallery, or neither. */
 export function gallerySurface(tree: UiNode): 'reel' | 'post' | null {
-  const title = rowsById(tree, 'gallery_title_text')[0]
+  const title = rowsById(tree, 'gallery_title_text').find(onScreen)
   if (title && /^(reel baru|new reel)$/i.test(title.text.trim())) return 'reel'
-  if (rowsById(tree, 'new_post_title').length > 0 || rowsById(tree, 'cam_dest_clips').length > 0) return 'post'
+  /*
+    Only what is DRAWN counts (0.9.2). Measured on the owner's moto g06 (Instagram 446.0.0.49.77, id-ID, 2026-09-15, the
+    0.9.1 dry run that reproduced production #59): "Batal" closed the new-post gallery and the home feed was back, but the
+    tree still held the destination bar's `cam_dest_feed`/`cam_dest_clips` squashed off the left edge (right -258, -25).
+    Counting those, the gallery read as still open, BACK was pressed on the home feed, and the run failed "it did not
+    close with its own Batal" (`screen-new-post-left-home.json`).
+  */
+  if (rowsById(tree, 'new_post_title').some(onScreen) || rowsById(tree, 'cam_dest_clips').some(onScreen)) return 'post'
   return null
 }
 
-/** The "REEL" destination tab at the bottom of the create gallery. */
+/** The "REEL" destination tab at the bottom of the create gallery — on screen, never a leftover squashed off its edge (0.9.2). */
 export function reelDestinationTab(tree: UiNode): UiNode | null {
-  return rowsById(tree, 'cam_dest_clips').find((n) => n.clickable) ?? null
+  return rowsById(tree, 'cam_dest_clips').find((n) => n.clickable && onScreen(n)) ?? null
 }
 
 /**

@@ -176,6 +176,21 @@ describe('post-video — the walk, screen by screen', () => {
     expect(createTapNotTaken({ ...home, children: [...home.children, keyboard] }, homeCreateButton)).toBeNull()
   })
 
+  test('after "Batal" the home feed is back even with the destination bar left squashed off its edge (0.9.2)', async () => {
+    // The moto's 0.9.1 dry run (2026-09-15), reproducing production #59: `cam_dest_clips` at right -25 on the home feed.
+    const home = await fixture('screen-new-post-left-home.json')
+    expect(rowsById(home, 'cam_dest_clips').length).toBeGreaterThan(0)
+    expect(gallerySurface(home)).toBeNull()
+    expect(reelDestinationTab(home)).toBeNull()
+    expect(newPostCloseButton(home)).toBeNull()
+    expect(isReady(home)).toBe(true)
+    // The gallery it left: "Postingan baru" with "Batal", and no node at all for the REEL tab the screenshot shows.
+    const post = await fixture('screen-new-post-no-dest-bar.json')
+    expect(gallerySurface(post)).toBe('post')
+    expect(reelDestinationTab(post)).toBeNull()
+    expect(newPostCloseButton(post)?.bounds).toEqual({ left: 0, top: 70, right: 98, bottom: 168 })
+  })
+
   test('no REEL tab: the new-post gallery closes with its own "Batal", and the profile\'s "Buat Baru" is the other way in (0.9.0)', async () => {
     const post = await fixture('screen-new-post.json')
     expect(newPostCloseButton(post)?.desc).toBe('Batal')

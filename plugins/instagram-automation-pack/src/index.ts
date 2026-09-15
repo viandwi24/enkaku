@@ -51,7 +51,7 @@ import postVideo from './post-video'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.9.1',
+  version: '0.9.2',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -60,6 +60,19 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.9.2 — leaving the new-post gallery is read from what is drawn.**
+   * Production #59 (0.9.0, 2026-09-15) failed "the new-post gallery has no REEL
+   * destination tab, and it did not close with its own Batal", and the owner's
+   * moto g06 (Instagram 446.0.0.49.77, id-ID) reproduced it on a 0.9.1 dry run.
+   * "Batal" HAD closed the gallery and the home feed was back, but the tree
+   * still held the destination bar's `cam_dest_clips` squashed off the left
+   * edge (right -25); counted, the gallery read as still open, BACK was pressed
+   * on the home feed and the run failed. The gallery and its REEL tab now count
+   * only when on screen, so the profile's "Buat Baru" route 0.9.0 added is
+   * actually reached. (That dump's new-post gallery also shows why the REEL
+   * tab is "missing": the bar is drawn over the grid — POSTINGAN, CERITA, REEL
+   * on the screenshot — but the farm's reading carries no node for it.)
    *
    * **0.9.1 — the keyboard is never put away with a tap on a sentence that may
    * hold a link.** Production job 032494ca (2026-09-15, English build): the tap
