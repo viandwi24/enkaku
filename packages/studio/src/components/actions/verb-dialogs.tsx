@@ -1,14 +1,20 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { DeviceDetailResponseSchema, SettingsResponseSchema, compileWorkflowParams, isHighConsequence } from '@enkaku/protocol'
+import { DeviceDetailResponseSchema, SettingsResponseSchema, compileWorkflowParams, isHighConsequence, normalizeAdbCommand } from '@enkaku/protocol'
 import type { ActionResponse, ActionVerb, DeviceSettingsPatch, ScriptListItem } from '@enkaku/protocol'
 import {
   Button,
   Checkbox,
+  ClockCounterClockwiseIcon,
   DeviceName,
+  FloppyDiskIcon,
   Input,
   Label,
+  PencilSimpleIcon,
+  PlayIcon,
+  TrashIcon,
+  XIcon,
   Combobox,
   Select,
   SelectContent,
@@ -28,6 +34,15 @@ import { SectionNav } from '@/components/settings/SectionNav'
 import type { JsonSchemaNode } from '@/components/schema-form/types'
 import { fetchAllPages, listWorkflows, type WorkflowInfo } from '@/lib/api'
 import { groupResults } from '@/lib/actions'
+import {
+  clearAdbHistory,
+  deleteAdbShortcut,
+  forgetAdbCommand,
+  recordAdbCommand,
+  renameAdbShortcut,
+  saveAdbShortcut,
+  useAdbCommandMemory,
+} from '@/lib/adb-command-memory'
 import type { TargetState } from '@/components/target/useTarget'
 
 /**
@@ -73,7 +88,12 @@ export interface VerbDialogSpec<P> {
     It is `setState`'s own signature, so every existing caller that passes a
     whole value keeps working unchanged.
   */
-  Fields: React.ComponentType<{ value: P; onChange: (next: P | ((prev: P) => P)) => void; target: TargetState }> | null
+  /*
+    `run` sets the value AND submits it, through the same gates as the
+    footer's button (`ActionDialog`). For a form whose own rows are a way to
+    run something — a saved adb shortcut — without a second click on Run.
+  */
+  Fields: React.ComponentType<{ value: P; onChange: (next: P | ((prev: P) => P)) => void; target: TargetState; run?: (next: P) => void }> | null
   /** Rendered in the form container when `Fields` is null: one sentence saying what will happen. */
   note?: string
   /**
@@ -180,13 +200,217 @@ const install: VerbDialogSpec<InstallValue> = {
 interface AdbValue {
   cmd: string
 }
-function AdbFields({ value, onChange }: { value: AdbValue; onChange: (v: AdbValue) => void }) {
-  const check = isHighConsequence(value.cmd)
+/** Recent commands listed under the box. The store keeps more (`ADB_HISTORY_MAX`); Up reaches all of them. */
+const ADB_RECENT_SHOWN = 8
+
+/**
+ * The command box, with the two things that make a command easy to send
+ * again (owner, 2026-09-15): a history walked with Up/Down, and shortcuts
+ * saved by name. Both are per browser — `lib/adb-command-memory.ts` says why
+ * shortcuts are not farm-wide yet.
+ *
+ * The box takes `adb shell …`, `shell …` or the bare command. What it shows
+ * under the line is `normalizeAdbCommand`'s answer, the same function the
+ * core runs on the request, so the preview cannot promise a command the
+ * device will not get.
+ */
+function AdbFields({ value, onChange, run }: { value: AdbValue; onChange: (v: AdbValue) => void; run?: (v: AdbValue) => void }) {
+  const memory = useAdbCommandMemory()
+  const parsed = normalizeAdbCommand(value.cmd)
+  const shellCmd = parsed.ok ? parsed.cmd : null
+  const check = shellCmd !== null ? isHighConsequence(shellCmd) : null
+  /** Where Up/Down stands in the history, and the draft to return to past the newest entry. */
+  const [walk, setWalk] = useState<{ index: number; draft: string } | null>(null)
+  /** The name being typed for a new shortcut; null while not saving. */
+  const [naming, setNaming] = useState<string | null>(null)
+  const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null)
+  const saved = shellCmd !== null ? memory.shortcuts.find((s) => s.cmd === shellCmd) : undefined
+
+  const fill = (cmd: string) => {
+    setWalk(null)
+    onChange({ cmd })
+  }
+  const runNow = (cmd: string) => {
+    setWalk(null)
+    if (run) run({ cmd })
+    else onChange({ cmd })
+  }
+  const saveShortcut = () => {
+    if (naming === null || shellCmd === null || naming.trim().length === 0) return
+    saveAdbShortcut(naming, shellCmd)
+    setNaming(null)
+  }
+  const commitRename = () => {
+    if (!renaming) return
+    renameAdbShortcut(renaming.id, renaming.name)
+    setRenaming(null)
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'ArrowUp') {
+      if (memory.history.length === 0) return
+      e.preventDefault()
+      const index = walk === null ? 0 : Math.min(memory.history.length - 1, walk.index + 1)
+      setWalk({ index, draft: walk?.draft ?? value.cmd })
+      onChange({ cmd: memory.history[index]! })
+    } else if (e.key === 'ArrowDown') {
+      if (walk === null) return
+      e.preventDefault()
+      if (walk.index === 0) {
+        onChange({ cmd: walk.draft })
+        setWalk(null)
+      } else {
+        setWalk({ ...walk, index: walk.index - 1 })
+        onChange({ cmd: memory.history[walk.index - 1]! })
+      }
+    } else if (e.key === 'Enter' && run && shellCmd !== null) {
+      e.preventDefault()
+      run(value)
+    }
+  }
+
   return (
-    <div className="space-y-1.5">
-      <Label htmlFor="adb-cmd">Command</Label>
-      <Input id="adb-cmd" mono value={value.cmd} maxLength={4096} onChange={(e) => onChange({ cmd: e.target.value })} placeholder="shell dumpsys battery" />
-      {check.hit && <p className="text-meta text-warn">This command matches a high-consequence pattern ({check.pattern}). It runs anyway if you continue.</p>}
+    <div className="space-y-4">
+      <div className="space-y-1.5">
+        <Label htmlFor="adb-cmd">Command</Label>
+        <div className="flex items-center gap-2">
+          <Input
+            id="adb-cmd"
+            mono
+            autoFocus
+            value={value.cmd}
+            maxLength={4096}
+            onChange={(e) => {
+              setWalk(null)
+              onChange({ cmd: e.target.value })
+            }}
+            onKeyDown={onKeyDown}
+            placeholder="dumpsys battery"
+            className="flex-1"
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={shellCmd === null || naming !== null}
+            title={saved ? `Saved as “${saved.name}” — save again to rename it` : 'Save this command as a shortcut'}
+            onClick={() => setNaming(saved?.name ?? '')}
+          >
+            <FloppyDiskIcon className="size-4" aria-hidden />
+            Save
+          </Button>
+        </div>
+        <p className="text-meta text-faint">
+          <code className="font-mono">adb shell …</code>, <code className="font-mono">shell …</code> or just the command. Up and Down walk your recent commands; Enter runs.
+        </p>
+        {value.cmd.trim().length > 0 && !parsed.ok && <p className="text-meta text-danger">{parsed.error}</p>}
+        {parsed.ok && parsed.form !== 'bare' && (
+          <p className="text-meta text-dim">
+            Runs <code className="font-mono text-text">{parsed.cmd}</code> in the device shell.
+          </p>
+        )}
+        {check?.hit && <p className="text-meta text-warn">This command matches a high-consequence pattern ({check.pattern}). It runs anyway if you continue.</p>}
+      </div>
+
+      {naming !== null && shellCmd !== null && (
+        <div className="flex items-center gap-2">
+          <Input
+            aria-label="Shortcut name"
+            autoFocus
+            value={naming}
+            maxLength={80}
+            placeholder="Name, e.g. Battery"
+            className="flex-1"
+            onChange={(e) => setNaming(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter') return
+              e.preventDefault()
+              saveShortcut()
+            }}
+          />
+          <Button size="sm" disabled={naming.trim().length === 0} onClick={saveShortcut}>
+            Save shortcut
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setNaming(null)}>
+            Cancel
+          </Button>
+        </div>
+      )}
+
+      <section className="space-y-1">
+        <div className="flex items-baseline justify-between">
+          <p className="text-label tracking-wide text-faint uppercase">Shortcuts</p>
+          <span className="text-meta text-faint">Saved in this browser</span>
+        </div>
+        {memory.shortcuts.length === 0 ? (
+          <p className="text-meta text-faint">None yet. Type a command and press Save to keep it here.</p>
+        ) : (
+          <ul className="space-y-0.5">
+            {memory.shortcuts.map((s) => (
+              <li key={s.id} className="flex items-center gap-1 rounded-button hover:bg-muted">
+                {renaming?.id === s.id ? (
+                  <Input
+                    aria-label="Shortcut name"
+                    autoFocus
+                    value={renaming.name}
+                    maxLength={80}
+                    className="h-7 flex-1"
+                    onChange={(e) => setRenaming({ id: s.id, name: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter') return
+                      e.preventDefault()
+                      commitRename()
+                    }}
+                    onBlur={commitRename}
+                  />
+                ) : (
+                  <button type="button" className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left" title={`Put in the box: ${s.cmd}`} onClick={() => fill(s.cmd)}>
+                    <span className="shrink-0 text-row text-text">{s.name}</span>
+                    <span className="min-w-0 truncate font-mono text-meta text-faint">{s.cmd}</span>
+                  </button>
+                )}
+                <Button variant="ghost" size="icon-sm" aria-label={`Run ${s.name}`} title="Run now" disabled={!run} onClick={() => runNow(s.cmd)}>
+                  <PlayIcon className="size-3.5" aria-hidden />
+                </Button>
+                <Button variant="ghost" size="icon-sm" aria-label={`Rename ${s.name}`} title="Rename" onClick={() => setRenaming({ id: s.id, name: s.name })}>
+                  <PencilSimpleIcon className="size-3.5" aria-hidden />
+                </Button>
+                <Button variant="ghost" size="icon-sm" aria-label={`Delete ${s.name}`} title="Delete" onClick={() => deleteAdbShortcut(s.id)}>
+                  <TrashIcon className="size-3.5" aria-hidden />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {memory.history.length > 0 && (
+        <section className="space-y-1">
+          <div className="flex items-baseline justify-between">
+            <p className="flex items-center gap-1.5 text-label tracking-wide text-faint uppercase">
+              <ClockCounterClockwiseIcon className="size-3.5" aria-hidden />
+              Recent
+            </p>
+            <button type="button" className="text-meta text-faint hover:text-text" onClick={clearAdbHistory}>
+              Clear
+            </button>
+          </div>
+          <ul className="space-y-0.5">
+            {memory.history.slice(0, ADB_RECENT_SHOWN).map((cmd) => (
+              <li key={cmd} className="flex items-center gap-1 rounded-button hover:bg-muted">
+                <button type="button" className="min-w-0 flex-1 truncate px-2 py-1.5 text-left font-mono text-meta text-text-2" title={cmd} onClick={() => fill(cmd)}>
+                  {cmd}
+                </button>
+                <Button variant="ghost" size="icon-sm" aria-label={`Run ${cmd}`} title="Run now" disabled={!run} onClick={() => runNow(cmd)}>
+                  <PlayIcon className="size-3.5" aria-hidden />
+                </Button>
+                <Button variant="ghost" size="icon-sm" aria-label={`Forget ${cmd}`} title="Remove from recent" onClick={() => forgetAdbCommand(cmd)}>
+                  <XIcon className="size-3.5" aria-hidden />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </div>
   )
 }
@@ -196,8 +420,13 @@ const adb: VerbDialogSpec<AdbValue> = {
   submitLabel: (c) => `Run on ${n(c)}`,
   initial: { cmd: '' },
   Fields: AdbFields,
-  canSubmit: (v) => v.cmd.trim().length > 0,
+  canSubmit: (v) => normalizeAdbCommand(v.cmd).ok,
+  // The line as typed: the core runs the same normaliser on it, so what
+  // actually runs is decided in one place (`normalizeAdbCommand`).
   toParams: async (v) => ({ cmd: v.cmd.trim() }),
+  // Remembered once the core has answered, whatever each device made of it —
+  // a command that failed on one phone is still the command you want again.
+  onDone: (_res, _grouped, v) => recordAdbCommand(v.cmd),
 }
 
 // ---------------------------------------------------------------------------

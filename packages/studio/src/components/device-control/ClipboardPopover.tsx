@@ -57,12 +57,18 @@ const CLIPBOARD_PAGE_SIZE = 10
  * would be a privacy hole introduced for convenience.
  */
 export function ClipboardPopover({
-  deviceId,
+  targets,
   history,
   onClearHistory,
   onRead,
 }: {
-  deviceId: string
+  /**
+   * Every device under control, host first. Sending goes to all of them —
+   * text typed into many phones is exactly what mirroring is for. Reading
+   * and the history stay the HOST's: one clipboard is all a list can show,
+   * and the popover says so rather than implying it read twenty.
+   */
+  targets: readonly string[]
   history: ClipboardEntry[]
   onClearHistory: () => void
   /** `use-cast`'s own `clipboard.get`, so its answer lands in the same history the pushes feed. */
@@ -129,7 +135,13 @@ export function ClipboardPopover({
     setError(null)
     setSending(true)
     try {
-      await ws.request({ type: 'clipboard.set', id: newId(), payload: { deviceId, text, paste } })
+      const results = await Promise.allSettled(targets.map((deviceId) => ws.request({ type: 'clipboard.set', id: newId(), payload: { deviceId, text, paste } })))
+      const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+      if (failed.length > 0) {
+        const reason: unknown = failed[0]!.reason
+        const message = reason instanceof Error ? reason.message : String(reason)
+        throw new Error(targets.length > 1 ? `Sent to ${targets.length - failed.length} of ${targets.length} devices: ${message}` : message)
+      }
       setText('')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -175,7 +187,8 @@ export function ClipboardPopover({
 
         <div className="flex items-center justify-between">
           <p className="text-label text-faint">
-            Copied on the device{history.length > 0 && ` (${history.length})`}
+            {targets.length > 1 ? 'Copied on the host' : 'Copied on the device'}
+            {history.length > 0 && ` (${history.length})`}
           </p>
           <div className="flex items-center gap-1">
             <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[11px]" disabled={reading} onClick={() => void read()}>
@@ -250,6 +263,7 @@ export function ClipboardPopover({
 
         <div className="mt-3 border-t border-line pt-3">
           <Textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Text to send" disabled={sending} className="text-[12px]" />
+          {targets.length > 1 && <p className="mt-1.5 text-[11px] text-faint">Sends to all {targets.length} devices under control.</p>}
           <div className="mt-2 flex justify-end gap-2">
             <Button size="sm" variant="outline" disabled={sending || text.length === 0} onClick={() => void send(false)}>
               Send

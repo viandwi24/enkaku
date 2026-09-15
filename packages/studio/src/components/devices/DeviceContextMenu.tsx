@@ -1,12 +1,10 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import type { DeviceInfo, Target } from '@enkaku/protocol'
-import { CaretRightIcon, DeviceMobileIcon, TagIcon, cn } from '@enkaku/ui'
-import { LabelAssign } from '@/components/labels/LabelAssign'
-import type { ActionDialogVerb } from '@/components/actions/ActionDialogHost'
 import { useOverlay } from '@/lib/overlays'
-import { ActionMenu } from './ActionMenu'
+import { DeviceActionMenu } from '@/components/device-actions/DeviceActionList'
+import type { DeviceActionContext } from '@/lib/device-actions'
 
 /** Where the menu was asked for, and what it acts on. */
 export interface DeviceContextMenuRequest {
@@ -20,32 +18,24 @@ export interface DeviceContextMenuRequest {
 }
 
 const MENU_W = 232
-/** Enough for the seven top-level rows plus the header; only used to decide which way to open. */
-const MENU_H = 330
+/** The header plus the top-level rows (two inline, nine groups, Forget); only used to decide which way to open. */
+const MENU_H = 520
 const EDGE = 8
-
-const ROW = 'flex w-full items-center gap-2.5 rounded-button px-[10px] py-[9px] text-row transition-colors text-text hover:bg-muted'
 
 /**
  * The right-click menu on a device (owner, 2026-09-05).
  *
- * Deliberately the SAME `ActionMenu` the floating bulk pill renders, not a
- * second list beside it: the handoff's rule is that selecting one device and
- * selecting twenty behave identically, and a right-click menu that offered a
- * different set — or the same set in a different order — would be the third
- * place this product describes the same nineteen actions.
+ * Its rows are `DeviceActionMenu` — the SAME list the floating bulk pill and
+ * Device Control's Actions tab draw from `lib/device-actions.ts`, including
+ * Open Device Control and Labels, which used to be rows only this menu had.
+ * The owner's rule (2026-09-15) is that the three surfaces are identical;
+ * a row one of them lacked was exactly the inconsistency it rules out.
  *
- * One row it adds that the bulk pill cannot have: **Open Device Control**.
- * The pill acts on a selection of any size and there is no such thing as
- * casting twenty phones into one window; a right-click always has exactly one
- * device under the cursor, so this is the one surface where that action has
- * an unambiguous subject. It sits above the rule, alone, because it is the
- * reason most right-clicks happen.
- *
- * Everything below the rule acts on the SELECTION, which is why the header
- * says how many devices that is. Right-clicking a device outside the current
- * selection replaces it with that one (`DevicesScreen`), the way a file
- * manager does; right-clicking inside a selection keeps all of it.
+ * Everything acts on the SELECTION, which is why the header says how many
+ * devices that is. Right-clicking a device outside the current selection
+ * replaces it with that one (`DevicesScreen`), the way a file manager does;
+ * right-clicking inside a selection keeps all of it. Open Device Control
+ * opens the device under the cursor and mirrors the rest of the selection.
  */
 export function DeviceContextMenu({
   request,
@@ -68,9 +58,9 @@ export function DeviceContextMenu({
   /** The farm's label list changed (a label was created from inside the panel) — refresh the counts. */
   onLabelsChanged: () => void
   onClose: () => void
+  /** Opens Device Control on this device; the caller keeps the rest of the selection as its mirror. */
   onOpenControl: (deviceId: string) => void
 }) {
-  const [labelsOpen, setLabelsOpen] = useState(false)
   useOverlay('menu', true, onClose)
 
   /*
@@ -112,7 +102,14 @@ export function DeviceContextMenu({
   // A submenu opens away from the window edge the parent is nearest. The
   // parent is MENU_W wide, so the room a submenu needs on the right is
   // measured from the parent's right edge, not from the cursor.
-  const submenuSide = left + MENU_W + 212 + EDGE > (typeof window !== 'undefined' ? window.innerWidth : 0) ? 'left' : 'right'
+  const submenuSide = left + MENU_W + 236 + EDGE > (typeof window !== 'undefined' ? window.innerWidth : 0) ? 'left' : 'right'
+
+  const ctx: DeviceActionContext = {
+    deviceIds: 'deviceIds' in target ? target.deviceIds : [],
+    subjectId: request.deviceId,
+    surface: 'context',
+    openControl: (hostId) => onOpenControl(hostId),
+  }
 
   return (
     <div
@@ -122,70 +119,16 @@ export function DeviceContextMenu({
       // A right-click INSIDE the menu must not open a second one behind it.
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div className="p-1">
-        <button
-          type="button"
-          className={cn(ROW, 'font-medium')}
-          onClick={() => {
-            onOpenControl(request.deviceId)
-            onClose()
-          }}
-        >
-          <DeviceMobileIcon className="size-4 text-accent" aria-hidden />
-          Open Device Control
-        </button>
-      </div>
-
-      <div className="border-t border-line px-[10px] py-1.5">
+      <div className="border-b border-line px-[10px] py-1.5">
         <span className="text-label text-faint">
           {request.count === 1 ? 'Actions for this device' : `Actions for ${request.count} selected`}
         </span>
       </div>
 
-      {/*
-        Labels sit ABOVE the generic action set, in their own row with their
-        own panel, rather than as a nineteenth verb inside it.
-        `ActionMenu`'s rows all open an `ActionDialog` — a modal with a target
-        picker and a form — and labelling is the one operation an operator
-        does dozens of times in a sitting while looking at the list. A modal
-        per label would make the feature unusable at exactly the scale it is
-        for.
-      */}
-      <div className="relative border-t border-line p-1">
-        <button
-          type="button"
-          className={cn(ROW, labelsOpen && 'bg-muted')}
-          // Click, not hover, unlike the action groups below it. A group's
-          // panel is a list you glance at and leave; this one is a list you
-          // TICK, several times, and a panel that opens and closes with the
-          // pointer would shut itself the moment you reached for a checkbox
-          // by way of the row beneath.
-          onClick={() => setLabelsOpen((v) => !v)}
-          aria-expanded={labelsOpen}
-        >
-          <TagIcon className="size-4 text-faint" aria-hidden />
-          <span className="flex-1 text-left">Labels</span>
-          <CaretRightIcon className="size-3 text-faint" aria-hidden />
-        </button>
-        {labelsOpen && (
-          <div
-            className={cn(
-              'absolute rounded-card border border-border bg-panel shadow-panel-2',
-              submenuSide === 'left' ? 'right-full mr-1' : 'left-full ml-1',
-              flipUp ? 'bottom-0' : 'top-0',
-            )}
-            // Clicks inside the panel must not reach the menu behind it —
-            // the panel stays open across many ticks, which is its point.
-            onClick={(e) => e.stopPropagation()}
-            onMouseEnter={(e) => e.stopPropagation()}
-          >
-            <LabelAssign devices={targetDevices} onChanged={onLabelsChanged} onDone={onClose} />
-          </div>
-        )}
-      </div>
-
-      <ActionMenu
-        target={target}
+      <DeviceActionMenu
+        ctx={ctx}
+        devices={targetDevices}
+        onLabelsChanged={onLabelsChanged}
         onDone={onClose}
         submenuSide={submenuSide}
         submenuAlign={flipUp ? 'bottom' : 'top'}

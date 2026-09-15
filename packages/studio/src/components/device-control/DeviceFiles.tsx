@@ -15,7 +15,7 @@ import {
   fileSize,
   useAction,
 } from '@enkaku/ui'
-import type { GenericActionId } from '@/lib/generic-actions'
+import type { ActionDialogVerb } from '@/components/actions/ActionDialogHost'
 import { deleteDeviceFile, listDeviceFiles, type DeviceFsEntry, type DeviceFsListResult } from '@/lib/device-fs'
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp'])
@@ -53,7 +53,7 @@ export function DeviceFiles({
   nodeOwned,
 }: {
   deviceId: string
-  onAction: (id: GenericActionId, params?: Record<string, unknown>) => void
+  onAction: (id: ActionDialogVerb, params?: Record<string, unknown>) => void
   nodeOwned: boolean
 }) {
   const [path, setPath] = useState('/sdcard')

@@ -1,41 +1,28 @@
 'use client'
 
-import { memo, useState } from 'react'
-import { KEYCODES, chordLabel, DEVICE_CONTROL_HOTKEYS } from '@enkaku/protocol'
+import { memo, useMemo, useState } from 'react'
+import { chordLabel, DEVICE_CONTROL_HOTKEYS } from '@enkaku/protocol'
 import type { RotationMode } from '@enkaku/protocol'
-import {
-  Button,
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-  CaretLeftIcon,
-  CircleIcon,
-  LightningIcon,
-  MoonIcon,
-  ArrowsClockwiseIcon,
-  DeviceMobileIcon,
-  PowerIcon,
-  SpeakerHighIcon,
-  SpeakerLowIcon,
-  SpeakerSlashIcon,
-  SquareIcon,
-  SunIcon,
-  cn,
-  type Icon,
-} from '@enkaku/ui'
-import { runOnDevice } from '@/lib/actions'
+import { Button, Tooltip, TooltipContent, TooltipTrigger, cn } from '@enkaku/ui'
+import { cycleBrightnessOn, findDeviceAction, type DeviceActionContext } from '@/lib/device-actions'
 import { ClipboardPopover } from './ClipboardPopover'
 import type { ClipboardEntry } from './use-cast'
 
 /**
- * The handoff's shortcut rail (README.md:250-253): 52px, ten 34x34 buttons,
- * `var(--dim)` icons. Buttons 1-7 are `input.key`, fanned out by `sendKey`;
- * 8-10 act on the host device only (plan 215 §4.7). Every tooltip reads its
- * chord from `DEVICE_CONTROL_HOTKEYS` — never a hand-written string (G7).
+ * The handoff's shortcut rail (README.md:250-253): 52px, 34x34 buttons,
+ * `var(--dim)` icons. Every tooltip reads its chord from
+ * `DEVICE_CONTROL_HOTKEYS` — never a hand-written string (G7).
+ *
+ * Every button is a row of `lib/device-actions.ts`, run on EVERY device under
+ * control — the host and each mirrored device (owner, 2026-09-15). It used
+ * to be split: the keys fanned out, but Sleep, Wake, rotation, brightness and
+ * the clipboard's Send reached the host alone, silently, while the window
+ * said it was mirroring. The one thing still the host's is the clipboard
+ * HISTORY, and its popover says so.
  */
 function ShortcutRailImpl({
   deviceId,
-  sendKey,
+  targets,
   rotationMode,
   onSetRotation,
   clipboardHistory,
@@ -43,39 +30,33 @@ function ShortcutRailImpl({
   onReadClipboard,
 }: {
   deviceId: string
-  sendKey: (keycode: number) => void
+  /** The host first, then every mirrored device. Stable while the set is unchanged, so the memo below still hits. */
+  targets: readonly string[]
+  /** The HOST's mode, lit on its button; asking for one applies it to every target. */
   rotationMode: RotationMode
   onSetRotation: (mode: RotationMode) => void
-  /** Everything the device has copied while this window has been open (`use-cast.ts`). */
+  /** Everything the host has copied while this window has been open (`use-cast.ts`). */
   clipboardHistory: ClipboardEntry[]
   onClearClipboardHistory: () => void
   /** Resolves `false` when the device simply had nothing to send — see `use-cast.ts`'s `readDeviceClipboard`. */
   onReadClipboard: () => Promise<boolean>
 }) {
   const [brightnessLabel, setBrightnessLabel] = useState<string | null>(null)
+  const ctx = useMemo<DeviceActionContext>(() => ({ deviceIds: targets, subjectId: deviceId, surface: 'control' }), [targets, deviceId])
+  const reach = targets.length > 1 ? ` · all ${targets.length} devices` : ''
 
   async function cycleBrightness() {
-    const cmd = [
-      "b=$(settings get system screen_brightness 2>/dev/null); b=${b:-128};",
-      'if [ "$b" -lt 96 ]; then n=128; elif [ "$b" -lt 200 ]; then n=255; else n=32; fi;',
-      'settings put system screen_brightness_mode 0; settings put system screen_brightness $n; echo $n',
-    ].join(' ')
-    try {
-      const res = await runOnDevice('adb', deviceId, { cmd })
-      const stdout = (res.detail as { stdout?: string } | undefined)?.stdout?.trim()
-      if (stdout) setBrightnessLabel(`Brightness ${stdout}`)
-    } catch {
-      // Best-effort: the rail button stays usable even if this one run fails.
-    }
+    const results = await cycleBrightnessOn(targets)
+    const host = results?.find((r) => r.deviceId === deviceId)
+    const stdout = (host?.detail as { stdout?: string } | undefined)?.stdout?.trim()
+    if (stdout) setBrightnessLabel(`Brightness ${stdout} on the host`)
   }
 
-  function hotkeyChordFor(id: string): string | undefined {
-    const hk = DEVICE_CONTROL_HOTKEYS.find((h) => h.id === id)
-    return hk ? chordLabel(hk) : undefined
-  }
-
-  const RailButton = ({ icon: Icon, label, hotkeyId, title, onClick, active, iconClassName }: { icon: Icon; label: string; hotkeyId?: string; title?: string; onClick: () => void; active?: boolean; iconClassName?: string }) => {
-    const chord = hotkeyId ? hotkeyChordFor(hotkeyId) : undefined
+  const RailButton = ({ actionId, hotkeyId, title, onClick, active }: { actionId: string; hotkeyId?: string; title?: string; onClick?: () => void; active?: boolean }) => {
+    const action = findDeviceAction(actionId)
+    const Icon = action.icon
+    const hk = hotkeyId ? DEVICE_CONTROL_HOTKEYS.find((h) => h.id === hotkeyId) : undefined
+    const chord = hk ? chordLabel(hk) : undefined
     return (
       <Tooltip>
         <TooltipTrigger asChild>
@@ -91,11 +72,11 @@ function ShortcutRailImpl({
             // `data-[active=true]:text-accent`, so the lit state belongs to
             // the design system rather than to a className written here.
             {...(active ? { 'data-active': 'true' } : {})}
-            aria-label={label}
+            aria-label={action.label}
             aria-pressed={active}
-            onClick={onClick}
+            onClick={onClick ?? (() => action.run(ctx))}
           >
-            <Icon className={cn('size-4', iconClassName)} aria-hidden />
+            <Icon className={cn('size-4', action.iconClassName)} aria-hidden />
           </Button>
         </TooltipTrigger>
         {/*
@@ -106,7 +87,7 @@ function ShortcutRailImpl({
           (owner, 2026-09-04). `sideOffset` keeps it clear of the icon.
         */}
         <TooltipContent side="left" sideOffset={6}>
-          {title ?? (chord ? `${label} · ${chord}` : label)}
+          {(title ?? (chord ? `${action.label} · ${chord}` : action.label)) + reach}
         </TooltipContent>
       </Tooltip>
     )
@@ -114,76 +95,43 @@ function ShortcutRailImpl({
 
   return (
     <>
-      <RailButton icon={PowerIcon} label="Power" hotkeyId="power" onClick={() => sendKey(KEYCODES.POWER)} />
+      <RailButton actionId="power" hotkeyId="power" />
       {/*
-        Explicit, not a toggle. `PowerIcon` above sends KEYCODE_POWER, which
-        flips whatever the screen currently is; these two say which state you
-        want and are the pair an operator actually reaches for (CEO,
-        2026-09-05).
-
-        They run the `sleep`/`wake` ACTIONS rather than sending KEYCODE_SLEEP
-        and KEYCODE_WAKEUP down the input channel, because a raw keyevent
-        loses to the farm: this device is held lit by `svc power stayon`, so
-        the screen goes dark for a moment and Android turns it straight back
-        on. The action goes through readiness, which drops always-on before
-        it sleeps and restores it on wake — the difference between a button
-        that works and one that flickers.
+        Explicit, not a toggle. Power flips whatever the screen currently is;
+        Sleep and Wake say which state you want and are the pair an operator
+        actually reaches for (CEO, 2026-09-05). They are the readiness-aware
+        ACTIONS, not raw keyevents — see `lib/device-actions.ts`.
       */}
-      <RailButton icon={MoonIcon} label="Sleep screen" onClick={() => void runOnDevice('sleep', deviceId, {})} />
-      <RailButton icon={LightningIcon} label="Wake screen" onClick={() => void runOnDevice('wake', deviceId, {})} />
-      <RailButton icon={SpeakerHighIcon} label="Volume up" onClick={() => sendKey(KEYCODES.VOLUME_UP)} />
-      <RailButton icon={SpeakerLowIcon} label="Volume down" onClick={() => sendKey(KEYCODES.VOLUME_DOWN)} />
-      <RailButton icon={SpeakerSlashIcon} label="Mute" onClick={() => sendKey(KEYCODES.VOLUME_MUTE)} />
-      <RailButton icon={CaretLeftIcon} label="Back" hotkeyId="back" onClick={() => sendKey(KEYCODES.BACK)} />
-      <RailButton icon={CircleIcon} label="Home" hotkeyId="home" onClick={() => sendKey(KEYCODES.HOME)} />
-      <RailButton icon={SquareIcon} label="Recents" hotkeyId="recents" onClick={() => sendKey(KEYCODES.APP_SWITCH)} />
+      <RailButton actionId="sleep" />
+      <RailButton actionId="wake" />
+      <RailButton actionId="volume-up" />
+      <RailButton actionId="volume-down" />
+      <RailButton actionId="mute" />
+      <RailButton actionId="back" hotkeyId="back" />
+      <RailButton actionId="home" hotkeyId="home" />
+      <RailButton actionId="recents" hotkeyId="recents" />
       {/*
         Three buttons, not one that cycles — the same argument that split
-        Sleep and Wake above: a cycle makes an operator press an unknown
-        number of times to reach the state they want, and shows nothing about
-        where they are now. These name the state, and the one in force is lit.
-
-        They are the two systems in one row. WHICH WAY UP is Portrait vs
-        Landscape; LOCKED OR NOT is either of those vs Auto-rotate, which
-        hands the screen back to the device's own sensor.
+        Sleep and Wake: a cycle makes an operator press an unknown number of
+        times to reach the state they want. These name the state, and the
+        HOST's is lit; pressing one sets it on every device under control.
       */}
-      <RailButton
-        icon={DeviceMobileIcon}
-        label="Portrait lock"
-        hotkeyId="rotate"
-        active={rotationMode === 'lock-portrait'}
-        onClick={() => onSetRotation('lock-portrait')}
-      />
-      <RailButton
-        icon={DeviceMobileIcon}
-        iconClassName="rotate-90"
-        label="Landscape lock"
-        active={rotationMode === 'lock-landscape'}
-        onClick={() => onSetRotation('lock-landscape')}
-      />
-      <RailButton
-        icon={ArrowsClockwiseIcon}
-        label="Auto-rotate (follow the device)"
-        active={rotationMode === 'device'}
-        onClick={() => onSetRotation('device')}
-      />
-      <RailButton icon={SunIcon} label="Brightness" title={brightnessLabel ?? 'Brightness'} onClick={() => void cycleBrightness()} />
-      <ClipboardPopover
-        deviceId={deviceId}
-        history={clipboardHistory}
-        onClearHistory={onClearClipboardHistory}
-        onRead={onReadClipboard}
-      />
+      <RailButton actionId="rotate-portrait" hotkeyId="rotate" active={rotationMode === 'lock-portrait'} onClick={() => onSetRotation('lock-portrait')} />
+      <RailButton actionId="rotate-landscape" active={rotationMode === 'lock-landscape'} onClick={() => onSetRotation('lock-landscape')} />
+      <RailButton actionId="rotate-auto" title="Auto-rotate (follow the device)" active={rotationMode === 'device'} onClick={() => onSetRotation('device')} />
+      <RailButton actionId="brightness" title={brightnessLabel ?? 'Brightness'} onClick={() => void cycleBrightness()} />
+      <ClipboardPopover targets={targets} history={clipboardHistory} onClearHistory={onClearClipboardHistory} onRead={onReadClipboard} />
     </>
   )
 }
 
 /**
  * Memoised, and it actually hits: `DeviceControl` latches every callback it
- * passes here behind a ref, so the only props that ever change identity are
- * `deviceId` and `clipboardHistory` — and those change when they mean
- * something. Without this the rail rebuilt eleven Radix tooltip triggers and
- * a popover twice a second, for the lifetime of the window, because the cast
- * header beside it shows a live fps. See `DeviceControl.tsx`'s `railRef`.
+ * passes here behind a ref and keeps `targets` stable while the set is
+ * unchanged, so the only props that change identity are `deviceId`,
+ * `targets`, `rotationMode` and `clipboardHistory` — and those change when
+ * they mean something. Without this the rail rebuilt its Radix tooltip
+ * triggers and a popover twice a second, because the cast header beside it
+ * shows a live fps. See `DeviceControl.tsx`'s `railRef`.
  */
 export const ShortcutRail = memo(ShortcutRailImpl)

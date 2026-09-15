@@ -98,6 +98,16 @@ export const InputSwipeMessage = z.object({
 
 export const InputKeyMessage = z.object({
   type: z.literal('input.key'),
+  /**
+   * Optional, and correlates a REFUSAL only — success is still unanswered,
+   * exactly as before (the same contract as `shell.exec`'s id). A bulk key
+   * press from Studio's action lists (`lib/device-actions.ts`) sends one so it
+   * can tell a device with no live session (`E_DEVICE_NOT_READY`, retried as
+   * `input keyevent` through the `adb` action) from one that was reached.
+   * Without it the server's refusal parsed the id away and arrived
+   * uncorrelated.
+   */
+  id: z.string().optional(),
   payload: z.object({ deviceId: z.string(), ...INPUT_ACTION_BODIES.key }),
 })
 

@@ -145,7 +145,7 @@ export interface UseCast {
   }
   /** `input.key` to every target. Used by the rail and by the hotkey table. */
   sendKey: (keycode: number) => void
-  /** Reads the browser clipboard and pastes it to the HOST device only. */
+  /** Reads the browser clipboard and pastes it to every target — the host and each mirrored device. */
   pasteFromClipboard: () => Promise<void>
   /** The last `clipboard.changed` this device pushed, for Alt+C. */
   deviceClipboard: string | null
@@ -695,14 +695,27 @@ export function useCast(opts: UseCastOptions): UseCast {
     }
     if (text.length === 0) return
     try {
-      if (text.length <= PASTE_VIA_CLIPBOARD_MAX && PRINTABLE_ASCII.test(text)) {
-        await ws.request({ type: 'clipboard.set', id: newId(), payload: { deviceId, text, paste: true } })
-      } else {
-        const codePoints = [...text]
-        for (let i = 0; i < codePoints.length; i += INPUT_TEXT_CHUNK) {
-          const chunk = codePoints.slice(i, i + INPUT_TEXT_CHUNK).join('')
-          await ws.request({ type: 'input.text', id: newId(), payload: { deviceId, text: chunk } })
-        }
+      // Every device under control, not only the host (owner, 2026-09-15): a
+      // paste is typing, and typing is mirrored like every other key. Each
+      // device gets its own sequence so a slow one never holds up the rest.
+      const results = await Promise.allSettled(
+        targets.map(async (target) => {
+          if (text.length <= PASTE_VIA_CLIPBOARD_MAX && PRINTABLE_ASCII.test(text)) {
+            await ws.request({ type: 'clipboard.set', id: newId(), payload: { deviceId: target, text, paste: true } })
+            return
+          }
+          const codePoints = [...text]
+          for (let i = 0; i < codePoints.length; i += INPUT_TEXT_CHUNK) {
+            const chunk = codePoints.slice(i, i + INPUT_TEXT_CHUNK).join('')
+            await ws.request({ type: 'input.text', id: newId(), payload: { deviceId: target, text: chunk } })
+          }
+        }),
+      )
+      const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+      if (failed.length > 0) {
+        const reason: unknown = failed[0]!.reason
+        const message = reason instanceof Error ? reason.message : String(reason)
+        throw new Error(targets.length > 1 ? `the paste reached ${targets.length - failed.length} of ${targets.length} devices: ${message}` : message)
       }
       setNotice(null)
     } catch (err) {

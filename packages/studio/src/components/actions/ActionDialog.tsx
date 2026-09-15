@@ -40,6 +40,13 @@ export function ActionDialog<P>({
   const [results, setResults] = useState<ActionResult[] | null>(null)
   const [busy, setBusy] = useState(false)
   /**
+   * A form asked to submit a value it just set (`Fields`' `run`) — a saved
+   * adb shortcut's Run button, Enter in the command box. Queued rather than
+   * submitted in place, because `submit` reads `value` from the render it was
+   * created in and the new value lands only on the next one.
+   */
+  const [runQueued, setRunQueued] = useState(false)
+  /**
    * The operation this dialog is watching, once the core has accepted the
    * work and gone away to do it. Held in the shared store rather than here,
    * so closing this dialog hands the work over instead of orphaning it.
@@ -107,6 +114,21 @@ export function ActionDialog<P>({
     }
   }
 
+  useEffect(() => {
+    if (!runQueued) return
+    setRunQueued(false)
+    // The same conditions that enable the footer's button — a run from inside
+    // the form never gets past a gate the button itself would not.
+    if (busy || target.count === 0 || target.allForbidden || !spec.canSubmit(value)) return
+    void submit(target.needsForce)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runQueued])
+
+  const run = (next: P) => {
+    setValue(next)
+    setRunQueued(true)
+  }
+
   const Fields = spec.Fields
 
   return (
@@ -141,7 +163,7 @@ export function ActionDialog<P>({
                `border-b border-line` divider, on `bg-panel`, with no border
                of its own: "The two never share a background or a border." */}
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-panel px-[14px] py-3">
-          {Fields ? <Fields value={value} onChange={setValue} target={target} /> : spec.note ? <p className="text-body text-dim">{spec.note}</p> : null}
+          {Fields ? <Fields value={value} onChange={setValue} target={target} run={run} /> : spec.note ? <p className="text-body text-dim">{spec.note}</p> : null}
           {(tracked?.results ?? results) && <ActionOutcome results={tracked?.results ?? results ?? []} devices={devices} />}
         </div>
 

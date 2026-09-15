@@ -1,17 +1,20 @@
 'use client'
 
 import { useState } from 'react'
-import type { Target } from '@enkaku/protocol'
-import { CaretDownIcon, TagIcon, XIcon, cn } from '@enkaku/ui'
+import type { DeviceInfo, Target } from '@enkaku/protocol'
+import { CaretDownIcon, XIcon, cn } from '@enkaku/ui'
 import { useOverlay } from '@/lib/overlays'
-import type { ActionDialogVerb } from '@/components/actions/ActionDialogHost'
-import type { DeviceInfo } from '@enkaku/protocol'
-import { LabelAssign } from '@/components/labels/LabelAssign'
-import { ActionMenu } from './ActionMenu'
+import { useDeviceControl } from '@/components/device-control/DeviceControlHost'
+import { DeviceActionMenu } from '@/components/device-actions/DeviceActionList'
+import type { DeviceActionContext } from '@/lib/device-actions'
 
 /**
  * The floating pair (design handoff, "Bulk actions (floating, bottom-right of
  * the panel)"; plan 214 §4.12) — click-to-open, never always-expanded.
+ *
+ * Its list is `DeviceActionMenu`, the same list the right-click menu and
+ * Device Control's Actions tab draw (`lib/device-actions.ts`), acting on
+ * every visible selected device.
  */
 export function BulkPill({
   count,
@@ -33,12 +36,22 @@ export function BulkPill({
   onClear: () => void
 }) {
   const [open, setOpen] = useState(false)
-  const [labelsOpen, setLabelsOpen] = useState(false)
   useOverlay('menu', open, () => setOpen(false))
+  const deviceControl = useDeviceControl()
 
-  const handleDone = (verb: ActionDialogVerb) => {
+  const deviceIds = 'deviceIds' in target ? target.deviceIds : []
+  const ctx: DeviceActionContext = {
+    deviceIds,
+    // A selection has no device under a cursor; Device Control opens on the
+    // first one and mirrors the rest.
+    subjectId: deviceIds[0] ?? null,
+    surface: 'bulk',
+    openControl: (hostId, mirror) => deviceControl.open(hostId, mirror),
+  }
+
+  const handleDone = (id: string) => {
     setOpen(false)
-    if (verb === 'forget') onClear()
+    if (id === 'forget') onClear()
   }
 
   return (
@@ -46,7 +59,7 @@ export function BulkPill({
       {open && (
         <div className="absolute right-0 bottom-[52px] w-[226px] rounded-card bg-panel p-1 shadow-menu">
           <div className="flex items-center justify-between px-[10px] py-1.5">
-            <span className="text-meta text-faint">Bulk action</span>
+            <span className="text-meta text-faint">{count === 1 ? 'Actions for 1 device' : `Actions for ${count} devices`}</span>
             <button type="button" className="text-meta text-accent" onClick={onClear}>
               Clear
             </button>
@@ -56,41 +69,7 @@ export function BulkPill({
               {hiddenCount} more selected {hiddenCount === 1 ? 'device is' : 'devices are'} hidden by the current tab, filter or search, and nothing here acts on {hiddenCount === 1 ? 'it' : 'them'}.
             </p>
           )}
-          {count > 0 && (
-          <>
-          {/*
-            Labels, where an operator selecting devices actually looks for it.
-
-            The same panel the right-click menu has always shown, and the same
-            multi-device contract: right-clicking a device inside a selection
-            already targeted the whole selection, so bulk labelling WORKED —
-            it was simply absent from the "N selected" pill, which is the
-            surface built for acting on a selection (owner, 2026-09-07).
-          */}
-          <button
-            type="button"
-            onClick={() => setLabelsOpen((v) => !v)}
-            className={cn(
-              'flex w-full items-center gap-2 rounded-button px-[10px] py-2 text-left text-body text-text hover:bg-muted',
-              labelsOpen && 'bg-muted',
-            )}
-          >
-            <TagIcon className="size-4 text-faint" aria-hidden />
-            <span className="flex-1">Labels</span>
-          </button>
-          {labelsOpen && (
-            <div
-              className="mt-1 rounded-card border border-border-2 bg-panel p-1 shadow-panel-2"
-              // The panel stays open across many ticks; a click inside it must
-              // not reach the menu behind and close everything.
-              onClick={(e) => e.stopPropagation()}
-            >
-              <LabelAssign devices={devices} onChanged={onLabelsChanged} onDone={() => setLabelsOpen(false)} />
-            </div>
-          )}
-          <ActionMenu target={target} onDone={handleDone} />
-          </>
-          )}
+          {count > 0 && <DeviceActionMenu ctx={ctx} devices={devices} onLabelsChanged={onLabelsChanged} onDone={handleDone} />}
         </div>
       )}
       <button

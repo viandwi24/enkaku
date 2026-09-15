@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { cn } from '@enkaku/ui'
-import type { GenericActionId } from '@/lib/generic-actions'
+import type { ActionDialogVerb } from '@/components/actions/ActionDialogHost'
 import { DeviceJobs } from './DeviceJobs'
 import { DeviceFiles } from './DeviceFiles'
 import { NetworkPanel } from '@/components/guest-agent/NetworkPanel'
@@ -21,7 +21,7 @@ import { NetworkPanel } from '@/components/guest-agent/NetworkPanel'
  * `NetworkPanel` renders its own padding (`@container` + `py-4`), so it sits
  * outside the chip row's `p-3` wrapper to avoid doubling it.
  */
-export function DeviceTab({ deviceId, onAction, nodeOwned }: { deviceId: string; onAction: (id: GenericActionId, params?: Record<string, unknown>) => void; nodeOwned: boolean }) {
+export function DeviceTab({ deviceId, onAction, nodeOwned }: { deviceId: string; onAction: (id: ActionDialogVerb, params?: Record<string, unknown>) => void; nodeOwned: boolean }) {
   const [section, setSection] = useState<'jobs' | 'files' | 'network'>('jobs')
 
   return (

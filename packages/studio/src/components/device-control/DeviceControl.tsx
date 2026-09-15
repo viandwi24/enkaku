@@ -1,20 +1,20 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { DeviceDetail, RotationMode } from '@enkaku/protocol'
-import { api, BroadcastIcon, Button, describeApiError, StatusDot, Tabs, TabsContent, TabsList, TabsTrigger, XIcon } from '@enkaku/ui'
-import { toast } from 'sonner'
-import { DeviceDetailResponseSchema, DeviceResponseSchema } from '@enkaku/protocol'
+import { api, BroadcastIcon, Button, StatusDot, Tabs, TabsContent, TabsList, TabsTrigger, XIcon } from '@enkaku/ui'
+import { DeviceDetailResponseSchema } from '@enkaku/protocol'
 import { readLocalPrefs, writeLocalPrefs } from '@/lib/prefs'
 import { useOverlay } from '@/lib/overlays'
 import { dotStateOf } from '@/components/devices/device-state'
-import type { GenericActionId } from '@/lib/generic-actions'
+import type { ActionDialogVerb } from '@/components/actions/ActionDialogHost'
+import { DeviceActionPanel } from '@/components/device-actions/DeviceActionList'
+import { rotationStateOf, setRotationOn } from '@/lib/device-actions'
 import { DEFAULT_RATIO, DEFAULT_WINDOW_HEIGHT_PX, clampWindowHeight, windowWidthPx } from './geometry'
 import { useCast } from './use-cast'
 import { Cast } from './Cast'
 import { ShortcutRail } from './ShortcutRail'
 import { InfoPopover } from './InfoPopover'
-import { DeviceActions } from './DeviceActions'
 import { Inspector } from './Inspector'
 import { DeviceTab } from './DeviceTab'
 import { stateTooltip } from './state-tooltip'
@@ -41,8 +41,13 @@ export function DeviceControl({
   /** The Devices screen's selection. The host is `deviceId`; the rest are mirror members (§4.12). */
   selectedIds: readonly string[]
   onClose: () => void
-  /** Plan 216 wires the dialogs; until then the Devices screen's own bulk handler runs. */
-  onAction: (id: GenericActionId, params?: Record<string, unknown>) => void
+  /**
+   * Opens a dialog for the HOST alone — the host's own settings (the info
+   * popover) and its Files tab, which are about the device on screen. The
+   * Actions tab and the rail act on every device under control through
+   * `lib/device-actions.ts` instead.
+   */
+  onAction: (id: ActionDialogVerb, params?: Record<string, unknown>) => void
 }) {
   const [device, setDevice] = useState<DeviceDetail | null>(null)
   const [drag, setDrag] = useState({ x: 0, y: 0 })
@@ -94,7 +99,11 @@ export function DeviceControl({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceId])
 
-  const targets = [deviceId, ...selectedIds.filter((id) => id !== deviceId)]
+  // Every device under control, host first: what input, the rail and the
+  // Actions tab all act on. Kept referentially stable while the set is
+  // unchanged, so the memoised rail does not rebuild on every fps tick.
+  const targetsKey = [deviceId, ...selectedIds.filter((id) => id !== deviceId)].join('\n')
+  const targets = useMemo(() => targetsKey.split('\n'), [targetsKey])
 
   const cast = useCast({
     deviceId,
@@ -128,42 +137,16 @@ export function DeviceControl({
    * once and always call the CURRENT function, so there is no stale-closure
    * risk of the kind a `useCallback` with a wrong dependency list creates.
    */
-  const railRef = useRef({ sendKey: cast.sendKey, setRotation: (_m: RotationMode) => {}, clear: cast.clearDeviceClipboardHistory, read: cast.readDeviceClipboard })
+  const railRef = useRef({ setRotation: (_m: RotationMode) => {}, clear: cast.clearDeviceClipboardHistory, read: cast.readDeviceClipboard })
   railRef.current = {
-    sendKey: cast.sendKey,
     setRotation: (mode: RotationMode) => void setRotation(mode),
     clear: cast.clearDeviceClipboardHistory,
     read: cast.readDeviceClipboard,
   }
-  const railSendKey = useCallback((keycode: number) => railRef.current.sendKey(keycode), [])
   const railSetRotation = useCallback((mode: RotationMode) => railRef.current.setRotation(mode), [])
   const railClearClipboard = useCallback(() => railRef.current.clear(), [])
   const railReadClipboard = useCallback(() => railRef.current.read(), [])
 
-  /**
-   * Ask for one rotation mode, and say what the DEVICE did about it.
-   *
-   * This used to cycle `lock-portrait → lock-landscape → device` and end in
-   * `.catch(() => {})`. Two things followed from that. A cycle makes the
-   * operator press a button an unknown number of times to reach the state
-   * they want — the same objection that split Sleep and Wake into two rail
-   * buttons (CEO, 2026-09-05). And the catch swallowed everything: a refused
-   * write, a validation error, a phone that would not turn. The button wrote
-   * a database row and reported nothing, which is precisely what "the rotate
-   * button does not work" looked like from the outside.
-   *
-   * The catch hid a second, larger fault, and it is why the button had never
-   * worked at all rather than merely worked quietly: this parsed the reply
-   * with `DeviceDetailResponseSchema`, and `PATCH /api/devices/:id` answers
-   * with `DeviceResponseSchema` — a DIFFERENT device shape. Every press threw
-   * on the parse, the catch ate it, and the operator saw nothing. The setting
-   * still reached the database, which is what made it look like a UI that
-   * "sometimes" worked.
-   *
-   * `DeviceResponseSchema` is the route's own contract, and it carries the
-   * `rotation` apply result: the honest answer to "did the screen I am
-   * looking at just re-lock?", reported here rather than discarded.
-   */
   /**
    * What the rail highlights: the mode the device row carries, or the one
    * just asked for while the row catches up.
@@ -196,36 +179,25 @@ export function DeviceControl({
     setPendingRotation(null)
   }, [deviceId])
 
-  const ROTATION_LABEL: Record<RotationMode, string> = {
-    device: 'Auto-rotate',
-    'lock-portrait': 'Portrait lock',
-    'lock-landscape': 'Landscape lock',
-    'lock-current': 'Orientation lock',
-  }
-
-  async function setRotation(mode: 'device' | 'lock-portrait' | 'lock-landscape' | 'lock-current') {
-    if (!device) return
-    const base = (device.settings ?? {}) as { prep?: { rotation?: string } }
-    if ((base.prep?.rotation ?? 'device') === mode) return
-    const nextSettings = { ...base, prep: { ...base.prep, rotation: mode } }
+  /**
+   * Ask for one rotation mode on EVERY device under control, and say what the
+   * devices did about it (owner, 2026-09-15: rotation used to reach the host
+   * alone while the window said it was mirroring).
+   *
+   * `setRotationOn` is the same call the action lists make: the `settings`
+   * verb saves `prep.rotation` and re-locks a live session, and answers per
+   * device whether the screen turned — every non-applied answer is toasted
+   * there, never swallowed. The rail's highlight follows the HOST's answer,
+   * because the host is the picture on screen.
+   */
+  async function setRotation(mode: RotationMode) {
     setPendingRotation(mode)
-    try {
-      const res = await api(`/api/devices/${deviceId}`, DeviceResponseSchema, { method: 'PATCH', json: { settings: nextSettings } })
-      const outcome = res.rotation
-      if (!outcome || outcome.state === 'applied') return
-      // `no-session` means the device is offline, and is not an error: the
-      // setting is saved and written the moment the device comes online. It
-      // still has to be said, or the screen not moving reads as a broken button.
-      if (outcome.state === 'no-session') toast.info(`${ROTATION_LABEL[mode]} saved — it applies when the device comes online.`)
-      else if (outcome.state === 'busy') toast.info(`${ROTATION_LABEL[mode]}: ${outcome.reason ?? 'the device was busy; it will settle shortly'}`)
-      else {
-        setPendingRotation(null)
-        toast.error(`${ROTATION_LABEL[mode]} did not take: ${outcome.reason ?? 'the device did not report the requested orientation'}`)
-      }
-    } catch (err) {
-      setPendingRotation(null)
-      toast.error(describeApiError(err))
-    }
+    const results = await setRotationOn(targets, mode, { quiet: true })
+    const host = results?.find((r) => r.deviceId === deviceId)
+    if (!host || host.status !== 'done' || rotationStateOf(host) === 'failed') setPendingRotation(null)
+    void api(`/api/devices/${encodeURIComponent(deviceId)}`, DeviceDetailResponseSchema)
+      .then((res) => setDevice(res.device))
+      .catch(() => {})
   }
 
   const close = () => {
@@ -312,7 +284,7 @@ export function DeviceControl({
       <div className="flex w-[52px] shrink-0 flex-col items-center gap-1 bg-panel-2 py-2">
         <ShortcutRail
           deviceId={deviceId}
-          sendKey={railSendKey}
+          targets={targets}
           rotationMode={rotationMode}
           onSetRotation={railSetRotation}
           clipboardHistory={cast.deviceClipboardHistory}
@@ -358,12 +330,11 @@ export function DeviceControl({
           />
         )}
 
-        {selectedIds.length > 1 && (
-          <div className="mx-3 mt-2 flex items-center gap-2 rounded-button bg-warn-soft px-2.5 py-2 text-meta text-warn">
-            <BroadcastIcon className="size-4" aria-hidden />
-            <b>Host device</b>
+        {targets.length > 1 && (
+          <div className="mx-3 mt-2 flex items-start gap-2 rounded-button bg-warn-soft px-2.5 py-2 text-meta text-warn">
+            <BroadcastIcon className="mt-px size-4 shrink-0" aria-hidden />
             <span>
-              Mirroring input to {selectedIds.length - 1} other device{selectedIds.length === 2 ? '' : 's'} · {selectedIds.length} under control
+              <b>Host device</b> · mirroring to {targets.length - 1} other device{targets.length === 2 ? '' : 's'}. Touch, keys, the rail and Actions reach all {targets.length}; Inspector and Device show the host only.
             </span>
           </div>
         )}
@@ -386,12 +357,15 @@ export function DeviceControl({
             <TabsTrigger value="device">Device</TabsTrigger>
           </TabsList>
           <TabsContent value="actions" className="min-h-0 flex-1 overflow-y-auto">
-            <DeviceActions onAction={onAction} />
+            {/* The same list as the bulk pill and the right-click menu, acting on every device under control. */}
+            <DeviceActionPanel ctx={{ deviceIds: targets, subjectId: deviceId, surface: 'control' }} />
           </TabsContent>
           <TabsContent value="inspector" className="min-h-0 flex-1 overflow-y-auto">
+            {targets.length > 1 && <HostOnlyNote />}
             <Inspector deviceId={deviceId} nodeOwned={nodeOwned} />
           </TabsContent>
           <TabsContent value="device" className="min-h-0 flex-1 overflow-y-auto">
+            {targets.length > 1 && <HostOnlyNote />}
             <DeviceTab deviceId={deviceId} onAction={onAction} nodeOwned={nodeOwned} />
           </TabsContent>
         </Tabs>
@@ -416,4 +390,13 @@ export function DeviceControl({
       />
     </div>
   )
+}
+
+/**
+ * Said where it matters: these tabs read ONE device — a UI tree, a job
+ * history, a file listing — and a mirrored window must not let anyone assume
+ * a change made here reached the other phones too.
+ */
+function HostOnlyNote() {
+  return <p className="mx-3 mt-2 text-meta text-faint">Host only — the mirrored devices are not shown or changed here.</p>
 }
