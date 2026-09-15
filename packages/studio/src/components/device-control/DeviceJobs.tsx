@@ -8,6 +8,7 @@ import { JobResponseSchema, JobsPageResponseSchema, JobCancelResponseSchema, Job
 import { jobHref } from '@/components/jobs/job-view'
 import { runAction } from '@/lib/actions'
 import { ws } from '@/lib/ws'
+import { StopActiveJobs } from '@/components/jobs/stop-controls'
 
 /**
  * The Device tab's Jobs section (design handoff README.md:281-283; plan 215
@@ -59,8 +60,26 @@ export function DeviceJobs({ deviceId }: { deviceId: string }) {
   if (!jobs) return <p className="text-meta text-faint">Loading…</p>
   if (jobs.length === 0) return <p className="text-meta text-faint">No jobs on this device.</p>
 
+  // Among the twenty loaded — the confirm counts the device's real total.
+  const anyActive = jobs.some((j) => j.status === 'queued' || j.status === 'running')
+
   return (
     <div className="flex flex-col gap-0.5">
+      {anyActive && (
+        <div className="flex justify-end pb-1">
+          <StopActiveJobs
+            filter={{ status: 'active', deviceId }}
+            countQuery={{ deviceId }}
+            scope="on this device"
+            onDone={() => void load()}
+            trigger={
+              <Button size="sm" variant="outline">
+                Stop all jobs on this device
+              </Button>
+            }
+          />
+        </div>
+      )}
       {jobs.map((j) => (
         <button
           key={j.jobId}
@@ -147,7 +166,7 @@ function JobDetail({ jobId, onBack, onChanged }: { jobId: string; onBack: () => 
       <div className="flex flex-wrap gap-2">
         {(running || queued) && (
           <Button size="sm" variant="outline" disabled={busy} onClick={() => void stop()}>
-            {running ? 'Stop' : 'Cancel'}
+            {job.kind === 'workflow' ? 'Cancel workflow (and its steps)' : running ? 'Stop' : 'Cancel'}
           </Button>
         )}
         {settled && (

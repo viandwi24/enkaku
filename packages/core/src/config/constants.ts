@@ -168,6 +168,15 @@ export const JOB_MAX_RESULT_BYTES = num('ENKAKU_JOB_MAX_RESULT_BYTES', 65_536, z
 export const JOB_PROGRESS_INTERVAL_MS = num('ENKAKU_JOB_PROGRESS_INTERVAL_MS', 1_000, z.number().int().min(250).max(10_000))
 export const JOB_RETRY_BACKOFF_MAX_MS = num('ENKAKU_JOB_RETRY_BACKOFF_MAX_MS', 30_000, z.number().int().min(1_000).max(300_000))
 export const JOB_TIMEOUT_IS_INFRA = bool('ENKAKU_JOB_TIMEOUT_IS_INFRA', false)
+/**
+ * Force stop: how long a cancelled run may take to stop on its own before the
+ * host kills its process (`jobs/executor-host.ts`'s `abort`). The script's
+ * `finish()` is not skipped by the kill — it runs again in a fresh process,
+ * which is why `finish()` must stay stateless and idempotent. A run that still
+ * has not settled after the runner's own finish-only budget on top of this is
+ * settled `cancelled` by the host, so a cancel never leaves a run `running`.
+ */
+export const JOB_CANCEL_KILL_MS = num('ENKAKU_JOB_CANCEL_KILL_MS', 15_000, z.number().int().min(1_000).max(300_000))
 export const JOB_REBIND_ON_INFRA = bool('ENKAKU_JOB_REBIND_ON_INFRA', true)
 export const JOB_CRASH_POLICY = pick('ENKAKU_JOB_CRASH_POLICY', 'declared', ['ignore', 'declared', 'any'] as const)
 export const WORKFLOW_MAX_TOTAL_MS = num('ENKAKU_WORKFLOW_MAX_TOTAL_MS', 21_600_000, z.number().int().min(60_000).max(604_800_000))

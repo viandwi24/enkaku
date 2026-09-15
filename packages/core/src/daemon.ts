@@ -65,6 +65,7 @@ import {
   INPUT_WAIT_BUDGET_MS,
   JOB_CRASH_POLICY,
   JOB_MAX_RESULT_BYTES,
+  JOB_CANCEL_KILL_MS,
   JOB_MAX_TIMEOUT_MS,
   JOB_MEMORY_ENFORCE,
   JOB_MEMORY_MAX_BYTES,
@@ -1829,6 +1830,9 @@ let blobGc: BlobGc | null = null
         log: log.child('executor'),
         jobTtlSec: cfg.heartbeat.jobTtlSec,
         heartbeatMs: cfg.heartbeat.heartbeatMs,
+        // Force stop: a cancelled run's process is killed this long after the
+        // cancel if it has not stopped (finish() re-runs in a fresh process).
+        cancelKillMs: JOB_CANCEL_KILL_MS,
         onJobStatus: (info) => hub.broadcast({ type: 'job.status', payload: info }),
         onFinished: () => scheduler?.kick(),
         onBatchChanged,
@@ -2314,6 +2318,10 @@ let blobGc: BlobGc | null = null
         // `api/transfer.ts`'s own REST install/push/pull already read.
         shellMode: () => (settingsStore.get().privacy.adbCommand ? 'operator' : 'off'),
         transferEnabled: () => TRANSFER_ENABLED,
+        // A queued run cancelled here never passes the host's settle, so the
+        // watcher hears about it from the service — or a workflow waiting on
+        // a step cancelled while still queued would wait forever.
+        watcher: runWatcher,
       })
 
       // The expiry reaper (plan 21 §4.3): a `queued` job past its

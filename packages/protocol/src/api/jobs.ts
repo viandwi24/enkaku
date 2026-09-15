@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { ArtifactInfoSchema, JobDetailSchema, JobInfoSchema, JobRunDetailSchema, JobRunInfoSchema, JobStatusSchema, JobTraceEventSchema } from '../messages/job'
+import { ArtifactInfoSchema, JobDetailSchema, JobInfoSchema, JobKindSchema, JobRunDetailSchema, JobRunInfoSchema, JobStatusSchema, JobTraceEventSchema } from '../messages/job'
 import { pageSchema } from './pagination'
 
 /**
@@ -25,12 +25,69 @@ export const JobCreateResponseSchema = z.object({ job: JobInfoSchema })
 
 /**
  * `POST /api/jobs/:id/cancel` — `service.cancel()` returns a bare `JobInfo`,
- * not a `JobDetail`. `cancelledDescendants` (plan 81 §4.4) counts queued
- * jobs cancelled because `?cancelDescendants=1` was passed — 0 whenever the
- * option was not used, never omitted, so a caller does not have to guess
- * whether the field is simply absent from an older server.
+ * not a `JobDetail`. `cancelledDescendants` (plan 81 §4.4) counts the
+ * descendant jobs this cancel stopped — queued ones cancelled plus running
+ * ones aborted: a workflow job's steps (`parentWorkflowJobId`) and every job
+ * a job triggered (`triggeredByJobId`/`rootJobId`), at any depth.
+ *
+ * `?cancelDescendants=1|0` chooses; absent, a `kind: 'workflow'` job
+ * cascades and a script job does not, because a workflow's steps are part of
+ * it and cancelling one without them is never what anybody means. The count
+ * is 0 whenever nothing cascaded, never omitted.
  */
 export const JobCancelResponseSchema = z.object({ job: JobInfoSchema, cancelledDescendants: z.number().int().min(0).default(0) })
+
+/** The most ids one `POST /api/jobs/cancel` may name. A larger stop is a `filter`. */
+export const JOB_BULK_CANCEL_MAX_IDS = 500
+
+/**
+ * `POST /api/jobs/cancel`'s filter form. Every field narrows; `{}` means
+ * every active job on the farm. `status` is the latest run's: `active` is
+ * queued or running, the only two states a cancel can act on.
+ */
+export const JobBulkCancelFilterSchema = z
+  .object({
+    status: z.enum(['queued', 'running', 'active']).default('active'),
+    deviceId: z.string().min(1).optional(),
+    batchId: z.string().min(1).optional(),
+    scheduleId: z.string().min(1).optional(),
+    kind: JobKindSchema.optional(),
+    rootJobId: z.string().min(1).optional(),
+  })
+  .strict()
+export type JobBulkCancelFilter = z.infer<typeof JobBulkCancelFilterSchema>
+
+/** `POST /api/jobs/cancel` — exactly one of `jobIds` or `filter`. */
+export const JobBulkCancelRequestSchema = z.union([
+  z.object({ jobIds: z.array(z.string().min(1)).min(1).max(JOB_BULK_CANCEL_MAX_IDS) }).strict(),
+  z.object({ filter: JobBulkCancelFilterSchema }).strict(),
+])
+export type JobBulkCancelRequest = z.infer<typeof JobBulkCancelRequestSchema>
+
+/**
+ * `POST /api/jobs/cancel`'s answer. Every job it looked at lands in exactly
+ * one bucket: `cancelled` (was queued), `aborted` (was running — it settles
+ * `cancelled` once it has stopped), `refused` (`canCancelJob` said no), or
+ * `notCancellable` (already settled, or no such job). `descendants` is how
+ * many of `cancelled` + `aborted` were a workflow's steps or triggered jobs
+ * stopped by the cascade rather than named directly. `matched` is how many
+ * jobs the request named or the filter found; `truncated` is true when the
+ * filter found more than one request stops, and the rest are still running.
+ */
+export const JobBulkCancelResponseSchema = z.object({
+  matched: z.number().int().min(0),
+  cancelled: z.number().int().min(0),
+  aborted: z.number().int().min(0),
+  refused: z.number().int().min(0),
+  notCancellable: z.number().int().min(0),
+  descendants: z.number().int().min(0),
+  cancelledJobIds: z.array(z.string()),
+  abortedJobIds: z.array(z.string()),
+  refusedJobIds: z.array(z.string()),
+  notCancellableJobIds: z.array(z.string()),
+  truncated: z.boolean(),
+})
+export type JobBulkCancelResponse = z.infer<typeof JobBulkCancelResponseSchema>
 
 /** `GET /api/jobs?...` (keyset). */
 export const JobsPageResponseSchema = pageSchema(JobInfoSchema)

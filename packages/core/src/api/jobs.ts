@@ -3,6 +3,8 @@ import { Hono, type Context } from 'hono'
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import {
   defaultFarmSettings,
+  JobBulkCancelRequestSchema,
+  JobBulkCancelResponseSchema,
   JobCancelResponseSchema,
   JobDeleteResponseSchema,
   JobHistoryClearRequestSchema,
@@ -447,6 +449,55 @@ export function createJobRoutes(service: JobService, deps: JobRoutesDeps): Hono<
     return typedJson(c, JobDeleteResponseSchema, { jobId: id, deleted })
   })
 
+  /**
+   * `POST /cancel` — stop many jobs at once: a selection (`{ jobIds }`) or
+   * everything a filter matches (`{ filter }`, e.g. "every active job on this
+   * device"). Each job is gated by `canCancelJob` exactly as `POST /:id/cancel`
+   * gates one, and goes through the SAME `JobService` stop path — a workflow
+   * job cascades to its steps, a queued run is cancelled, a running one is
+   * aborted (and force-stopped by the host if it does not stop). One audit
+   * entry for the whole request.
+   *
+   * `job.run`, the gate `POST /api/batches/:id/stop` already uses for the
+   * same "stop many" verb. Distinct from `/:id/cancel` by segment count, so
+   * the two can never shadow each other.
+   */
+  app.post('/cancel', requirePermission('job.run'), async (c) => {
+    const raw = await c.req.json().catch(() => null)
+    const body = JobBulkCancelRequestSchema.safeParse(raw)
+    if (!body.success) {
+      throw new EnkakuError(
+        'E_BAD_REQUEST',
+        `the body must be { jobIds: string[] } (at most 500) or { filter: {...} }: ${body.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`,
+      )
+    }
+    const user = c.get('user')
+    const target = 'jobIds' in body.data ? { jobIds: body.data.jobIds, matched: body.data.jobIds.length, truncated: false } : service.resolveCancelFilter(body.data.filter)
+    const result = service.cancelMany({
+      jobIds: target.jobIds,
+      matched: target.matched,
+      truncated: target.truncated,
+      ...(user ? { canCancel: (job: { deviceId: string }) => canCancelJob(user, deps.getDeviceOwner?.(job.deviceId) ?? null) } : {}),
+    })
+    const filter = 'filter' in body.data ? body.data.filter : null
+    deps.audit?.record({
+      userId: user?.id ?? null,
+      action: 'job.cancel.bulk',
+      target: filter?.deviceId ?? filter?.batchId ?? filter?.scheduleId ?? filter?.rootJobId ?? (filter ? 'farm' : 'selection'),
+      meta: {
+        ...(filter ? { filter } : { jobIds: target.jobIds }),
+        matched: result.matched,
+        cancelled: result.cancelled,
+        aborted: result.aborted,
+        refused: result.refused,
+        notCancellable: result.notCancellable,
+        descendants: result.descendants,
+        truncated: result.truncated,
+      },
+    })
+    return typedJson(c, JobBulkCancelResponseSchema, result)
+  })
+
   app.post('/:id/cancel', (c) => {
     const jobId = c.req.param('id')
     const job = service.get(jobId)
@@ -458,8 +509,14 @@ export function createJobRoutes(service: JobService, deps: JobRoutesDeps): Hono<
         throw new EnkakuError('auth.forbidden', 'you do not have permission to cancel this job')
       }
     }
-    const cancelDescendants = ['1', 'true'].includes(c.req.query('cancelDescendants') ?? '')
-    const result = service.cancel(jobId, { cancelDescendants })
+    // `1`/`true` and `0`/`false` choose; absent leaves it to the service,
+    // which cascades a workflow job to its steps and leaves a script job's
+    // triggered jobs alone (`JobService.cancel`). Studio therefore passes
+    // nothing: the default is decided once, where WS and the capability
+    // reach it too, rather than in every caller.
+    const rawCascade = c.req.query('cancelDescendants')
+    const cancelDescendants = rawCascade === undefined ? undefined : ['1', 'true'].includes(rawCascade) ? true : ['0', 'false'].includes(rawCascade) ? false : undefined
+    const result = service.cancel(jobId, cancelDescendants === undefined ? undefined : { cancelDescendants })
     deps.audit?.record({
       userId: user?.id ?? null,
       action: 'job.cancel',

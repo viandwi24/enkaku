@@ -14,8 +14,12 @@ import {
   PlayIcon,
   SignInIcon,
   SignOutIcon,
+  XCircleIcon,
+  api,
+  describeApiError,
   duration,
 } from '@enkaku/ui'
+import { JobCancelResponseSchema } from '@enkaku/protocol'
 import { toast } from 'sonner'
 import { useNow } from '@/lib/useNow'
 import { useJobDetail } from '@/lib/use-job-detail'
@@ -147,6 +151,42 @@ export function JobDetail({ jobId }: { jobId: string }) {
   }
 
   const runInFlight = run.status === 'running' || run.status === 'queued'
+  /**
+   * Cancel the job's LATEST run — `job.status` is that run's, whichever run
+   * the picker is showing. No `cancelDescendants`: the server cascades a
+   * workflow job to its steps by default, which is why the label says so.
+   */
+  const jobActive = job.status === 'running' || job.status === 'queued'
+  const isWorkflow = job.kind === 'workflow'
+  async function cancelJob(): Promise<void> {
+    if (!job) return
+    try {
+      const r = await api(`/api/jobs/${encodeURIComponent(job.jobId)}/cancel`, JobCancelResponseSchema, { method: 'POST' })
+      if (isWorkflow) {
+        toast.success('Workflow cancelled', {
+          description:
+            r.cancelledDescendants > 0
+              ? `${r.cancelledDescendants} step${r.cancelledDescendants === 1 ? '' : 's'} stopped with it.`
+              : 'No step was active.',
+        })
+      } else {
+        toast.success(job.status === 'running' ? 'Job stopping' : 'Job cancelled')
+      }
+      reload()
+    } catch (e) {
+      toast.error(isWorkflow ? 'Could not cancel the workflow' : 'Could not cancel the job', { description: describeApiError(e) })
+    }
+  }
+  const cancelAction: HeaderAction[] = jobActive
+    ? [
+        {
+          key: 'cancel',
+          label: isWorkflow ? 'Cancel workflow (and its steps)' : job.status === 'running' ? 'Stop' : 'Cancel',
+          icon: <XCircleIcon className="size-[13px]" />,
+          onClick: () => void cancelJob(),
+        },
+      ]
+    : []
   const actions: HeaderAction[] = [
     {
       key: 'rerun',
@@ -217,7 +257,7 @@ export function JobDetail({ jobId }: { jobId: string }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <DetailHeader name={job.scriptName ?? job.jobId} state={run.status} meta={meta} actions={actions} />
+      <DetailHeader name={job.scriptName ?? job.jobId} state={run.status} meta={meta} actions={[...actions.slice(0, 1), ...cancelAction, ...actions.slice(1)]} />
       <SubTabs tabs={tabs} active={view} />
       {run.status === 'failed' && (
         <div className="flex flex-none flex-wrap items-baseline gap-x-2 border-b border-line bg-danger-soft px-[14px] py-2 text-meta text-danger">

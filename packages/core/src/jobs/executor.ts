@@ -46,6 +46,15 @@ export interface ExecutorContext {
    * `resultStatus: undeclared`-or-nothing exactly as it does today.
    */
   onResultOutcome?: (outcome: ResultOutcome) => void
+  /**
+   * Registers the force-stop step of a cancel (`ExecutorHost.abort`): called
+   * when a cancelled run has not settled within `JOB_CANCEL_KILL_MS`. An
+   * executor with a process of its own kills it here; the host keeps waiting
+   * for the executor's settle, and settles the run `cancelled` itself only
+   * when that never comes. Optional: only the script executor has a process
+   * to kill — every other executor is covered by the host's backstop alone.
+   */
+  onForceKill?: (cb: () => void) => void
 }
 
 export interface JobExecutor {

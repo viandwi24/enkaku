@@ -102,6 +102,10 @@ export type AuditAction =
   | 'workflow.preset.delete'
   | 'job.run'
   | 'job.cancel'
+  // `POST /api/jobs/cancel` — ONE entry for the whole stop, whose `meta`
+  // carries the selection or filter and every count, so "who stopped the
+  // farm's queue at 14:02" is one row rather than four hundred.
+  | 'job.cancel.bulk'
   // Plan 128 §4.3, §4.5 — the two DESTRUCTIVE job verbs. Cancelling a job
   // stops it; these erase the record that it ever ran, together with its
   // artifacts, its trace and its frames, which is the one job operation

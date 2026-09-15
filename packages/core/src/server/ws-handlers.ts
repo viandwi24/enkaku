@@ -2347,7 +2347,8 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               return
             }
             // The WS message has no way to ask for cancel-with-descendants
-            // (plan 81 §4.4) — that opt-in lives only on the REST route.
+            // (plan 81 §4.4), so it takes the service's default: a workflow
+            // job cascades to its steps, a script job does not.
             const { job: info } = deps.jobs.cancel(msg.payload.jobId)
             deps.audit.record({
               userId: state.userId,

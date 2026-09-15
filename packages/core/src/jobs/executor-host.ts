@@ -44,6 +44,10 @@ export interface ExecutorHostDeps {
   maxResultBytes?: () => number
   resultSummaryFields?: (scriptId: string) => SummaryField[]
   onProgress?: (jobId: string, runId: string, deviceId: string, value: unknown) => void
+  /** Force stop: ms after a cancel before the run's process is killed (`JOB_CANCEL_KILL_MS`). Defaults to {@link CANCEL_KILL_MS_DEFAULT}. */
+  cancelKillMs?: number
+  /** Ms after the kill before the host settles a still-running run `cancelled` itself. Defaults to {@link CANCEL_SETTLE_BUDGET_MS_DEFAULT}; tests shorten it. */
+  cancelSettleBudgetMs?: number
 }
 
 export interface ExecutorHost {
@@ -63,7 +67,28 @@ export interface ExecutorHost {
   stopAll(): void
 }
 
-const CANCEL_GRACE_MS = 5000
+/**
+ * Force stop, step one: how long a cancelled run may take to stop on its own
+ * before its executor's process is killed (`ExecutorContext.onForceKill`).
+ * The daemon passes `JOB_CANCEL_KILL_MS`; this is the fallback.
+ */
+export const CANCEL_KILL_MS_DEFAULT = 15_000
+
+/**
+ * Force stop, step two: how long after the kill the host still waits for the
+ * executor to settle before settling the run `cancelled` itself. It covers
+ * the script runner's finish-only re-run of `finish()` in a fresh process,
+ * whose worst case is `FINISH_ONLY_TIMEOUT_MS` (30 s) plus that attempt's own
+ * `FINISH_GRACE_MS` (30 s) and `SIGKILL_DELAY_MS` (5 s) — with a margin.
+ *
+ * This replaces a 5 s timer that only stopped the heartbeat and left the run
+ * to the reaper, which then settled a CANCELLED run as `failed`
+ * (`HEARTBEAT_EXPIRED`) about a minute later — often while its `finish()`
+ * was still legitimately running. The heartbeat now keeps beating until the
+ * run settles one way or the other, and the one who settles it says
+ * `cancelled`.
+ */
+export const CANCEL_SETTLE_BUDGET_MS_DEFAULT = 75_000
 
 interface RunningEntry {
   job: JobRow
@@ -71,6 +96,10 @@ interface RunningEntry {
   controller: AbortController
   heartbeat: ReturnType<typeof setInterval>
   hold: { release(): void } | null
+  /** True once `abort` ran — a second abort (a workflow's own step cancel plus a cascade, say) arms nothing twice. */
+  cancelling: boolean
+  /** The force-stop timers `abort` armed; cleared by every settle. */
+  cancelTimers: Array<ReturnType<typeof setTimeout>>
 }
 
 /**
@@ -82,6 +111,8 @@ interface RunningEntry {
 export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
   const running = new Map<string, RunningEntry>()
   const crashHandlers = new Map<string, (e: { package: string; exception: string; message: string }) => void>()
+  /** `ExecutorContext.onForceKill` registrations, by run id — only an executor with a process of its own registers one. */
+  const killHandlers = new Map<string, () => void>()
   const warnedProgress = new Set<string>()
   const classify = deps.classify ?? ((err: unknown) => classifyFailure(err, { timeoutIsInfra: deps.timeoutIsInfra() }))
 
@@ -115,10 +146,12 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
     const entry = running.get(run.id)
     if (entry) {
       clearInterval(entry.heartbeat)
+      for (const t of entry.cancelTimers) clearTimeout(t)
       running.delete(run.id)
       entry.hold?.release()
     }
     crashHandlers.delete(run.id)
+    killHandlers.delete(run.id)
     warnedProgress.delete(run.id)
 
     let failureClass: string | null = null
@@ -192,7 +225,7 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
         }
         deps.activities().touch(job.deviceId, activityIdFor(job, run))
       }, deps.heartbeatMs)
-      const entry: RunningEntry = { job, run, controller, heartbeat, hold: null }
+      const entry: RunningEntry = { job, run, controller, heartbeat, hold: null, cancelling: false, cancelTimers: [] }
       running.set(run.id, entry)
 
       let peakRssBytes: number | undefined
@@ -208,6 +241,9 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
         log: deps.log.child(`run:${run.id.slice(0, 8)}`),
         onCrash: (cb: (e: { package: string; exception: string; message: string }) => void) => {
           crashHandlers.set(run.id, cb)
+        },
+        onForceKill: (cb: () => void) => {
+          killHandlers.set(run.id, cb)
         },
         onPeakRss: (bytes: number) => {
           peakRssBytes = bytes
@@ -251,17 +287,52 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
         })
     },
 
+    /**
+     * Cancel, with a bounded force stop behind it. In order:
+     *
+     * 1. Abort the executor's signal now. A script run is asked to stop and
+     *    its `finish()` runs; a workflow run cancels its current step.
+     * 2. `cancelKillMs` later, if the run has not settled: call the
+     *    executor's `onForceKill` (the script executor SIGKILLs its child,
+     *    and the runner re-runs `finish()` in a fresh process).
+     * 3. `cancelSettleBudgetMs` after that, if it STILL has not settled:
+     *    settle it `cancelled` here. A cancel never leaves a run `running`,
+     *    and never lets the heartbeat reaper turn it into `failed`.
+     *
+     * Idempotent: a second abort of the same run (a workflow cancelling its
+     * own step, then a cascade reaching that step too) arms nothing twice.
+     */
     abort(runId) {
       const entry = running.get(runId)
       if (!entry) return false
+      if (entry.cancelling) return true
+      entry.cancelling = true
       entry.controller.abort()
-      setTimeout(() => {
-        const still = running.get(runId)
-        if (still) {
-          clearInterval(still.heartbeat)
-          deps.log.warn(`run ${runId} did not settle within ${CANCEL_GRACE_MS}ms — heartbeat stopped, waiting for the reaper`)
-        }
-      }, CANCEL_GRACE_MS)
+      const killMs = deps.cancelKillMs ?? CANCEL_KILL_MS_DEFAULT
+      const budgetMs = deps.cancelSettleBudgetMs ?? CANCEL_SETTLE_BUDGET_MS_DEFAULT
+      entry.cancelTimers.push(
+        setTimeout(() => {
+          if (running.get(runId) !== entry) return
+          const kill = killHandlers.get(runId)
+          if (kill) {
+            deps.log.warn(`run ${runId} did not stop within ${killMs}ms of its cancel — force stopping it (finish() runs again in a fresh process)`)
+            kill()
+          } else {
+            deps.log.warn(`run ${runId} did not stop within ${killMs}ms of its cancel and has no process to kill — settling it in ${budgetMs}ms if it still has not stopped`)
+          }
+        }, killMs),
+      )
+      entry.cancelTimers.push(
+        setTimeout(() => {
+          if (running.get(runId) !== entry) return
+          const waitedSec = Math.round((killMs + budgetMs) / 1000)
+          deps.log.warn(`run ${runId} still had not settled ${waitedSec}s after its cancel — settling it cancelled`)
+          settle(entry.job, entry.run, 'cancelled', {
+            error: `cancelled — the run had not stopped ${waitedSec}s after the cancel, so the farm stopped waiting for it`,
+            code: 'CANCEL_FORCED',
+          })
+        }, killMs + budgetMs),
+      )
       return true
     },
 
@@ -319,10 +390,12 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
     stopAll() {
       for (const [, entry] of running) {
         clearInterval(entry.heartbeat)
+        for (const t of entry.cancelTimers) clearTimeout(t)
         entry.controller.abort()
       }
       running.clear()
       crashHandlers.clear()
+      killHandlers.clear()
       warnedProgress.clear()
     },
   }

@@ -2,13 +2,14 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { BatchesPageResponseSchema, JobsPageResponseSchema, type BatchInfo, type JobInfo } from '@enkaku/protocol'
-import { CaretLeftIcon, CaretRightIcon, api, cn } from '@enkaku/ui'
+import { BatchesPageResponseSchema, JobsPageResponseSchema, type BatchInfo, type JobBulkCancelFilter, type JobInfo } from '@enkaku/protocol'
+import { CaretLeftIcon, CaretRightIcon, Checkbox, XCircleIcon, api, cn } from '@enkaku/ui'
 import { useNow } from '@/lib/useNow'
 import { ws } from '@/lib/ws'
 import { JOB_FILTERS, type JobCounts, type JobFilter } from '@/lib/use-job-counts'
 import { STATE_DOT, batchHref, batchState, jobHref, jobSubLine } from './job-view'
 import type { JobsTab } from './JobsTabStrip'
+import { CancelSelectedJobs, StopActiveJobs, StopBatchConfirm, batchHasActiveMembers } from './stop-controls'
 
 /**
  * The 268px left column (design handoff, "Screen: Jobs", "Left list"):
@@ -28,10 +29,28 @@ import type { JobsTab } from './JobsTabStrip'
  * or `batch.status` push MERGES into a loaded row and never prepends, and a
  * refetch happens only while `page === 0`, which is where a new row belongs
  * and where a reader watching for one is looking.
+ *
+ * Stopping work lives here too, because this is where the work is listed:
+ * on the Jobs and Workflows tabs a Select mode (tick queued or running rows,
+ * then Cancel selected) and Stop all active, which stops everything the
+ * current tab and chip describe; on the Batches tab, a stop button on every
+ * batch that still has a member queued or running.
  */
 const PER_PAGE = 12
 
-type Row = { id: string; name: string; state: ReturnType<typeof batchState>; sub: string; href: string }
+type Row = {
+  id: string
+  name: string
+  state: ReturnType<typeof batchState>
+  sub: string
+  href: string
+  /** A job row that a cancel can still act on (queued or running). */
+  cancellable: boolean
+  /** The batch behind a Batches-tab row, when it still has active members. */
+  stoppable: BatchInfo | null
+}
+
+const TOOL_BUTTON = 'flex-none rounded-small px-[10px] py-[5px] text-meta font-medium transition-colors disabled:cursor-default disabled:opacity-50'
 
 export function JobsSidebar({
   tab,
@@ -48,13 +67,20 @@ export function JobsSidebar({
   const [batches, setBatches] = useState<BatchInfo[]>([])
   const [total, setTotal] = useState<number | null>(null)
   const [hasNext, setHasNext] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
+  const [selecting, setSelecting] = useState(false)
+  const [picked, setPicked] = useState<Set<string>>(new Set())
+  const [stopTarget, setStopTarget] = useState<BatchInfo | null>(null)
   const cursors = useRef<Array<string | null>>([null])
   const now = useNow()
 
-  // The handoff: "changing tab or filter resets to page 1".
+  // The handoff: "changing tab or filter resets to page 1". A selection
+  // belongs to the list it was made on, so it goes with it.
   useEffect(() => {
     cursors.current = [null]
     setPage(0)
+    setSelecting(false)
+    setPicked(new Set())
   }, [tab, filter])
 
   useEffect(() => {
@@ -98,7 +124,7 @@ export function JobsSidebar({
       disposed = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, filter, page, counts.jobs, counts.batches, counts.workflows])
+  }, [tab, filter, page, counts.jobs, counts.batches, counts.workflows, reloadKey])
 
   // Merge in place only. `counts` above is the page-0 refetch trigger: the
   // coalescer that moves the tab and chip numbers is the same signal that a
@@ -128,6 +154,8 @@ export function JobsSidebar({
         state: j.status,
         sub: jobSubLine(j, now),
         href: jobHref(j.jobId, { tab }),
+        cancellable: j.status === 'queued' || j.status === 'running',
+        stoppable: null,
       }))
     }
     return batches.map((b) => {
@@ -138,9 +166,38 @@ export function JobsSidebar({
         state: batchState(b.status),
         sub: `${b.counts.total} device${b.counts.total === 1 ? '' : 's'} · ${done}/${b.counts.total}${b.counts.failed > 0 ? ` · ${b.counts.failed} failed` : ''}`,
         href: batchHref(b.id),
+        cancellable: false,
+        stoppable: batchHasActiveMembers(b) ? b : null,
       }
     })
   }, [tab, jobs, batches, now])
+
+  // A ticked row that has since settled is dropped from what gets sent.
+  const pickedIds = rows.filter((r) => r.cancellable && picked.has(r.id)).map((r) => r.id)
+
+  function toggle(id: string, on: boolean): void {
+    setPicked((prev) => {
+      const next = new Set(prev)
+      if (on) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
+
+  function afterStop(): void {
+    setPicked(new Set())
+    setSelecting(false)
+    setReloadKey((k) => k + 1)
+  }
+
+  // "Stop all active" stops what this tab and chip describe. A chip that
+  // names a settled state (success, failed) or none at all means every
+  // active job of the tab's kind; `running`/`queued` narrow it to that one.
+  const jobTab = tab === 'jobs' || tab === 'workflows'
+  const stopStatus: JobBulkCancelFilter['status'] = filter === 'running' || filter === 'queued' ? filter : 'active'
+  const stopFilter: JobBulkCancelFilter = { status: stopStatus, kind: tab === 'workflows' ? 'workflow' : 'script' }
+  const countQuery: Record<string, string> = tab === 'workflows' ? { kind: 'workflow' } : { excludeKind: 'workflow' }
+  const scopeWord = tab === 'workflows' ? 'on the Workflows tab' : 'on the Jobs tab'
 
   const first = page * PER_PAGE + 1
   const last = page * PER_PAGE + rows.length
@@ -170,24 +227,78 @@ export function JobsSidebar({
         ))}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto px-2 pb-[10px]">
-        {rows.map((r) => (
-          <Link
-            key={r.id}
-            href={r.href}
-            className={cn(
-              'flex items-center gap-[10px] rounded-button px-2 py-[9px] transition-colors',
-              r.id === selectedId ? 'bg-accent-soft' : 'hover:bg-muted',
-            )}
+      {jobTab && (
+        <div className="flex flex-none flex-wrap items-center gap-1 border-b border-line px-[10px] pb-[10px]">
+          <button
+            type="button"
+            onClick={() => {
+              setSelecting((s) => !s)
+              setPicked(new Set())
+            }}
+            className={cn(TOOL_BUTTON, selecting ? 'bg-accent-soft text-accent' : 'bg-muted text-dim hover:text-text')}
           >
-            <div className="min-w-0 flex-1">
-              <div className="flex min-w-0 items-center gap-[7px]">
-                <span className={cn('size-[7px] flex-none rounded-pill', STATE_DOT[r.state])} aria-hidden />
-                <span className="truncate font-mono text-[12px]">{r.name}</span>
+            {selecting ? 'Done' : 'Select'}
+          </button>
+          {selecting ? (
+            <CancelSelectedJobs
+              jobIds={pickedIds}
+              onDone={afterStop}
+              trigger={
+                <button type="button" disabled={pickedIds.length === 0} className={cn(TOOL_BUTTON, 'bg-danger-soft text-danger')}>
+                  Cancel selected{pickedIds.length > 0 ? ` (${pickedIds.length})` : ''}
+                </button>
+              }
+            />
+          ) : (
+            <StopActiveJobs
+              filter={stopFilter}
+              countQuery={countQuery}
+              scope={scopeWord}
+              onDone={afterStop}
+              trigger={
+                <button type="button" className={cn(TOOL_BUTTON, 'bg-muted text-dim hover:text-danger')}>
+                  Stop all active
+                </button>
+              }
+            />
+          )}
+        </div>
+      )}
+
+      <div className="min-h-0 flex-1 overflow-auto px-2 pt-[6px] pb-[10px]">
+        {rows.map((r) => (
+          <div
+            key={r.id}
+            className={cn('flex items-center rounded-button transition-colors', r.id === selectedId ? 'bg-accent-soft' : 'hover:bg-muted')}
+          >
+            {selecting && (
+              <span className="flex w-6 flex-none justify-center pl-2">
+                {r.cancellable && (
+                  <Checkbox checked={picked.has(r.id)} onCheckedChange={(v) => toggle(r.id, v === true)} aria-label={`Select ${r.name}`} />
+                )}
+              </span>
+            )}
+            <Link href={r.href} className="flex min-w-0 flex-1 items-center gap-[10px] px-2 py-[9px]">
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-[7px]">
+                  <span className={cn('size-[7px] flex-none rounded-pill', STATE_DOT[r.state])} aria-hidden />
+                  <span className="truncate font-mono text-[12px]">{r.name}</span>
+                </div>
+                <div className="mt-1 truncate pl-[14px] text-label text-faint">{r.sub}</div>
               </div>
-              <div className="mt-1 truncate pl-[14px] text-label text-faint">{r.sub}</div>
-            </div>
-          </Link>
+            </Link>
+            {r.stoppable && (
+              <button
+                type="button"
+                aria-label={`Stop batch ${r.name}`}
+                title="Stop batch"
+                onClick={() => setStopTarget(r.stoppable)}
+                className="mr-1 grid size-[26px] flex-none place-items-center rounded-small text-faint transition-colors hover:bg-danger-soft hover:text-danger"
+              >
+                <XCircleIcon className="size-[15px]" />
+              </button>
+            )}
+          </div>
         ))}
       </div>
 
@@ -212,6 +323,15 @@ export function JobsSidebar({
           <CaretRightIcon className="size-[13px]" />
         </button>
       </div>
+
+      <StopBatchConfirm
+        batch={stopTarget ? { id: stopTarget.id, name: stopTarget.scriptName ?? stopTarget.id.slice(0, 12), counts: stopTarget.counts } : null}
+        open={stopTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setStopTarget(null)
+        }}
+        onStopped={() => setReloadKey((k) => k + 1)}
+      />
     </div>
   )
 }

@@ -17,10 +17,12 @@ import {
   PlayIcon,
   SignInIcon,
   SquaresFourIcon,
+  XCircleIcon,
   api,
   cn,
   duration,
 } from '@enkaku/ui'
+import { StopBatchConfirm, batchHasActiveMembers } from './stop-controls'
 import { toast } from 'sonner'
 import { fetchDevices } from '@/lib/api'
 import { runOnDevice } from '@/lib/actions'
@@ -54,6 +56,7 @@ export function BatchDetail({ batchId }: { batchId: string }) {
    */
   const [deviceNames, setDeviceNames] = useState<Map<string, { number: number | null; label: string }>>(new Map())
   const [rerunning, setRerunning] = useState<Set<string>>(new Set())
+  const [stopOpen, setStopOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const now = useNow()
   const params = useSearchParams()
@@ -183,6 +186,19 @@ export function BatchDetail({ batchId }: { batchId: string }) {
           .catch((e) => toast.error(e instanceof Error ? e.message : String(e)))
       },
     },
+    ...(batchHasActiveMembers(batch)
+      ? [
+          {
+            // Visible only while a member is queued or running — the only
+            // time a stop acts on anything. `POST /:id/stop` marks the batch
+            // stopping first, so the next repetitions never start either.
+            key: 'stop',
+            label: 'Stop batch',
+            icon: <XCircleIcon className="size-[13px]" />,
+            onClick: () => setStopOpen(true),
+          },
+        ]
+      : []),
     {
       /*
         The report as text, because a batch's result is reported to somebody:
@@ -258,6 +274,12 @@ export function BatchDetail({ batchId }: { batchId: string }) {
           </>
         }
         actions={actions}
+      />
+      <StopBatchConfirm
+        batch={{ id: batch.id, name: batch.scriptName ?? batch.id.slice(0, 12), counts: batch.counts }}
+        open={stopOpen}
+        onOpenChange={setStopOpen}
+        onStopped={load}
       />
       <SubTabs tabs={tabs} active={view} />
       <div className="min-h-0 flex-1 overflow-auto">

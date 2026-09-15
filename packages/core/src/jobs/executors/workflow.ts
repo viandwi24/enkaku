@@ -850,7 +850,11 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
         }
       } catch (err) {
         finalStatus = 'failed'
-        cancelled = ctx.signal.aborted && !(err instanceof EnkakuError)
+        // A step's wait rejects with `EnkakuError('E_CANCELLED')` when the
+        // signal aborts (`runs/watcher.ts`), so an EnkakuError alone does not
+        // mean a genuine failure: excluding every EnkakuError here recorded a
+        // workflow cancelled mid-step as FAILED and ran its `onFail` cleanup.
+        cancelled = ctx.signal.aborted && (!(err instanceof EnkakuError) || err.code === 'E_CANCELLED' || err.code === 'job_cancelled')
         finalErrorCode = cancelled ? 'job_cancelled' : err instanceof EnkakuError ? err.code : 'E_WORKFLOW_INTERNAL'
         finalErrorMessage = err instanceof Error ? err.message : String(err)
       } finally {

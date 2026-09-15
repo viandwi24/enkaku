@@ -81,6 +81,10 @@ export function createScriptExecutor(deps: { registry: ScriptRegistry; runner: J
 
       // A cancel from the core aborts the child (grace → SIGTERM → SIGKILL).
       ctx.signal.addEventListener('abort', () => deps.runner.abort(ctx.runId, 'cancelled'))
+      // Force stop (`JOB_CANCEL_KILL_MS` after a cancel the child has not
+      // honoured): SIGKILL now rather than after the runner's own grace, and
+      // let the runner's finish-only attempt run `finish()` in a fresh process.
+      ctx.onForceKill?.(() => deps.runner.kill?.(ctx.runId))
       // A crash of a package the farm's crash policy cares about (plan 37
       // §3.5, §4.4) — a SEPARATE abort path from `signal` above, so it
       // settles as `APP_CRASHED` (script-class, never blames the device)

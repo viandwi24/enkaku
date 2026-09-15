@@ -450,11 +450,24 @@ export function abortReasonSentence(reason: AbortReason): string {
 export interface RunningJob {
   /** `detail` is a human-readable cause, used only for `reason: 'crashed'` (plan 37 §4.4) — e.g. "com.example.app crashed: java.lang.NullPointerException". */
   abort(reason: AbortReason, detail?: string): void
+  /** Force stop — see `JobRunner.kill`. */
+  kill(): void
 }
 
 export interface JobRunner {
   execute(job: JobSpec): Promise<{ ok: boolean; value?: unknown; error?: ScriptFailure; peakRssBytes?: number; outcome?: ResultOutcome }>
   abort(jobId: string, reason: AbortReason, detail?: string): boolean
+  /**
+   * Force stop: SIGKILL the running attempt's child NOW instead of waiting
+   * out `FINISH_GRACE_MS`. The attempt ends as a cancel (unless it was
+   * already aborting for another reason), and `finish()` is NOT skipped — the
+   * killed attempt reports `finishRan: false`, so `execute()`'s finish-only
+   * re-run runs it again in a fresh process (spec §11.2). A finish-only
+   * attempt is never killed by this: it IS the cleanup, and it has its own
+   * short `FINISH_ONLY_TIMEOUT_MS`. Optional so a hand-built test runner need
+   * not implement it. Returns false when no run with this id is active.
+   */
+  kill?(jobId: string): boolean
 }
 
 const childEntryPath = join(import.meta.dir, 'child-entry.ts')
@@ -548,6 +561,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     logger: ReturnType<typeof createJobLogger>
     artifacts: ArtifactSink
     aborter: { current: ((reason: AbortReason, detail?: string) => void) | null }
+    /** Force stop (`JobRunner.kill`). Passed only to a 'full' attempt — a finish-only attempt is the cleanup and is never killed early. */
+    killer?: { current: (() => void) | null }
     /** Filled from the `ready` message — timeout and retries belong to ScriptDefinition. */
     meta?: { timeoutMs?: number; retries?: number; scriptId?: string; version?: string; pluginId?: string }
     /**
@@ -652,6 +667,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       let silenceTimer: ReturnType<typeof setTimeout> | null = null
       let abortReason: AbortReason | null = null
       let abortDetail: string | undefined
+      // Set by a force stop (`doKill` below): the attempt is reported with
+      // `finishRan: false` whatever phase it reached, so an interrupted
+      // `finish()` runs again, whole, in a fresh process.
+      let forceKilled = false
       // Plan 98 §4.7, §4.8, H1 — the peak of every `rss` sample this attempt
       // has reported. `null` until the first sample arrives (never 0 — a real
       // RSS reading of exactly zero bytes cannot happen, so this stays a
@@ -695,6 +714,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         tee.closePhase()
         for (const t of [killTimer, timeoutTimer, startupTimer, graceTimer, silenceTimer]) if (t) clearTimeout(t)
         opts.aborter.current = null
+        if (opts.killer) opts.killer.current = null
         try {
           child.kill()
         } catch {
@@ -812,6 +832,32 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       }
 
       opts.aborter.current = doAbort
+
+      /**
+       * Force stop (`JobRunner.kill`) — the core's cancel escalation, fired
+       * when a cancelled child has not stopped within `JOB_CANCEL_KILL_MS`.
+       * Everything `doAbort` would still have waited for (the rest of
+       * `FINISH_GRACE_MS`, then SIGTERM, then `SIGKILL_DELAY_MS`) is skipped:
+       * SIGKILL now. The exit path reports the attempt as aborted (`cancelled`
+       * when nothing else was already aborting it) with `finishRan: false`,
+       * so `execute()`'s finish-only re-run still runs `finish()` — in a fresh
+       * process, which is exactly why `finish()` must be stateless and
+       * idempotent.
+       */
+      const doKill = () => {
+        if (settled) return
+        if (!abortReason) abortReason = 'cancelled'
+        forceKilled = true
+        logger.append('warn', 'runner', `force stop, attempt ${attempt}: killing the child now — finish() runs again in a fresh process`)
+        if (graceTimer) clearTimeout(graceTimer)
+        if (killTimer) clearTimeout(killTimer)
+        try {
+          child.kill('SIGKILL')
+        } catch {
+          /* already gone */
+        }
+      }
+      if (opts.killer) opts.killer.current = doKill
 
       const sendInit = () => {
         if (settled) return
@@ -1239,7 +1285,9 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           error: abortReason
             ? { code: abortErrorCode(abortReason), message: abortDetail ?? `child aborted: ${abortReasonSentence(abortReason)}`, phase: 'timeout' }
             : { code: 'CHILD_CRASHED', message: `child exited ${code} without sending a result`, phase: 'run' },
-          finishRan,
+          // A force-killed child may have been part-way through `finish()`:
+          // report it as not run, so the finish-only attempt runs it whole.
+          finishRan: forceKilled ? false : finishRan,
           ...(peakRssBytes !== null ? { peakRssBytes } : {}),
         })
       })
@@ -1266,6 +1314,13 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       const running = active.get(jobId)
       if (!running) return false
       running.abort(reason, detail)
+      return true
+    },
+
+    kill(jobId) {
+      const running = active.get(jobId)
+      if (!running) return false
+      running.kill()
       return true
     },
 
@@ -1358,8 +1413,13 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       })
       const artifacts = deps.artifacts(job.runId)
       const aborter: { current: ((reason: AbortReason, detail?: string) => void) | null } = { current: null }
+      // Only the 'full' attempt below is handed `killer`: between attempts, and
+      // during a finish-only attempt, `kill` finds nothing to kill and does
+      // nothing — the cleanup is never cut short by a force stop.
+      const killer: { current: (() => void) | null } = { current: null }
       active.set(job.runId, {
         abort: (reason, detail) => aborter.current?.(reason, detail),
+        kill: () => killer.current?.(),
       })
 
       let outcome: AttemptOutcome = { ok: false, finishRan: false, error: { code: 'NOT_RUN', message: 'not run yet', phase: 'run' } }
@@ -1499,6 +1559,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               logger,
               artifacts,
               aborter,
+              killer,
               meta,
               tee,
             })

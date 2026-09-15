@@ -219,8 +219,13 @@ export function JobsList({
   function cancel(j: JobInfo) {
     return run(
       `cancel-${j.jobId}`,
+      // No `cancelDescendants`: the server cascades a workflow job to its
+      // steps by default, and leaves a script job's triggered jobs alone.
       () => api(`/api/jobs/${j.jobId}/cancel`, JobCancelResponseSchema, { method: 'POST' }),
-      { success: 'Job cancelled', failure: 'Could not cancel the job' },
+      {
+        success: j.kind === 'workflow' ? 'Workflow cancelled, with its steps' : 'Job cancelled',
+        failure: j.kind === 'workflow' ? 'Could not cancel the workflow' : 'Could not cancel the job',
+      },
     ).then(() => onChanged?.())
   }
 
@@ -383,7 +388,7 @@ export function JobsList({
                     disabled={isPending(`cancel-${j.jobId}`)}
                     onClick={() => void cancel(j)}
                   >
-                    Cancel
+                    {j.kind === 'workflow' ? 'Cancel workflow (and its steps)' : 'Cancel'}
                   </Button>
                 )}
               </TableCell>

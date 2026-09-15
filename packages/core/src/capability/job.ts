@@ -105,6 +105,8 @@ export const jobCancel = defineCapability({
   deadline: 10_000,
   effect: 'write',
   description: 'Cancel a queued or running job.',
+  // A workflow job still cascades to its steps here: that is the service's
+  // default for `kind: 'workflow'`, not an option this surface passes.
   // `cancelDescendants` (plan 81 §4.4) is deliberately not exposed here —
   // this is the agent-facing capability surface (plan 63), out of this
   // plan's scope; only the REST route below gained the opt-in.

@@ -688,3 +688,115 @@ describe('createExecutorHost — the heartbeat touches the job activity (plan 20
     expect(recorded.activityTouches).toContainEqual({ deviceId: 'dev-1', id: 'job:run-1' })
   })
 })
+
+/**
+ * Force stop: `abort` asks, then kills, then — only if the executor never
+ * settles at all — settles the run `cancelled` itself. A cancel never leaves
+ * a run `running`, and never hands it to the heartbeat reaper to be recorded
+ * as `failed`.
+ */
+describe('createExecutorHost — a cancel always ends, and ends cancelled', () => {
+  const cancelledError = () => Object.assign(new Error('the job was cancelled'), { code: 'job_cancelled' })
+
+  test('a run that honours its cancel settles cancelled and is never force stopped', async () => {
+    const job = makeJob()
+    const run = makeRun()
+    const { deps, recorded } = makeDeps(job, run)
+    deps.cancelKillMs = 20
+    deps.cancelSettleBudgetMs = 20
+    let kills = 0
+    deps.registry.register('test-script', {
+      validateParams: (p) => p,
+      run: (_job, ctx) =>
+        new Promise((_resolve, reject) => {
+          ctx.onForceKill?.(() => kills++)
+          ctx.signal.addEventListener('abort', () => reject(cancelledError()))
+        }),
+    })
+    const host = createExecutorHost(deps)
+    host.start(job, run)
+    await Bun.sleep(5)
+    expect(host.abort(run.id)).toBe(true)
+    await Bun.sleep(80)
+
+    expect(recorded.settleCalls.map((s) => s.status)).toEqual(['cancelled'])
+    expect(kills).toBe(0)
+  })
+
+  test('a run ignoring its cancel is force-killed after cancelKillMs, and its own settle after the kill is what counts', async () => {
+    const job = makeJob()
+    const run = makeRun()
+    const { deps, recorded } = makeDeps(job, run)
+    deps.cancelKillMs = 30
+    deps.cancelSettleBudgetMs = 1_000
+    let kills = 0
+    deps.registry.register('test-script', {
+      validateParams: (p) => p,
+      run: (_job, ctx) =>
+        new Promise((_resolve, reject) => {
+          ctx.onForceKill?.(() => {
+            kills++
+            reject(cancelledError())
+          })
+        }),
+    })
+    const host = createExecutorHost(deps)
+    host.start(job, run)
+    await Bun.sleep(5)
+    host.abort(run.id)
+    await Bun.sleep(10)
+    expect(kills).toBe(0)
+    await Bun.sleep(60)
+
+    expect(kills).toBe(1)
+    expect(recorded.settleCalls).toHaveLength(1)
+    expect(recorded.settleCalls[0]?.status).toBe('cancelled')
+    expect(recorded.settleCalls[0]?.data.error).toBe('the job was cancelled')
+    expect(host.isRunning(run.id)).toBe(false)
+  })
+
+  test('a run that never settles, with nothing to kill, is settled cancelled by the host once the budget runs out', async () => {
+    const job = makeJob()
+    const run = makeRun()
+    const { deps, recorded } = makeDeps(job, run)
+    deps.cancelKillMs = 10
+    deps.cancelSettleBudgetMs = 20
+    deps.registry.register('test-script', { validateParams: (p) => p, run: () => new Promise(() => {}) })
+    const host = createExecutorHost(deps)
+    host.start(job, run)
+    await Bun.sleep(5)
+    host.abort(run.id)
+    await Bun.sleep(80)
+
+    expect(recorded.settleCalls).toHaveLength(1)
+    expect(recorded.settleCalls[0]?.status).toBe('cancelled')
+    expect(recorded.settleCalls[0]?.data.error).toContain('stopped waiting')
+    expect(recorded.activityEnds).toEqual([{ deviceId: 'dev-1', id: 'job:run-1' }])
+    expect(host.isRunning(run.id)).toBe(false)
+  })
+
+  test('aborting the same run twice arms one force stop, not two', async () => {
+    const job = makeJob()
+    const run = makeRun()
+    const { deps, recorded } = makeDeps(job, run)
+    deps.cancelKillMs = 10
+    deps.cancelSettleBudgetMs = 20
+    let kills = 0
+    deps.registry.register('test-script', {
+      validateParams: (p) => p,
+      run: (_job, ctx) =>
+        new Promise(() => {
+          ctx.onForceKill?.(() => kills++)
+        }),
+    })
+    const host = createExecutorHost(deps)
+    host.start(job, run)
+    await Bun.sleep(5)
+    expect(host.abort(run.id)).toBe(true)
+    expect(host.abort(run.id)).toBe(true)
+    await Bun.sleep(80)
+
+    expect(kills).toBe(1)
+    expect(recorded.settleCalls).toHaveLength(1)
+  })
+})

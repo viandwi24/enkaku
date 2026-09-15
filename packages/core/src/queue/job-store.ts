@@ -1,6 +1,6 @@
 import type { JobDetail, JobInfo, ParamIssue, ResultStatus, RuntimeEnvelope } from '@enkaku/protocol'
 import { RuntimeEnvelopeSchema } from '@enkaku/protocol'
-import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, ne, or, sql } from 'drizzle-orm'
 import { changedRows, type Db } from '../db'
 import { devices, jobRuns, jobs, scripts, type JobRow, type JobRunRow } from '../db/schema'
 import { keysetWhere } from '../api/pagination'
@@ -191,6 +191,27 @@ export interface JobStore {
   requeueForRebind(runId: string, newDeviceId: string): JobRunRow | null
   /** Every job belonging to a batch, ordered by batchSeq (plan 20 §4.5, §4.6). */
   listByBatch(batchId: string): JobRow[]
+  /**
+   * The direct children of these jobs, for cancel-with-descendants: a
+   * workflow job's steps (`parentWorkflowJobId`) and every job one of them
+   * triggered (`triggeredByJobId`, plus `rootJobId` for a chain's root).
+   * The caller walks the tree level by level.
+   */
+  listChildren(jobIds: string[]): JobRow[]
+  /**
+   * Jobs whose LATEST run is queued and/or running, oldest first, for
+   * `POST /api/jobs/cancel`'s filter form. `total` counts every match;
+   * `rows` stops at `limit`. Simulated runs are included: a stop means stop.
+   */
+  listActive(filter: {
+    status: 'queued' | 'running' | 'active'
+    deviceId?: string
+    batchId?: string
+    scheduleId?: string
+    kind?: string
+    rootJobId?: string
+    limit: number
+  }): { rows: JobRow[]; total: number }
 }
 
 export function createJobStore(db: Db): JobStore {
@@ -380,6 +401,32 @@ export function createJobStore(db: Db): JobStore {
 
     listByBatch(batchId) {
       return db.select().from(jobs).where(eq(jobs.batchId, batchId)).orderBy(asc(jobs.batchSeq)).all()
+    },
+
+    listChildren(jobIds) {
+      if (jobIds.length === 0) return []
+      return db
+        .select()
+        .from(jobs)
+        .where(or(inArray(jobs.parentWorkflowJobId, jobIds), inArray(jobs.triggeredByJobId, jobIds), inArray(jobs.rootJobId, jobIds)))
+        .orderBy(asc(jobs.createdAt), asc(jobs.id))
+        .all()
+        .filter((row) => !jobIds.includes(row.id))
+    },
+
+    listActive(filter) {
+      const conds = []
+      if (filter.deviceId) conds.push(eq(jobs.deviceId, filter.deviceId))
+      if (filter.batchId) conds.push(eq(jobs.batchId, filter.batchId))
+      if (filter.scheduleId) conds.push(eq(jobs.scheduleId, filter.scheduleId))
+      if (filter.kind) conds.push(eq(jobs.kind, filter.kind as JobRow['kind']))
+      if (filter.rootJobId) conds.push(eq(jobs.rootJobId, filter.rootJobId))
+      const latestStatus = sql`(SELECT ${jobRuns.status} FROM ${jobRuns} WHERE ${jobRuns.id} = ${jobs.latestRunId})`
+      conds.push(filter.status === 'active' ? sql`${latestStatus} IN ('queued', 'running')` : sql`${latestStatus} = ${filter.status}`)
+      const where = and(...conds)
+      const total = db.select({ n: sql<number>`count(*)` }).from(jobs).where(where).get()?.n ?? 0
+      const rows = db.select().from(jobs).where(where).orderBy(asc(jobs.createdAt), asc(jobs.id)).limit(filter.limit).all()
+      return { rows, total }
     },
 
     renewHeartbeat(runId, ttlSec) {
