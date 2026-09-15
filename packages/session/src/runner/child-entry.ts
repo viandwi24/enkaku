@@ -34,25 +34,50 @@ function send(msg: ChildToParent): void {
   process.send?.(parsed.data)
 }
 
-const pendingDevice = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
+type Waiter = { resolve: (v: unknown) => void; reject: (e: unknown) => void; fromFinish: boolean }
+const pendingDevice = new Map<string, Waiter>()
 const pendingArtifact = new Map<string, { resolve: (v: { artifactId: string }) => void; reject: (e: unknown) => void }>()
-const pendingKv = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
-const pendingJobs = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
-const pendingFarm = new Map<string, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>()
+const pendingKv = new Map<string, Waiter>()
+const pendingJobs = new Map<string, Waiter>()
+const pendingFarm = new Map<string, Waiter>()
 const abortController = new AbortController()
 let aborted: 'timeout' | 'cancelled' | 'hung' | 'crashed' | 'startup-timeout' | null = null
 
-function request<T>(call: Omit<Extract<ChildToParent, { t: 'device.call' }>, 't' | 'callId'>): Promise<T> {
+/** Rejects every pending call an abort must stop, keeping the ones `finish()` is waiting on. */
+function rejectOnAbort(pending: Map<string, Waiter>, reason: string): void {
+  for (const [callId, waiter] of pending) {
+    if (waiter.fromFinish) continue
+    waiter.reject(new Error(`job aborted (${reason})`))
+    pending.delete(callId)
+  }
+}
+
+type DeviceCallInput = Omit<Extract<ChildToParent, { t: 'device.call' }>, 't' | 'callId'>
+type DeviceRequest = <T>(call: DeviceCallInput) => Promise<T>
+
+/**
+ * `fromFinish` marks a call made through the `ctx.device` handed to
+ * `finish()`. An abort must stop `run()` — whose promise is only raced, not
+ * stopped, so a loop that catches errors keeps issuing calls — but `finish()`
+ * runs BECAUSE of the abort and exists to clean up: refusing its calls left a
+ * cancelled TikTok run with the app still open on the phone, `forceStop`
+ * rejected as "job aborted (cancelled)" (moto g06, 2026-09-15). The parent
+ * still bounds `finish()` with its own grace and kill.
+ */
+function deviceRequest<T>(call: DeviceCallInput, fromFinish: boolean): Promise<T> {
   const callId = crypto.randomUUID()
   return new Promise<T>((resolve, reject) => {
-    if (aborted) {
+    if (aborted && !fromFinish) {
       reject(new Error(`job aborted (${aborted})`))
       return
     }
-    pendingDevice.set(callId, { resolve: resolve as (v: unknown) => void, reject })
+    pendingDevice.set(callId, { resolve: resolve as (v: unknown) => void, reject, fromFinish })
     send({ t: 'device.call', callId, ...call } as ChildToParent)
   })
 }
+
+const request: DeviceRequest = (call) => deviceRequest(call, false)
+const finishRequest: DeviceRequest = (call) => deviceRequest(call, true)
 
 function kvRequest<T>(call: KvCall): Promise<T> {
   const callId = crypto.randomUUID()
@@ -61,7 +86,7 @@ function kvRequest<T>(call: KvCall): Promise<T> {
       reject(new Error(`job aborted (${aborted})`))
       return
     }
-    pendingKv.set(callId, { resolve: resolve as (v: unknown) => void, reject })
+    pendingKv.set(callId, { resolve: resolve as (v: unknown) => void, reject, fromFinish: false })
     send({ t: 'kv.call', callId, ...call } as ChildToParent)
   })
 }
@@ -77,7 +102,7 @@ function farmRequest(capability: string, input: unknown): Promise<unknown> {
       reject(new Error(`job aborted (${aborted})`))
       return
     }
-    pendingFarm.set(callId, { resolve, reject })
+    pendingFarm.set(callId, { resolve, reject, fromFinish: false })
     send({ t: 'farm.call', callId, capability, ...(input !== undefined ? { input } : {}) })
   })
 }
@@ -89,7 +114,7 @@ function jobsRequest<T>(call: JobsCall): Promise<T> {
       reject(new Error(`job aborted (${aborted})`))
       return
     }
-    pendingJobs.set(callId, { resolve: resolve as (v: unknown) => void, reject })
+    pendingJobs.set(callId, { resolve: resolve as (v: unknown) => void, reject, fromFinish: false })
     send({ t: 'jobs.call', callId, ...call } as ChildToParent)
   })
 }
@@ -113,7 +138,9 @@ function saveArtifact(kind: 'screenshot' | 'file', label: string, dataBase64?: s
 const log = (level: Level) => (msg: string, fields?: Record<string, unknown>) =>
   send({ t: 'log', level, msg, ...(fields ? { fields } : {}) })
 
-const deviceApi = {
+/** Built twice: once for `prepare`/`run`, once over `finishRequest` for `finish()` (see `deviceRequest`). */
+function makeDeviceApi(request: DeviceRequest) {
+  return {
   tap: (target: unknown, opts?: { via?: 'adb' }) => request<void>({ method: 'tap', args: { target, ...(opts?.via ? { via: opts.via } : {}) } } as never),
   /*
    * Plan 94 step 94.2's four replay verbs, forwarded HERE — the line they were
@@ -256,7 +283,11 @@ const deviceApi = {
     mkdir: (opts: { path: string; parents?: boolean }) =>
       request<DeviceFsOkResult>({ method: 'fs.mkdir', args: opts } as never),
   },
+  }
 }
+
+const deviceApi = makeDeviceApi(request)
+const finishDeviceApi = makeDeviceApi(finishRequest)
 
 const artifactApi = {
   screenshot: (label: string) => saveArtifact('screenshot', label),
@@ -312,15 +343,12 @@ process.on('message', (raw: unknown) => {
   } else if (msg.t === 'abort') {
     aborted = msg.reason
     abortController.abort()
-    // Every pending device call is cancelled so the active phase stops quickly.
-    for (const [, waiter] of pendingDevice) waiter.reject(new Error(`job aborted (${msg.reason})`))
-    pendingDevice.clear()
-    for (const [, waiter] of pendingKv) waiter.reject(new Error(`job aborted (${msg.reason})`))
-    pendingKv.clear()
-    for (const [, waiter] of pendingJobs) waiter.reject(new Error(`job aborted (${msg.reason})`))
-    pendingJobs.clear()
-    for (const [, waiter] of pendingFarm) waiter.reject(new Error(`job aborted (${msg.reason})`))
-    pendingFarm.clear()
+    // Every pending call of the active phase is cancelled so it stops quickly;
+    // a call `finish()` already has in flight is its cleanup and is kept.
+    rejectOnAbort(pendingDevice, msg.reason)
+    rejectOnAbort(pendingKv, msg.reason)
+    rejectOnAbort(pendingJobs, msg.reason)
+    rejectOnAbort(pendingFarm, msg.reason)
   } else if (msg.t === 'init') {
     void runScript(msg)
   }
@@ -751,7 +779,7 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
       let finishValue: unknown
       if (def.finish) {
         send({ t: 'phase', phase: 'finish' })
-        finishValue = await def.finish(ctx)
+        finishValue = await def.finish({ ...ctx, device: finishDeviceApi })
       }
       finishRan = true
       // Plan 97 §3.5, §4.2, step 97.4 — this fresh process is the ONLY
@@ -797,7 +825,7 @@ async function runScript(init: Extract<ParentToChild, { t: 'init' }>): Promise<v
       if (failure) ctx.error = failure
       send({ t: 'phase', phase: 'finish' })
       try {
-        finishValue = await def.finish(ctx)
+        finishValue = await def.finish({ ...ctx, device: finishDeviceApi })
       } catch (err) {
         // The first error wins; a failure in finish is only logged.
         const finishErr = toScriptError(err, 'finish')

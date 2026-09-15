@@ -840,3 +840,63 @@ export default {
     expect(progressMessages).toEqual([])
   })
 })
+
+describe('child-entry.ts — finish() can still clean up after an abort', () => {
+  // A cancelled TikTok run left the app open on the phone: its finish() called
+  // forceStop and the child refused it as "job aborted (cancelled)" (moto g06,
+  // 2026-09-15). run() is only raced, so a loop that swallows errors keeps
+  // going after the abort, and those calls must still be refused.
+  test('after an abort, run()\'s loop is refused but finish()\'s forceStop reaches the parent', async () => {
+    const bundle = writeBundle(`
+export default {
+  id: 'loop',
+  version: '1.0.0',
+  params: { parse: (v) => v },
+  run: async (ctx) => {
+    for (;;) {
+      try { await ctx.device.key('HOME') } catch {}
+      await new Promise((r) => setTimeout(r, 20))
+    }
+  },
+  finish: async (ctx) => {
+    await new Promise((r) => setTimeout(r, 100))
+    await ctx.device.app.forceStop('com.example.app')
+  },
+}
+`)
+    const afterAbort: string[] = []
+    let abortSent = false
+    const result = await new Promise<FirstMessage>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        proc.kill()
+        reject(new Error('timed out waiting for a result message'))
+      }, 10_000)
+      const proc = Bun.spawn([process.execPath, ENTRY, bundle], {
+        ipc(raw) {
+          const msg = raw as FirstMessage
+          if (msg.t === 'ready') {
+            proc.send({ t: 'init', mode: 'full', job: { id: 'job-1', attempt: 1, deviceId: 'dev-1' }, params: {}, rssSampleMs: 60_000, maxResultBytes: 65_536 })
+          }
+          if (msg.t === 'device.call') {
+            if (abortSent) afterAbort.push(String(msg.method))
+            proc.send({ t: 'device.result', callId: msg.callId as string, ok: true, value: null })
+            if (!abortSent) {
+              abortSent = true
+              proc.send({ t: 'abort', reason: 'cancelled' })
+            }
+          }
+          if (msg.t === 'result') {
+            clearTimeout(timer)
+            resolve(msg)
+            proc.kill()
+          }
+        },
+        stdout: 'ignore',
+        stderr: 'ignore',
+      })
+    })
+    expect(afterAbort).toEqual(['app.forceStop'])
+    expect(result.ok).toBe(false)
+    expect(result.finishRan).toBe(true)
+  })
+})
