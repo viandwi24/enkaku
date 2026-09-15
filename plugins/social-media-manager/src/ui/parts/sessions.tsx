@@ -513,7 +513,16 @@ function useSessionsData(refreshKey: number): {
    * is open.
    */
   const moving = useMemo(
-    () => (data?.groups ?? []).some((g) => g.progress === null || g.progress.running > 0 || g.progress.waiting > 0),
+    () =>
+      (data?.groups ?? []).some((g) => g.progress === null || g.progress.running > 0 || g.progress.waiting > 0) ||
+      // The rows themselves too (0.26.0): a session's stored progress lags a row-level Retry by a tick,
+      // and reading only it stopped the poll with the retried cells frozen at "Running".
+      (data?.posts ?? []).some((p) =>
+        p.platforms.some((id) => {
+          const bucket = bucketOf(p.dispatch[id])
+          return bucket === 'running' || (bucket === 'waiting' && p.notBeforeAt !== null)
+        }),
+      ),
     [data],
   )
 

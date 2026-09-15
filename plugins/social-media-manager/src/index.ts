@@ -81,7 +81,12 @@ import {
  *   (the router records `startedAt` the first time `job.get` reads `running`),
  *   and "for …" counts from that start. Retry failed on a session row now hands
  *   its failed platforms back to the router as waiting, so they are sent one
- *   at a time as the phone frees up, like the first send.
+ *   at a time as the phone frees up, like the first send. And the page keeps
+ *   refreshing after a row-level Retry: it decided whether to poll from the
+ *   session's stored progress, which still said nothing was running, so the
+ *   retried cells stayed "Running" after the phone had finished. The retry now
+ *   recounts the session at once, and the page also polls while any row of it
+ *   is running or due.
  *
  * - **0.25.0 — one Social job per phone at a time.** The owner (2026-09-15):
  *   one phone showed TikTok, YouTube and Instagram all "Running" together.

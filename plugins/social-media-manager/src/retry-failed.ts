@@ -5,6 +5,7 @@ import { platformById } from './platforms'
 import { PostSchema, failedDevices, nextRound, postKeyFor, rollUp, stateFor, withRetired, withSummary, type Attempt, type Post } from './posts'
 import { GroupSchema, groupKeyFor, type Group } from './groups'
 import { NO_HASHTAG_RULE, composePostText, hashtagsFor } from './hashtags'
+import { refreshGroupProgress } from './resolve-attempt'
 
 /**
  * The text a retry sends — the same the router sends (0.19.0): the caption and the session's fixed hashtags, the line
@@ -189,6 +190,9 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     }
 
     await ctx.storage.global.set(key, { ...post, dispatch })
+    // Recount the session at once (0.26.0). Its stored progress still said nothing was running, so the
+    // page stopped polling and kept showing the retried cells as they were when Retry was pressed.
+    if (post.groupId !== null) await refreshGroupProgress(ctx, post.groupId)
     ctx.log.info('re-queued the failed phones', { key, requeued, platforms: platforms.join(',') })
     return { requeued, platforms, skipped }
   },

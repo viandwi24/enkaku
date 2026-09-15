@@ -124,7 +124,7 @@ async function checkJob(ctx: ScriptContext<unknown>, jobId: string): Promise<Job
  * Recount the session's progress from its rows, the way the router does each tick (`withProgress`), so
  * a marked row moves the header at once. Best effort: the router rewrites it within seconds anyway.
  */
-async function refreshGroupProgress(ctx: ScriptContext<unknown>, groupId: string): Promise<void> {
+export async function refreshGroupProgress(ctx: ScriptContext<unknown>, groupId: string): Promise<void> {
   try {
     const states: RowState[] = []
     let cursor: string | null = null
@@ -144,7 +144,7 @@ async function refreshGroupProgress(ctx: ScriptContext<unknown>, groupId: string
     const next = withProgress(group, states)
     if (next) await ctx.storage.global.set(groupKeyFor(groupId), next)
   } catch (err) {
-    ctx.log.warn('could not recount the session after a hand mark — the router does it on its next tick', {
+    ctx.log.warn('could not recount the session after changing a row — the router does it on its next tick', {
       groupId,
       error: err instanceof Error ? err.message : String(err),
     })
