@@ -74,6 +74,19 @@ import {
  *
  * ## Changelog
  *
+ * - **0.29.0 — auto caption writes the video's main point, plainly.** The
+ *   owner (2026-09-15): generated captions must be good, clear and to the
+ *   point — the big point of what happens in the video, not a long retelling.
+ *   The writer is now told to decide the one main point first and open with it
+ *   concretely (no generic hooks), to keep sentences short with no filler or
+ *   repetition (two or three sentences are usually enough), to summarise
+ *   rather than retell the transcript, and to pick hashtags that name the
+ *   video's actual subject. Each platform's words follow the same rule: TikTok
+ *   and Instagram lead with the point and add at most two short sentences
+ *   (TikTok with one or two emoji at most), and the YouTube title states the
+ *   point plainly, without clickbait the video does not back up. Limits, JSON
+ *   shape and fitting are unchanged.
+ *
  * - **0.28.0 — every platform always has its own caption, fitted to it.**
  *   The owner (2026-09-15): TikTok, YouTube and Instagram each need their own
  *   caption, and this plugin must know each platform's limits. In 0.27.0 a
@@ -1146,7 +1159,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.28.0',
+  version: '0.29.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

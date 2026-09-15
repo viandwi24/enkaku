@@ -321,11 +321,11 @@ const TRANSCRIPT_CHARS = 8000
 function platformRule(id: PlatformId, style: CaptionStyle): string {
   switch (id) {
     case 'tiktok':
-      return `"tiktok": a TikTok caption with a strong first line, under ${style.maxLength} characters. Emoji are allowed.`
+      return `"tiktok": a TikTok caption. The main point in the first line, then at most two short sentences. Under ${style.maxLength} characters. One or two emoji at most.`
     case 'instagram':
-      return `"instagram": an Instagram Reels caption, under ${style.maxLength} characters, with NO emoji (they cannot be typed on Instagram).`
+      return `"instagram": an Instagram Reels caption. The main point in the first line, then at most two short sentences of context. Under ${style.maxLength} characters. NO emoji (they cannot be typed on Instagram).`
     case 'youtube':
-      return '"youtube": a YouTube Shorts TITLE of at most 60 characters: one line, plain words, NO emoji (they cannot be typed on YouTube).'
+      return '"youtube": a YouTube Shorts TITLE of at most 60 characters that states the main point plainly: one line, NO emoji (they cannot be typed on YouTube), no clickbait the video does not back up.'
   }
 }
 
@@ -346,11 +346,16 @@ function buildPrompts(
     'You write captions for short social media videos (TikTok, YouTube Shorts, Instagram Reels).',
     `Write the caption in ${language}, in a ${tone} tone.`,
     style.niche.trim() !== '' ? `The account is about: ${style.niche.trim()}.` : null,
-    `Keep the caption under ${style.maxLength} characters.`,
+    // 0.29.0 — the owner (2026-09-15): captions must be good, clear and to the point, carrying the big point of the video.
+    'First decide the ONE main point of the video: what actually happens, or what the speaker is really telling the viewer. Everything you write serves that point.',
+    'Open with that point in the first sentence, stated concretely (what, who, the result or the lesson) — never a generic hook such as "Check this out" or "Watch until the end".',
+    'Be clear and to the point: short sentences, no filler, no rambling introduction, no saying the same thing twice. Two or three sentences are usually enough.',
+    'Summarise what the video is about; do not retell the transcript line by line, and keep a speaker\'s own words only where they carry the point.',
+    `Keep the caption under ${style.maxLength} characters; shorter is better once the point is made.`,
     'The caption itself contains NO hashtags — hashtags go only in the separate "hashtags" list.',
     style.hashtags === 0
       ? 'Return an empty "hashtags" list.'
-      : `Give exactly ${style.hashtags} relevant hashtag${style.hashtags === 1 ? '' : 's'} in the "hashtags" list, each starting with # and containing no spaces.`,
+      : `Give exactly ${style.hashtags} hashtag${style.hashtags === 1 ? '' : 's'} in the "hashtags" list that name what this video is specifically about, each starting with # and containing no spaces.`,
     fixed.length > 0 ? `These hashtags are already added to every post, so do not repeat them: ${fixed.join(' ')}.` : null,
     'Base it only on what the transcript says; never invent prices, results, promises or facts that are not in it.',
     'Plain text only: no quotation marks around the caption, no markdown, no title.',
