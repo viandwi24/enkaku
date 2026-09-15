@@ -74,6 +74,15 @@ import {
  *
  * ## Changelog
  *
+ * - **0.29.1 — a session is created even when the phone the page picked went
+ *   offline.** The owner (2026-09-15, right after upgrading): "The session was
+ *   not created — The farm did not run smm/add-group@latest: offline". The page
+ *   picks the phone that runs its bookkeeping from the device list it loaded
+ *   when it opened, and that phone had dropped off while the fleet reconnected.
+ *   Every bookkeeping run (create, start, retry, edit, mark) now offers the job
+ *   to up to three other online phones, read fresh, when the first is refused.
+ *   A refusal enqueues nothing, so nothing can be written twice.
+ *
  * - **0.29.0 — auto caption writes the video's main point, plainly.** The
  *   owner (2026-09-15): generated captions must be good, clear and to the
  *   point — the big point of what happens in the video, not a long retelling.
@@ -1159,7 +1168,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.29.0',
+  version: '0.29.1',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

@@ -301,6 +301,8 @@ const RunResultSchema = z.object({ run: z.object({ result: z.unknown().nullable(
 /** How long a bookkeeping member may take before the screen stops waiting. They write KV rows; forty of them is seconds. */
 const MEMBER_TIMEOUT_MS = 120_000
 const MEMBER_POLL_MS = 500
+/** How many other online phones a refused bookkeeping job is offered to before the page gives up. */
+const MEMBER_HOST_FALLBACKS = 3
 
 /**
  * Run one of this plugin's own members, and WAIT for what it did.
@@ -329,16 +331,39 @@ export async function runMember<S extends z.ZodType>(
   hostDeviceId: string,
   resultSchema?: S,
 ): Promise<z.infer<S> | null> {
-  const res = await api(`${CORE}/api/actions/run-script`, RunScriptResult, {
-    method: 'POST',
-    // `json`, not `body`: the helper serialises and sets the content type. A
-    // plain `body` object is spread straight into `fetch` and arrives as
-    // "[object Object]" with no content type, which every member run refuses.
-    json: { target: { deviceIds: [hostDeviceId] }, scriptRef, params },
-  })
-  const first = res.results[0]
+  const enqueue = async (deviceId: string) => {
+    const res = await api(`${CORE}/api/actions/run-script`, RunScriptResult, {
+      method: 'POST',
+      // `json`, not `body`: the helper serialises and sets the content type. A
+      // plain `body` object is spread straight into `fetch` and arrives as
+      // "[object Object]" with no content type, which every member run refuses.
+      json: { target: { deviceIds: [deviceId] }, scriptRef, params },
+    })
+    return res.results[0]
+  }
+  /*
+    Another phone when the one picked is refused (0.29.1). The page picks its host from the device list it loaded when it
+    opened; on the owner's production farm (2026-09-15) that phone had gone offline by the time Create was pressed — the
+    fleet was reconnecting after a core upgrade — and "The farm did not run smm/add-group@latest: offline" stopped the
+    session while dozens of phones were online. A refusal enqueues nothing, so trying another phone can never write twice.
+  */
+  let first = await enqueue(hostDeviceId)
+  const tried = new Set([hostDeviceId])
   if (!first || first.jobId === null) {
-    throw new Error(`The farm did not run ${scriptRef}: ${first?.message ?? first?.status ?? 'no phone answered'}. Nothing was written.`)
+    const online = (await listDevices().catch(() => [] as Device[])).filter((d) => d.status === 'online' && !tried.has(d.id))
+    for (const next of online.slice(0, MEMBER_HOST_FALLBACKS)) {
+      tried.add(next.id)
+      const answer = await enqueue(next.id)
+      if (answer && answer.jobId !== null) {
+        first = answer
+        break
+      }
+    }
+  }
+  if (!first || first.jobId === null) {
+    throw new Error(
+      `The farm did not run ${scriptRef}: ${first?.message ?? first?.status ?? 'no phone answered'} (tried ${tried.size} phone${tried.size === 1 ? '' : 's'}). Nothing was written.`,
+    )
   }
 
   const deadline = Date.now() + MEMBER_TIMEOUT_MS
