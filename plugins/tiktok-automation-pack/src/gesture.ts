@@ -135,9 +135,10 @@ export async function relaunch(ctx: ScriptContext<unknown>): Promise<boolean> {
 
 /**
  * The runtime permissions TikTok asks for on the screens this pack walks: camera and microphone on
- * the create screen, media for the gallery, notifications at launch (Android 13+). Contacts is
- * deliberately NOT here — TikTok's own "allow access to contacts" prompt is a visible TikTok modal
- * that `tt.contacts` refuses, and the farm's allowlist would not grant it anyway.
+ * the create screen, media for the gallery, notifications at launch (Android 13+). Contacts is never
+ * granted: it is REFUSED before launch (1.39.0), because after TikTok's own "Temukan kontak" pitch
+ * Android asks "Izinkan TikTok mengakses kontak?" in a system dialog the reader cannot see
+ * (production SM-A075F warm-up, 2026-09-15) — `tt.contacts` only ever answers TikTok's own pitch.
  */
 const TIKTOK_PERMISSIONS = ['CAMERA', 'RECORD_AUDIO', 'READ_MEDIA_VIDEO', 'READ_MEDIA_IMAGES', 'READ_MEDIA_VISUAL_USER_SELECTED', 'READ_EXTERNAL_STORAGE', 'POST_NOTIFICATIONS'] as const
 
@@ -163,6 +164,16 @@ async function answerPermissionsBeforeLaunch(ctx: ScriptContext<unknown>): Promi
     if (failed.length > 0) ctx.log.warn('some TikTok permissions could not be granted — their dialog may still appear, hidden from this run', { failed: failed.map((f) => `${f.permission}: ${f.detail ?? ''}`).join('; ') })
   } catch (err) {
     ctx.log.warn('could not set TikTok permissions before launch — continuing; a hidden permission dialog may stop the run', { error: String(err) })
+  }
+  // Contacts is refused and fixed, in its own call (1.39.0): a core older than the deny list's
+  // READ_CONTACTS refuses the whole call, which must not cost the grants above.
+  try {
+    const denied = await ctx.device.app.denyPermissions(TIKTOK_PACKAGE, ['READ_CONTACTS'])
+    const failed = denied.filter((r) => r.outcome === 'failed')
+    if (denied.some((r) => r.outcome === 'denied')) ctx.log.info('refused TikTok contacts access before launch, so its dialog never shows')
+    if (failed.length > 0) ctx.log.warn('TikTok contacts access could not be refused — its dialog may still appear, hidden from this run', { failed: failed.map((f) => f.detail ?? '').join('; ') })
+  } catch (err) {
+    ctx.log.warn('could not refuse TikTok contacts access before launch — continuing', { error: String(err) })
   }
 }
 

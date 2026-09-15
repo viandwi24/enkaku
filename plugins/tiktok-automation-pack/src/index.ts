@@ -864,6 +864,10 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.39.0 — TikTok's contacts access is refused before every launch. The owner's production farm (2026-09-15):
+  //   a warm-up sat under Android's "Izinkan TikTok mengakses kontak?", a system dialog the farm's reader cannot
+  //   see, after TikTok's own "Temukan kontak" pitch. Every member that relaunches TikTok now refuses
+  //   READ_CONTACTS and fixes it, so the dialog never appears; it needs a core whose deny list has contacts.
   // 1.38.0 — One UI's "Tambah ke Layar depan?" sheet is answered with "Batal". The owner's production farm
   //   (2026-09-15, Samsung): a post failed "expected the camera screen" with the launcher's confirmation for
   //   the "Kamera TikTok" widget over the feed. New register entry `tt.widget-pin` (deny → "Batal");
@@ -1079,7 +1083,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.38.0',
+  version: '1.39.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
