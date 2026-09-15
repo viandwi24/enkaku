@@ -117,6 +117,19 @@ async function grantMediaBeforeLaunch(ctx: ScriptContext<unknown>): Promise<void
   } catch (err) {
     ctx.log.warn('could not set Instagram permissions before launch — continuing', { error: String(err) })
   }
+  /*
+    Camera and microphone are REFUSED and fixed, in their own call (0.7.0). On the owner's Samsung production phone
+    #3 (2026-09-15) Android's "Izinkan Instagram mengambil gambar dan merekam video?" came up at the editor → share
+    step — hidden from the reader — and the run failed "the share screen did not open". The gallery upload this pack
+    walks never uses either, and a fixed refusal means Android never asks again.
+  */
+  try {
+    const denied = await ctx.device.app.denyPermissions(INSTAGRAM_PACKAGE, ['CAMERA', 'RECORD_AUDIO'])
+    const failed = denied.filter((r) => r.outcome === 'failed')
+    if (failed.length > 0) ctx.log.warn('Instagram camera/microphone could not be refused — their dialog may still appear, hidden from this run', { failed: failed.map((f) => `${f.permission}: ${f.detail ?? ''}`).join('; ') })
+  } catch (err) {
+    ctx.log.warn('could not refuse Instagram camera/microphone before launch — continuing', { error: String(err) })
+  }
 }
 
 /**

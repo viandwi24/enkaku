@@ -61,6 +61,16 @@ export default definePlugin({
   /**
    * ## Changelog
    *
+   * **Also in 0.7.0 — three production failures (2026-09-15).** Phone #3:
+   * Android's hidden "Izinkan Instagram mengambil gambar dan merekam video?"
+   * stopped the editor → share step, so camera and microphone are now refused
+   * and fixed before launch (the gallery upload never uses them). Phone #16:
+   * an announcement sheet swallowed the "Berikutnya" tap, so while the editor
+   * is still up with nothing over it, Next is tapped again (twice at most).
+   * Phone #20: a caption ending in "#liquidity" left the hashtag suggestion
+   * list open and the caption check failed, so a line ending in a hashtag or
+   * mention now gets one trailing space.
+   *
    * **0.7.0 — the profile is pulled to refresh at a person's rhythm.** The
    * owner asked (2026-09-15) for the looks after Share to stop being one
    * mechanical loop: every look after the first either pulls the open profile

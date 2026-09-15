@@ -702,7 +702,20 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     screens.push('editor')
     await tapCentre(ctx, editorNextButton(editor.tree) as UiNode)
 
-    const share = await waitForTree(ctx, (t) => shareButton(t) !== null, { budgetMs: 30_000 })
+    /*
+      A "Berikutnya" tap can be swallowed (0.7.0): on production phone #16 (2026-09-15) an announcement sheet landed
+      as it was tapped, the wait closed the sheet with "Lain kali", and the run then waited 30 s on the editor for a
+      share screen nothing had asked for. So while the editor is still up with nothing over it, Next is tapped again.
+    */
+    let share = await waitForTree(ctx, (t) => shareButton(t) !== null, { budgetMs: 8_000 })
+    for (let retap = 0; retap < 2 && !share.ok; retap++) {
+      const next = editorNextButton(share.tree)
+      if (next && promoDismissButton(share.tree) === null) {
+        ctx.log.warn('still on the Reel editor after "Berikutnya" — tapping it again', { retap: retap + 1 })
+        await tapCentre(ctx, next)
+      }
+      share = await waitForTree(ctx, (t) => shareButton(t) !== null, { budgetMs: 11_000 })
+    }
     await capture(ctx, 'ig-06-share', share.tree)
     if (!share.ok) fail('E_ANCHOR_NOT_FOUND', 'the share screen did not open after the editor — see artifact ig-06-share.')
     screens.push('share')
@@ -772,6 +785,16 @@ const script: PluginMemberScript<typeof params, typeof result> = {
           for (const [j, word] of words.entries()) {
             if (j > 0) await sleep(250 + Math.round(Math.random() * 450))
             await ctx.device.type(j === 0 ? word : ` ${word}`, { via: 'adb', instant: true })
+          }
+          /*
+            A line ending in a hashtag or mention leaves Instagram's suggestion list open over the share screen
+            (production phone #20, 2026-09-15: the whole caption was in the field, "#liquidity" last, the list of
+            "#liquidity…" tags on top, and the caption check failed). One trailing space closes it, as a person's
+            next keystroke would, and the caption check ignores spaces.
+          */
+          if (/^[#@]/.test(words[words.length - 1] ?? '')) {
+            await sleep(300 + Math.round(Math.random() * 300))
+            await ctx.device.type(' ', { via: 'adb', instant: true })
           }
         }
       } else {
