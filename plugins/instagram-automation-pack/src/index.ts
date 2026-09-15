@@ -51,7 +51,7 @@ import postVideo from './post-video'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.5.0',
+  version: '0.6.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -60,6 +60,13 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.6.0 — the profile is re-read for up to four minutes after Share.**
+   * The owner watched production phone #2 (2026-09-15): the new Reel counted
+   * on the profile only on the third refresh, just as its upload finished.
+   * The confirmation looked eight times (about two minutes); it now keeps
+   * looking by time, every 15 s for up to 4 minutes, so a slow upload is not
+   * closed and reported "unverified" before it lands.
    *
    * **0.5.0 — an announcement sheet is closed wherever it lands.** The owner's
    * Samsung production farm (2026-09-15): posts stopped at "the Reel editor's

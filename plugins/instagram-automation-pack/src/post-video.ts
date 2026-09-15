@@ -60,6 +60,13 @@ const FOCUS_SETTLE_MS = 400
 /** Instagram's caption limit. */
 const CAPTION_MAX = 2_200
 
+/**
+ * How long the profile is re-read after Share before "unverified" (0.6.0). Instagram counts the new Reel only once
+ * its upload has finished: on the owner's production phone #2 (2026-09-15) it appeared on the third refresh, just
+ * as the upload ended. Eight looks were about two minutes; a slower phone needs more.
+ */
+const CONFIRM_BUDGET_MS = 4 * 60_000
+
 const params = z.object({
   source: z
     .enum(['direct'])
@@ -841,7 +848,9 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       if (!after.ok) {
         ctx.log.warn('something is still over the share screen after Share — see artifact ig-09-after-share')
       }
-      for (let round = 0; round < 8; round++) {
+      // By time, not a count of 8 (0.6.0): the new Reel counts on the profile only once its upload finishes.
+      const confirmStarted = Date.now()
+      for (let round = 0; round === 0 || Date.now() - confirmStarted < CONFIRM_BUDGET_MS; round++) {
         if (round > 0) await sleep(15_000)
         postsAfter = await readPostCount(ctx, `ig-10-profile-after-${round + 1}`)
         if (before !== null && postsAfter !== null && postsAfter > before) {
@@ -856,7 +865,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
             reason: `the profile's post count went from ${before} to ${postsAfter}`,
           }
         }
-        ctx.log.warn(`the profile does not show the new Reel yet (attempt ${round + 1}/8)`, { before: String(before), after: String(postsAfter) })
+        ctx.log.warn(`the profile does not show the new Reel yet (attempt ${round + 1}, looking for up to ${CONFIRM_BUDGET_MS / 60_000} min)`, { before: String(before), after: String(postsAfter) })
         // Pull to refresh the profile before the next reading.
         await ctx.device.swipe({ x: Math.round(frame.width / 2), y: Math.round(frame.height * 0.3) }, { x: Math.round(frame.width / 2), y: Math.round(frame.height * 0.75) }, 350)
       }
