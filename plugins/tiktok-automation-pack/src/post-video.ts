@@ -1382,6 +1382,11 @@ async function securityCheckShowing(ctx: ScriptContext<unknown>): Promise<boolea
 const SECURITY_CHECK_DETAIL =
   'TikTok raised its security check on this account ("pemeriksaan keamanan") after Post was tapped. The run did not touch it — completing it is the account owner\'s job, on the phone. Whether the post landed cannot be read until it is done, so check the profile before re-sending.'
 
+/** How long `confirmPosted` keeps looking at the profile after Post, at least (1.41.0). */
+const CONFIRM_MIN_MS = 3 * 60_000
+/** …and while the newest cell still reads an upload percentage (1.41.0). */
+const CONFIRM_UPLOADING_MS = 5 * 60_000
+
 /**
  * The confirmation §3.6 exists for (step 113.6, §9 Q1's recommendation): after Post is tapped, open
  * the account's own profile and read the NEWEST grid cell, with a bounded wait (upload/publish is
@@ -1408,15 +1413,19 @@ async function confirmPosted(
   before: string[] | null,
 ): Promise<{ confirmed: boolean; detail: string; securityCheck: boolean }> {
   const attempts = 6
-  // While the newest cell still reads an upload percentage, keep watching for longer (1.40.0): a slow
-  // upload finishing after the sixth look was reported `unverified` although it went live.
-  const attemptsWhileUploading = 18
+  /*
+    Time, not only a count (1.41.0). The owner watched production phones (2026-09-15): the new video appears on
+    the profile only once its upload has finished, which on a slow phone is minutes after Post, and a run that
+    stopped looking before then closed TikTok and said "unverified". So at least `CONFIRM_MIN_MS` of looks, and
+    `CONFIRM_UPLOADING_MS` while the newest cell still reads an upload percentage.
+  */
   const intervalMs = 5_000
   const startedAt = Date.now()
 
   let lastSeen: NewestCell = { kind: 'none' }
-  const limit = (): number => (lastSeen.kind === 'uploading' ? attemptsWhileUploading : attempts)
-  for (let round = 0; round < limit(); round++) {
+  const keepLooking = (round: number): boolean =>
+    round < attempts || Date.now() - startedAt < (lastSeen.kind === 'uploading' ? CONFIRM_UPLOADING_MS : CONFIRM_MIN_MS)
+  for (let round = 0; keepLooking(round); round++) {
     // Checked before the sweep, so the security check is reported by name and screenshotted here.
     if (await securityCheckShowing(ctx)) {
       await capture(ctx, 'security-check')
@@ -1444,9 +1453,9 @@ async function confirmPosted(
       lastSeen = judged
       // With no baseline no later reading can prove anything; an upload still in flight is the one reading worth waiting on.
       if (judged.kind === 'no-baseline') break
-      ctx.log.warn(`confirmPosted: the grid does not show this post yet (attempt ${round + 1}/${limit()})`, { judged: JSON.stringify(judged) })
+      ctx.log.warn(`confirmPosted: the grid does not show this post yet (attempt ${round + 1})`, { judged: JSON.stringify(judged) })
     }
-    if (round < limit() - 1) await sleep(intervalMs)
+    if (keepLooking(round + 1)) await sleep(intervalMs)
   }
 
   await capture(ctx, 'unverified')

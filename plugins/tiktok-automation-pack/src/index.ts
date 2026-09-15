@@ -864,6 +864,10 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.41.0 — the profile is watched by time: at least 3 minutes after Post, 5 while the newest cell still shows an
+  //   upload percentage. The owner watched production phones (2026-09-15): a new video shows on the profile only
+  //   once its upload finishes, minutes after Post on a slow phone, and a run that stopped looking earlier closed
+  //   TikTok and said "unverified".
   // 1.40.0 — a first post on an empty account is confirmed, and a slow upload is watched longer. The owner's
   //   production farm (2026-09-15, #12): the video went live but the run said "unverified" after 18 s. The profile
   //   read "no videos" before posting, and 1.34.0 treated that empty grid as no baseline and stopped at once.
@@ -1089,7 +1093,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.40.0',
+  version: '1.41.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
