@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.31.1',
+  version: '0.32.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,16 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.32.0 — a Google account page over YouTube at launch is left with BACK.**
+   * The owner's Samsung production farm (2026-09-15): posts failed "YouTube's
+   * bottom bar has no Create button" because, right after a clean launch,
+   * Play services showed "Akun Google" ("Jangan sampai Akun Google Anda
+   * terkunci", add a recovery phone) over YouTube. The page is drawn by
+   * `com.google.android.gms` and shows the reader only empty containers, so
+   * `relaunch` recognises it by shape (a screen-covering gms window, no
+   * YouTube node) and presses BACK, up to three times, before waiting for the
+   * navigation again. Nothing on the page is ever tapped.
    *
    * **0.31.1 — the real exit sheet, and a dry run that leaves no draft.**
    * Measured on the owner's moto g06 (2026-09-14, YouTube id-ID): BACK from the

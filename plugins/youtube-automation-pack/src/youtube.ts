@@ -160,6 +160,28 @@ export function isReady(tree: UiNode): boolean {
   return READY_LABELS.some((label) => labelled(tree, label).length > 0)
 }
 
+const GMS_PACKAGE = 'com.google.android.gms'
+
+/**
+ * A full-screen Google account page from Play services is on top of YouTube (0.32.0).
+ *
+ * Measured on the owner's Samsung production farm (2026-09-15, run c4a3bd07): right after a clean
+ * launch YouTube showed "Akun Google" with "Jangan sampai Akun Google Anda terkunci" (add a recovery
+ * phone), and every post failed "no Create button". The page is drawn by
+ * `com.google.android.gms` and exposes only empty containers to the reader, so it is recognised by
+ * shape, never by its words: a gms window covering the screen and no YouTube node anywhere.
+ */
+export function googleAccountPageOnTop(tree: UiNode): boolean {
+  const nodes = flatten(tree)
+  if (nodes.some((n) => n.packageName === YOUTUBE_PACKAGE)) return false
+  const width = Math.max(0, ...nodes.map((n) => n.bounds.right))
+  const height = Math.max(0, ...nodes.map((n) => n.bounds.bottom))
+  if (width === 0 || height === 0) return false
+  return nodes.some(
+    (n) => n.packageName === GMS_PACKAGE && n.bounds.right - n.bounds.left >= width * 0.9 && n.bounds.bottom - n.bounds.top >= height * 0.8,
+  )
+}
+
 /**
  * What YouTube may ask for on the screens this pack walks, answered before it opens (0.27.0).
  *
@@ -214,8 +236,17 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
   await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: opts?.clearRecents ?? true })
   await ctx.device.app.launch(YOUTUBE_PACKAGE)
   await sleep(3_000)
-  const nav = await waitForTree(ctx, isReady, { budgetMs: READY_TIMEOUT_MS })
-  if (!nav.ok) {
+  // A Google account page can open over YouTube at launch (`googleAccountPageOnTop`). BACK leaves it
+  // without answering anything on it — its only buttons add a recovery phone or open settings.
+  const readyOrAccountPage = (t: UiNode): boolean => isReady(t) || googleAccountPageOnTop(t)
+  let nav = await waitForTree(ctx, readyOrAccountPage, { budgetMs: READY_TIMEOUT_MS })
+  for (let round = 0; round < 3 && !isReady(nav.tree) && googleAccountPageOnTop(nav.tree); round++) {
+    ctx.log.warn('a Google account page opened over YouTube at launch — leaving it with BACK; nothing on it is tapped')
+    await ctx.device.key('BACK')
+    await sleep(1_500)
+    nav = await waitForTree(ctx, readyOrAccountPage, { budgetMs: 12_000 })
+  }
+  if (!isReady(nav.tree)) {
     ctx.log.warn(`youtube did not show its navigation within ${READY_TIMEOUT_MS / 1000}s — continuing, and the next anchor will say where the device is`)
     return
   }
