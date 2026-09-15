@@ -548,7 +548,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     await tapCentre(ctx, plus)
 
     const galleryReady = (t: UiNode): boolean =>
-      gallerySurface(t) !== null || createMenuSheet(t) !== null || draftSheet(t) !== null || resumeDraftDialog(t) !== null || hiddenDialog(t)
+      gallerySurface(t) !== null || createMenuSheet(t) !== null || draftSheet(t) !== null || resumeDraftDialog(t) !== null
     let opened = await waitForTree(ctx, galleryReady, { budgetMs: 15_000 })
     const menu = createMenuSheet(opened.tree)
     if (menu) {
@@ -558,7 +558,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       await tapCentre(ctx, menu.reel)
       opened = await waitForTree(
         ctx,
-        (t) => (gallerySurface(t) !== null || draftSheet(t) !== null || resumeDraftDialog(t) !== null || hiddenDialog(t)) && createMenuSheet(t) === null,
+        (t) => (gallerySurface(t) !== null || draftSheet(t) !== null || resumeDraftDialog(t) !== null) && createMenuSheet(t) === null,
         { budgetMs: 15_000 },
       )
     }
@@ -568,7 +568,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       if (!resume.startNew) fail('E_UNFINISHED_DRAFT', 'Instagram asked to continue an unfinished Reel and offered no "Mulai video baru" — see artifact ig-03-resume-draft.')
       ctx.log.warn('Instagram offered to continue an unfinished Reel — starting a new video (the old edit stays in Drafts)')
       await tapCentre(ctx, resume.startNew)
-      opened = await waitForTree(ctx, (t) => (gallerySurface(t) !== null && resumeDraftDialog(t) === null) || hiddenDialog(t), { budgetMs: 12_000 })
+      opened = await waitForTree(ctx, (t) => gallerySurface(t) !== null && resumeDraftDialog(t) === null, { budgetMs: 12_000 })
     }
     const leftover = draftSheet(opened.tree)
     if (leftover) {
@@ -576,8 +576,14 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       if (!leftover.discard) fail('E_UNFINISHED_DRAFT', 'Instagram asked about an unfinished draft and offered no way to start over — see artifact ig-03-draft-prompt.')
       ctx.log.warn('Instagram had an unfinished edit — starting over, which discards it')
       await tapCentre(ctx, leftover.discard)
-      opened = await waitForTree(ctx, (t) => gallerySurface(t) !== null || hiddenDialog(t), { budgetMs: 12_000 })
+      opened = await waitForTree(ctx, (t) => gallerySurface(t) !== null, { budgetMs: 12_000 })
     }
+    /*
+      Only a dialog that is STILL hidden when the wait runs out (0.5.0). The waits above used to stop
+      on the first tree with no Instagram node in it — and a screen change shows exactly that for a
+      moment: a production screenshot of `ig-03-hidden-dialog` (Samsung, 2026-09-15) was Instagram's
+      own "Terus edit draf Anda?" dialog fading in over the Reel gallery, readable a second later.
+    */
     if (hiddenDialog(opened.tree)) {
       await ctx.artifact.screenshot('ig-03-hidden-dialog')
       fail('E_PERMISSION_DIALOG_HIDDEN', `Instagram is showing a dialog the farm cannot read after "+" — ${PERMISSION_HELP}`)

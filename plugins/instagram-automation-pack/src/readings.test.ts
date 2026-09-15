@@ -26,7 +26,7 @@ import {
   shareButton,
   shareNuxButton,
 } from './post-video'
-import { isReady, isSignedOut, promoDismissButton } from './instagram'
+import { isReady, isSignedOut, promoDismissButton, waitForTree } from './instagram'
 import { inboxItems, inboxStrings, onInbox } from './check-inbox'
 import { feedLikeState, feedPosts, onHomeFeed } from './scroll-feed'
 import { inStoryViewer, trayStories } from './watch-stories'
@@ -283,6 +283,33 @@ describe('warm-up readings', () => {
     }
     // A screen that merely says "Lain kali" somewhere, with no settings button, is not an announcement.
     expect(promoDismissButton(await fixture('screen-reel-editor.json'))).toBeNull()
+  })
+
+  test('every wait closes an announcement sheet before looking for its own anchor (0.5.0)', async () => {
+    const promo = await fixture('screen-inbox-promo-sheet.json')
+    const editor = await fixture('screen-reel-editor.json')
+    const dumps = [promo, editor]
+    const taps: unknown[] = []
+    const ctx = {
+      device: { dump: async () => dumps.shift() ?? editor, tap: async (t: unknown) => void taps.push(t) },
+      log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    } as unknown as Parameters<typeof waitForTree>[0]
+    const result = await waitForTree(ctx, (t) => editorNextButton(t) !== null, { budgetMs: 5_000, intervalMs: 10 })
+    expect(result.ok).toBe(true)
+    // The tap is "Lain kali", the sheet's secondary button — the primary "Coba" sits above it.
+    expect(taps).toEqual([{ point: { x: 360, y: 1483 } }])
+  })
+
+  test('a wait that is itself looking for the sheet is not closed from under it', async () => {
+    const promo = await fixture('screen-inbox-promo-sheet.json')
+    const taps: unknown[] = []
+    const ctx = {
+      device: { dump: async () => promo, tap: async (t: unknown) => void taps.push(t) },
+      log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    } as unknown as Parameters<typeof waitForTree>[0]
+    const result = await waitForTree(ctx, (t) => promoDismissButton(t) !== null, { budgetMs: 1_000, intervalMs: 10 })
+    expect(result.ok).toBe(true)
+    expect(taps).toEqual([])
   })
 
   test('an announcement sheet is closed by "not now", never by its primary button, and only IG nodes are read', async () => {

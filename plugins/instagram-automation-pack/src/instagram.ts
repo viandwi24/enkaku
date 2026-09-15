@@ -29,7 +29,14 @@ export function centre(node: UiNode): { x: number; y: number } {
   return { x: Math.round((node.bounds.left + node.bounds.right) / 2), y: Math.round((node.bounds.top + node.bounds.bottom) / 2) }
 }
 
-/** Poll `dump()` until `ready` accepts the tree or the budget runs out. Returns the last tree either way. */
+/**
+ * Poll `dump()` until `ready` accepts the tree or the budget runs out. Returns the last tree either way.
+ *
+ * Every poll first closes an announcement sheet with its "not now" (0.5.0, `promoDismissButton`) —
+ * unless `ready` is itself waiting for one. Instagram's camera-shortcut announcement landed over the
+ * Reel editor on one production run and over the share step on another (Samsung, 2026-09-15), so a
+ * wait that only looked for its own anchor failed naming that anchor instead of the sheet.
+ */
 export async function waitForTree(
   ctx: ScriptContext<unknown>,
   ready: (tree: UiNode) => boolean,
@@ -37,11 +44,23 @@ export async function waitForTree(
 ): Promise<{ tree: UiNode; ok: boolean; waitedMs: number }> {
   const interval = opts.intervalMs ?? 1_000
   const started = Date.now()
-  let tree = await ctx.device.dump()
+  const poll = async (): Promise<UiNode> => {
+    let tree = await ctx.device.dump()
+    for (let closed = 0; closed < 2 && !ready(tree); closed++) {
+      const notNow = promoDismissButton(tree)
+      if (!notNow) break
+      ctx.log.warn('closed an Instagram announcement sheet with its "not now" button', { headline: rowsById(tree, 'igds_headline_headline')[0]?.text ?? '' })
+      await ctx.device.tap({ point: centre(notNow) })
+      await sleep(1_200)
+      tree = await ctx.device.dump()
+    }
+    return tree
+  }
+  let tree = await poll()
   while (!ready(tree)) {
     if (Date.now() - started >= opts.budgetMs) return { tree, ok: false, waitedMs: Date.now() - started }
     await sleep(interval)
-    tree = await ctx.device.dump()
+    tree = await poll()
   }
   return { tree, ok: true, waitedMs: Date.now() - started }
 }

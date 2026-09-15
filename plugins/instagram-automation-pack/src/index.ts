@@ -61,14 +61,19 @@ export default definePlugin({
   /**
    * ## Changelog
    *
-   * **0.5.0 — an announcement over the Reel editor is closed.** The owner's
+   * **0.5.0 — an announcement sheet is closed wherever it lands.** The owner's
    * Samsung production farm (2026-09-15): posts stopped at "the Reel editor's
-   * Berikutnya did not appear" with Instagram's camera-shortcut announcement
-   * ("Abadikan momen dengan pintasan kamera baru") over the editor. The editor
-   * wait now stops on such a sheet, closes it with "Lain kali" — never "Buka
-   * pengaturan perangkat", which leaves Instagram — and waits for the editor
-   * again. The sheet is also recognised by that settings label if drawn without
-   * Instagram's igds ids.
+   * Berikutnya did not appear" and "the share screen did not open after the
+   * editor", both with Instagram's camera-shortcut announcement ("Abadikan
+   * momen dengan pintasan kamera baru") on screen. Every `waitForTree` poll
+   * now closes such a sheet with "Lain kali" — never "Buka pengaturan
+   * perangkat", which leaves Instagram — before checking its own anchor, and
+   * the editor wait says so by name if the sheet will not go. The sheet is also
+   * recognised by that settings label if drawn without Instagram's igds ids.
+   * And "a dialog the farm cannot read after +" is reported only when the
+   * screen is still unreadable at the end of the wait: a production screenshot
+   * behind that error was Instagram's own resume-draft dialog fading in, which
+   * the waits used to stop on during its first empty frame.
    *
    * **0.4.5 — the farm's keyboard, a covered Share, and no draft left behind.**
    * From the exported timelines of the 2026-09-14 Samsung production run:
