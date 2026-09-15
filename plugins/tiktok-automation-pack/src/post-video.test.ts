@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import { UiNodeSchema, type UiNode } from '@enkaku/protocol'
-import { closeUnansweredSheets, galleryButtonBesideModes } from './post-video'
+import { closeUnansweredSheets, galleryButtonBesideModes, profilTabRecovery } from './post-video'
 import { UPLOAD_MODAL_POLICIES } from './modals'
 import {
   captionLanded,
@@ -813,5 +813,22 @@ describe('closeUnansweredSheets — BACK after Post, only while an answerable sh
   test('the security check (abort) is never backed out of', async () => {
     const { keys } = await run([blank([text('Mari kita lakukan pemeriksaan keamanan dengan cepat')])])
     expect(keys).toEqual([])
+  })
+})
+
+describe('profilTabRecovery — the Profil tab missing with nothing known in front (1.45.3)', () => {
+  const node = (packageName: string, children: UiNode[] = []): UiNode => ({ resourceId: '', text: 'x', desc: '', className: '', packageName, bounds: { left: 0, top: 0, right: 720, bottom: 1600 }, clickable: false, enabled: true, focused: false, index: 0, children })
+
+  test('a TikTok page of its own (the camera, no bottom nav) is left with BACK', () => {
+    expect(profilTabRecovery(loadFixture('screen-camera-en-moto.json'))).toBe('back')
+  })
+
+  test('the launcher or another app in front brings TikTok back, never BACK', () => {
+    expect(profilTabRecovery(node('', [node('com.motorola.launcher3'), node('com.android.systemui')]))).toBe('launch')
+  })
+
+  test('only System UI, or nothing: no recovery here', () => {
+    expect(profilTabRecovery(node('', [node('com.android.systemui')]))).toBeNull()
+    expect(profilTabRecovery(node(''))).toBeNull()
   })
 })

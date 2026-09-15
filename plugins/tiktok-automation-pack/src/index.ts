@@ -875,6 +875,9 @@ export default definePlugin({
   //   terima kasih": the English text is now its own entry, `tt.widget-prompt-en` ("No thanks", UNVERIFIED), and when an
   //   answer is still not found after Post, `closeUnansweredSheets` presses BACK — only while an answerable entry is read on
   //   screen, never for the security check, never on the bare feed — before the confirmation opens the profile.
+  //   Finally the own profile gets two blind recoveries when its Profil tab is missing and nothing known is in front
+  //   (`profilTabRecovery`; #27/#38/#39 still stopped there on 1.45.1): TikTok not in front is launched again — never
+  //   force-stopped, an upload may be running — and a TikTok page with no bottom navigation is left with BACK.
   // 1.45.2 — the English camera is recognised, and the English resume-edit banner has its own answer. Production,
   //   2026-09-15, pack 1.45.1, English TikTok builds on Samsung SM-A075F. A post-video run failed "expected the camera
   //   screen but the dump reads unknown after 5 settle rounds (no modal matched)" (artifact

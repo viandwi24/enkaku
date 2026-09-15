@@ -1104,6 +1104,20 @@ async function readOwnGrid(
 }
 
 /**
+ * What to do when the Profil tab is not on screen and no known dialog is up (1.45.3). Production 1.45.1 (2026-09-15)
+ * still stopped "the own profile could not be opened" on three phones (#27, #38, #39) after every dialog analysed so
+ * far was answered, and the loop gave up the moment nothing known was in front. Two shapes are recoverable without
+ * knowing the screen: TikTok not in front at all (`launch` — never a force-stop, which after Post could kill the
+ * upload), and a TikTok page of its own with no bottom navigation — a video, a LIVE, a search — which BACK leaves
+ * (`back`). Null when only System UI is readable (the hidden-dialog branch handles that) or the tree is empty.
+ */
+export function profilTabRecovery(tree: UiNode): 'launch' | 'back' | null {
+  const nodes = flatten(tree)
+  if (nodes.some((n) => n.packageName === TIKTOK_PACKAGE)) return 'back'
+  return nodes.some((n) => n.packageName !== '' && n.packageName !== 'com.android.systemui') ? 'launch' : null
+}
+
+/**
  * Opens the own profile from the bottom nav and returns its on-screen "Menu profil" node — or null, with the
  * tree and a screenshot saved, when the Profil tab or the profile could not be found. Never throws. Shared by
  * `readOwnGrid` and `clearDrafts` (1.36.0).
@@ -1128,7 +1142,18 @@ async function openOwnProfile(ctx: ScriptContext<unknown>, frameWidth: number): 
       await ctx.device.key('BACK')
       await sleep(1_500)
     } else {
-      break
+      const recovery = profilTabRecovery(tree)
+      if (recovery === 'launch') {
+        ctx.log.warn('TikTok is not in front while looking for the Profil tab — bringing it back (no force-stop, an upload may be running)')
+        await ctx.device.app.launch(TIKTOK_PACKAGE)
+        await sleep(3_000)
+      } else if (recovery === 'back') {
+        ctx.log.warn('TikTok shows a page with no Profil tab and nothing this run knows over it — BACK once')
+        await ctx.device.key('BACK')
+        await sleep(1_500)
+      } else {
+        break
+      }
     }
     profilNode = await waitForOnScreen(ctx, frameWidth, [descOf(PROFIL_TAB), 'Profile'], 8_000)
   }
