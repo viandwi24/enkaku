@@ -10,6 +10,7 @@ import {
   encodeVideoFrame,
   KEY_TABLE,
   KEYCODES,
+  normalizeAdbCommand,
   type ActivityKind,
   type ArtifactInfo,
   type DeviceActivity,
@@ -1294,7 +1295,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
           }
 
           case 'shell.exec': {
-            const { deviceId, cmd } = msg.payload
+            const { deviceId, cmd: typedCmd } = msg.payload
             // 1. Permission + the farm-wide `shell.mode` switch — BOTH are
             // server-authoritative (spec §10.1): Studio hiding/disabling the
             // terminal is a convenience, never the control. This is the
@@ -1307,6 +1308,16 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
               sendError(ws, 'auth.forbidden', 'you do not have permission to run shell commands on this device', msgId)
               return
             }
+            // 1b. `adb shell …` / `shell …` / the bare command — the same
+            // normaliser the `adb` action verb and Studio's preview use, so a
+            // line pasted from a guide means one thing everywhere. After the
+            // permission check, never instead of it.
+            const normalized = normalizeAdbCommand(typedCmd)
+            if (!normalized.ok) {
+              sendError(ws, 'E_BAD_REQUEST', normalized.error, msgId)
+              return
+            }
+            const cmd = normalized.cmd
             // 2. The SAME admission gate input uses (plan 205 §4.8) — no
             // second policy: online/conflicting-activity are both covered
             // here.

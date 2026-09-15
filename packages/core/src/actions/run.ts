@@ -7,7 +7,7 @@ import type {
   DeviceSettingsPatch,
   ShellMode,
 } from '@enkaku/protocol'
-import { E_DEVICE_CONFLICT } from '@enkaku/protocol'
+import { E_DEVICE_CONFLICT, normalizeAdbCommand } from '@enkaku/protocol'
 import type { Role } from '../auth/service'
 import { can, canUseFiles, canUseShell } from '../auth/acl'
 import type { Permission } from '../auth/acl'
@@ -205,6 +205,15 @@ export const RUN_VERBS_HOLD_ON_WARN: ReadonlySet<ActionVerb> = new Set<ActionVer
 
 export async function runAction(deps: ActionsDeps, request: ActionRequest, actor: ActionActor): Promise<ActionResponse> {
   checkGate(deps, actor, request.verb)
+  // `adb shell …` / `shell …` / the bare command all mean one device shell
+  // command (`normalizeAdbCommand`). AFTER the gate, so a caller without
+  // shell never learns anything from the parse; BEFORE the fan-out, so a
+  // line that is not a shell command is one bad request, not N failures.
+  if (request.verb === 'adb') {
+    const normalized = normalizeAdbCommand(request.cmd)
+    if (!normalized.ok) throw new EnkakuError('E_BAD_REQUEST', normalized.error)
+    request = { ...request, cmd: normalized.cmd }
+  }
   // The whole-request route validation `set-network op: set` needs (plan
   // 207 §4.3 step 4): a malformed route or a credential is a bad request,
   // not one failure per device.

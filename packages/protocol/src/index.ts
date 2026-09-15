@@ -1357,6 +1357,10 @@ export { WallTransportSchema, type WallTransport } from './settings'
 // see the doc comment on `high-consequence.ts` for what this guard is and is
 // not.
 export { HIGH_CONSEQUENCE_PATTERNS, isHighConsequence } from './command/high-consequence'
+// What an adb command box accepts (`adb shell …`, `shell …`, or the bare
+// command), normalised in ONE place so Studio's preview, the `adb` action
+// verb and the terminal's `shell.exec` can never disagree about what runs.
+export { normalizeAdbCommand, type AdbCommandForm, type NormalizedAdbCommand } from './command/adb-command'
 
 // Plan 94 (M59 — the action recorder), step 94.1. The recording document
 // (§4.1) — "a recording is source, and a script is build output" (§3.1) —
