@@ -864,6 +864,9 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.43.1 — a wait for an on-screen tab reads the screen at least three times, however slow each read is, and logs
+  //   why the last read failed. A moto g06 dry run on a loaded host (2026-09-15) stopped with "the own profile could
+  //   not be opened to look for drafts" while "Profil" was on screen: its 10 s wait ended on the first slow read.
   // 1.43.0 — the caption field is emptied before it is typed into, or nothing is typed. The owner saw TikTok's "at most 5
   //   hashtags" alert on phones whose run had capped the caption at five (2026-09-15). The moto g06 dry run showed why:
   //   a retype cleared at most 120 characters with DEL after MOVE_END, which reaches only the end of the tapped LINE, so
@@ -1114,7 +1117,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.43.0',
+  version: '1.43.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

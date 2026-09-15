@@ -925,16 +925,30 @@ async function clearOverFeed(ctx: ScriptContext<unknown>, before: string): Promi
   }
 }
 
+/**
+ * A wait reads the screen at least this many times, however long each read takes (1.43.1). On the moto g06 under a
+ * loaded host (2026-09-15) the reads inside a 10 s wait for "Profil" took 25 s between them, so the wait ended on its
+ * first miss while the tab was on screen — the capture taken a moment later shows it — and the run stopped with "the
+ * own profile could not be opened to look for drafts".
+ */
+const MIN_SCREEN_READS = 3
+
 async function waitForOnScreen(ctx: ScriptContext<unknown>, frameWidth: number, descs: string[], timeoutMs: number): Promise<UiNode | null> {
   const deadline = Date.now() + timeoutMs
-  for (;;) {
+  let lastError: string | null = null
+  for (let reads = 1; ; reads += 1) {
     try {
       const hit = descNodeOnScreen(await ctx.device.dump(), descs, frameWidth)
       if (hit) return hit
-    } catch {
+      lastError = null
+    } catch (err) {
       // A dump that fails over an autoplaying feed is a miss, not an answer — go round again.
+      lastError = err instanceof Error ? err.message : String(err)
     }
-    if (Date.now() >= deadline) return null
+    if (Date.now() >= deadline && reads >= MIN_SCREEN_READS) {
+      if (lastError !== null) ctx.log.warn('the last screen read failed', { looking: descs.join(' | '), reads, error: lastError.slice(0, 200) })
+      return null
+    }
     await sleep(1_000)
   }
 }
