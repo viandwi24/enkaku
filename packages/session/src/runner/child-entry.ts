@@ -184,7 +184,7 @@ function makeDeviceApi(request: DeviceRequest) {
   scroll: (opts: { direction: string; distance?: number; from?: unknown }) =>
     request<void>({ method: 'scroll', args: opts } as never),
   fling: (opts: { direction: string; strength?: string }) => request<void>({ method: 'fling', args: opts } as never),
-  type: (text: string, opts?: { perCharMs?: [number, number]; instant?: boolean; via?: 'adb' }) =>
+  type: (text: string, opts?: { perCharMs?: [number, number]; instant?: boolean; via?: 'adb'; human?: unknown }) =>
     request<void>({
       method: 'type',
       args: {
@@ -192,6 +192,7 @@ function makeDeviceApi(request: DeviceRequest) {
         ...(opts?.perCharMs !== undefined ? { perCharMs: opts.perCharMs } : {}),
         ...(opts?.instant !== undefined ? { instant: opts.instant } : {}),
         ...(opts?.via ? { via: opts.via } : {}),
+        ...(opts?.human !== undefined ? { human: opts.human } : {}),
       },
     } as never),
   key: (code: unknown) => request<void>({ method: 'key', args: { code } } as never),

@@ -216,6 +216,7 @@ interface RecordedCalls {
   gesture: GestureSample[][]
   text: string[]
   typeText: { text: string; perCharMs: [number, number] }[]
+  key: number[]
 }
 
 function fakeGestureSession(opts: {
@@ -225,7 +226,7 @@ function fakeGestureSession(opts: {
   withGesture?: boolean
   withTypeText?: boolean
 }): { session: DeviceSession; calls: RecordedCalls } {
-  const calls: RecordedCalls = { tap: [], swipe: [], gesture: [], text: [], typeText: [] }
+  const calls: RecordedCalls = { tap: [], swipe: [], gesture: [], text: [], typeText: [], key: [] }
   const input: Record<string, unknown> = {
     tap: async (p: Point, tapOpts?: { holdMs?: [number, number]; rng?: () => number }) => {
       calls.tap.push({ p, opts: tapOpts })
@@ -233,7 +234,9 @@ function fakeGestureSession(opts: {
     swipe: async (from: Point, to: Point, ms: number) => {
       calls.swipe.push({ from, to, ms })
     },
-    key: async () => {},
+    key: async (code: number) => {
+      calls.key.push(code)
+    },
     text: async (text: string) => {
       calls.text.push(text)
     },
@@ -392,6 +395,126 @@ describe('createDeviceExecutor — type under profile natural vs instant (plan 4
     await execute(call('type', { text: 'hello' }))
     expect(calls.typeText.length).toBe(0)
     expect(calls.text).toEqual(['hello'])
+  })
+})
+
+/**
+ * `human` (client request, 2026-09-15) — the executor half of the human-typing option.
+ * `@enkaku/drivers`'s `planHumanTyping` is unit-tested for its own planning logic in isolation
+ * (`packages/drivers/src/input/human-typing.test.ts`); these tests are about the WIRING —
+ * `human` reaches the sink's `text`/`key` calls, the plan's own final text still lands correctly
+ * through a real (fake) engine, and `instant`/plain natural behaviour is untouched when `human` is
+ * absent (already covered above, but the omission itself is the regression to watch for).
+ */
+// Every real delay `human` schedules is a real `Bun.sleep` in the executor (unlike
+// `planHumanTyping` itself, which is pure and sleeps nothing — see `human-typing.test.ts`), so a
+// test that only cares about WIRING zeroes every delay range and disables thinking pauses,
+// keeping only the knob it is actually testing (usually `typo`).
+const FAST_HUMAN = { perCharMs: [0, 0] as [number, number], extraPerWordMs: [0, 0] as [number, number], thinkingPause: { probability: 0 } }
+
+describe('createDeviceExecutor — human typing (client request, 2026-09-15)', () => {
+  test('human: true reaches the sink one character at a time, never the bulk typeText() path', async () => {
+    const { session, calls } = fakeGestureSession({})
+    const execute = createDeviceExecutor({ session, timing: NATURAL_TIMING })
+    const result = await execute(call('type', { text: 'hello world', human: { ...FAST_HUMAN, seed: 1 } }))
+    expect(calls.typeText.length).toBe(0)
+    // Every `calls.text` entry is one character (the plan's own invariant, proven in isolation in
+    // `human-typing.test.ts`) — this proves the executor replays it via `sink.text(step.text)`
+    // per step rather than joining the plan back into one bulk call.
+    for (const t of calls.text) expect([...t].length).toBe(1)
+    expect(calls.text.length).toBeGreaterThan(0)
+    expect(result).toMatchObject({ via: 'scrcpy-text', human: { supported: true } })
+  })
+
+  test('a delete step is sent as one KEYCODE_DEL (67) press per deleted character', async () => {
+    const { session, calls } = fakeGestureSession({})
+    const execute = createDeviceExecutor({ session, timing: NATURAL_TIMING })
+    // A high typo probability over a longish text all but guarantees at least one typo+correction.
+    await execute(
+      call('type', { text: 'mississippi konqueror wizard xylophone', human: { ...FAST_HUMAN, typo: { probability: 1 }, seed: 2 } }),
+    )
+    expect(calls.key.length).toBeGreaterThan(0)
+    expect(calls.key.every((k) => k === 67)).toBe(true)
+  })
+
+  test('zero typo probability sends no delete at all', async () => {
+    const { session, calls } = fakeGestureSession({})
+    const execute = createDeviceExecutor({ session, timing: NATURAL_TIMING })
+    await execute(call('type', { text: 'hello there friend', human: { ...FAST_HUMAN, typo: { probability: 0 }, seed: 3 } }))
+    expect(calls.key.length).toBe(0)
+  })
+
+  test('the reported result carries the plan\'s own typosSimulated/pauses/plannedMs, additively (existing callers see no shape change without `human`)', async () => {
+    const { session, calls } = fakeGestureSession({})
+    void calls
+    const execute = createDeviceExecutor({ session, timing: NATURAL_TIMING })
+    const withHuman = await execute(call('type', { text: 'hello there friend', human: { ...FAST_HUMAN, typo: { probability: 1 }, seed: 4 } }))
+    expect(withHuman).toMatchObject({ via: 'scrcpy-text', clobberedClipboard: false })
+    expect((withHuman as { human?: { supported: boolean; typosSimulated: number; pauses: number; plannedMs: number } }).human?.supported).toBe(true)
+
+    const withoutHuman = await execute(call('type', { text: 'hello there friend' }))
+    expect((withoutHuman as { human?: unknown }).human).toBeUndefined()
+  })
+
+  test('human overrides instant: a per-call human always uses per-character delivery, never the bulk ui-server-set-text/text() shortcut', async () => {
+    const { session, calls } = fakeGestureSession({})
+    const execute = createDeviceExecutor({ session, timing: INSTANT_TIMING })
+    await execute(call('type', { text: 'hello', instant: true, human: { ...FAST_HUMAN, seed: 5 } }))
+    // Bulk `text()` would push ONE entry with the whole string; human pushes one PER character.
+    expect(calls.text.length).toBe(5)
+    expect(calls.text.join('').length).toBeGreaterThanOrEqual(5)
+  })
+
+  test('via: "adb" plus human runs the plan against AdbInput and still refuses non-ASCII text', async () => {
+    const execCalls: string[] = []
+    const session = {
+      deviceId: 'dev-1',
+      inspector: null,
+      transport: {
+        exec: async (cmd: string) => {
+          execCalls.push(cmd)
+          return { stdout: '', stderr: '', exitCode: 0 }
+        },
+        execOut: async () => new Uint8Array(),
+      },
+      frameSize: { width: 1080, height: 1920 },
+      input: { tap: async () => {}, swipe: async () => {}, key: async () => {}, text: async () => {} },
+      arbiter: createInputArbiter({ tap: async () => {}, swipe: async () => {}, key: async () => {}, text: async () => {} } as unknown as InputSink, {
+        queueWaitMs: () => 5_000,
+        maxQueueDepth: () => 32,
+        log: silentLog(),
+      }),
+      inputEngineId: 'adb-input',
+      clipboard: { get: async () => '', set: async () => {} },
+      textInput: { mode: 'auto', agentCapabilities: null, imeCurrent: false, commitViaAgent: async () => ({ committed: 0, imeCurrent: false }) },
+    } as unknown as DeviceSession
+    const execute = createDeviceExecutor({ session, timing: NATURAL_TIMING })
+    const result = await execute(call('type', { text: 'hello', via: 'adb', human: { ...FAST_HUMAN, seed: 6 } }))
+    expect(result).toMatchObject({ via: 'adb-ascii', human: { supported: true } })
+    expect(execCalls.some((c) => c.startsWith('input text'))).toBe(true)
+
+    await expect(execute(call('type', { text: '日本語', via: 'adb', human: { ...FAST_HUMAN } }))).rejects.toThrow()
+  })
+
+  test('the agent-ime rung cannot run typos (no delete on that rung) and reports human.supported: false', async () => {
+    const { session } = fakeGestureSession({})
+    let committedPerCharMs: [number, number] | undefined
+    ;(session as unknown as { textInput: Record<string, unknown> }).textInput = {
+      mode: 'agent',
+      agentCapabilities: ['text-input'],
+      imeCurrent: true,
+      commitViaAgent: async (_text: string, perCharMs?: [number, number]) => {
+        committedPerCharMs = perCharMs
+        return { committed: 5, imeCurrent: true }
+      },
+    }
+    const execute = createDeviceExecutor({ session, timing: NATURAL_TIMING })
+    const result = await execute(call('type', { text: 'hello', human: { ...FAST_HUMAN, seed: 8 } }))
+    expect(result).toMatchObject({ via: 'agent-ime', committed: 5, human: { supported: false, typosSimulated: 0, pauses: 0, plannedMs: 0 } })
+    // Still honours the requested pacing on the one rung that cannot backspace — `FAST_HUMAN`
+    // above set it to [0, 0], so this proves the OVERRIDE actually reaches `commitViaAgent`,
+    // not just that some default did.
+    expect(committedPerCharMs).toEqual([0, 0])
   })
 })
 

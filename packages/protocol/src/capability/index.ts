@@ -11,6 +11,8 @@ export {
   ScrollArgsSchema,
   FlingArgsSchema,
   TypeArgsSchema,
+  HumanTypingOptionsSchema,
+  type HumanTypingOptions,
   KeyArgsSchema,
   FindArgsSchema,
   DumpArgsSchema,

@@ -127,6 +127,41 @@ export const FlingArgsSchema = z.object({
   strength: z.enum(['soft', 'normal', 'hard']).optional(),
 })
 
+/**
+ * Opt-in "human" typing (client request, 2026-09-15): a human cadence, occasional typos that get
+ * backspaced and retyped, more delay at the end of a word than mid-word, and every few words a
+ * chance of a longer "thinking" pause. Planned purely by `@enkaku/drivers`'
+ * `planHumanTyping`/`resolveHumanTypingOptions` — this schema only validates the shape; every
+ * field mirrors `HumanTypingOptions` there and stays in lockstep with its own defaults, which live
+ * only in that one place so they are never declared twice.
+ *
+ * Deliberately never the default: `type()`'s `instant`/plain-natural behaviour must stay
+ * byte-for-byte unchanged when this is omitted (CLAUDE.md's ban on a changed default), and the
+ * executor skips it entirely on any rung that cannot send a delete or commits a string as one
+ * indivisible call (`agent-ime` — see `device-executor.ts`'s `type` case) — falling back to no
+ * typos there and saying so in `ScriptTypeResult.human`.
+ */
+export const HumanTypingOptionsSchema = z.object({
+  perCharMs: z.tuple([z.number().int().min(0), z.number().int().min(0)]).optional(),
+  extraPerWordMs: z.tuple([z.number().int().min(0), z.number().int().min(0)]).optional(),
+  thinkingPause: z
+    .object({
+      probability: z.number().min(0).max(1).optional(),
+      everyWords: z.number().int().positive().optional(),
+      ms: z.tuple([z.number().int().min(0), z.number().int().min(0)]).optional(),
+    })
+    .optional(),
+  typo: z
+    .object({
+      probability: z.number().min(0).max(1).optional(),
+      noticeAfterChars: z.tuple([z.number().int().min(0), z.number().int().min(0)]).optional(),
+    })
+    .optional(),
+  maxTotalMs: z.number().int().positive().optional(),
+  seed: z.number().int().optional(),
+})
+export type HumanTypingOptions = z.infer<typeof HumanTypingOptionsSchema>
+
 export const TypeArgsSchema = z.object({
   text: z.string(),
   /** Overrides `TimingSettings.perCharMs` for this call (plan 40 §4.4). */
@@ -135,6 +170,8 @@ export const TypeArgsSchema = z.object({
   instant: z.boolean().optional(),
   /** See `InputViaSchema`. With `'adb'` the text must be printable ASCII. */
   via: InputViaSchema.optional(),
+  /** See `HumanTypingOptionsSchema` above. `true` takes every default. */
+  human: z.union([z.literal(true), HumanTypingOptionsSchema]).optional(),
 })
 
 export const KeyArgsSchema = z.object({ code: z.union([z.number().int(), z.string()]) })

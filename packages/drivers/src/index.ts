@@ -5,6 +5,16 @@ export { AdbInput } from './input/adb-input'
 export { withAdbKeyFallback } from './input/adb-key-fallback'
 export { buildGesturePath, type GesturePathOpts } from './input/gesture'
 export { escapeInputText, InputTextError } from './input/escape'
+export {
+  planHumanTyping,
+  applyHumanTypingPlan,
+  resolveHumanTypingOptions,
+  createSeededRng,
+  type HumanTypeStep,
+  type HumanTypingOptions,
+  type ResolvedHumanTypingOptions,
+  type HumanTypingPlan,
+} from './input/human-typing'
 export { engineDescriptors } from './descriptors'
 export { UiautomatorDumpInspector, InspectorError } from './inspector/uiautomator-dump'
 export { UiTreeInspector, type UiTreeInspectorDeps, type UiTreeWatchHandle } from './inspector/ui-tree/index'

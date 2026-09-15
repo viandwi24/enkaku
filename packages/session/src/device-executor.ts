@@ -1,5 +1,5 @@
 import { shellQuote } from '@enkaku/adb'
-import { AdbInput, buildGesturePath, supportsElementActions } from '@enkaku/drivers'
+import { AdbInput, buildGesturePath, planHumanTyping, resolveHumanTypingOptions, supportsElementActions } from '@enkaku/drivers'
 import {
   centerOf,
   matchSelector,
@@ -366,6 +366,35 @@ export function createDeviceExecutor(deps: {
   const pause = (timing: TimingSettings) => Bun.sleep(randBetween(timing.betweenActionMs[0], timing.betweenActionMs[1]))
 
   /**
+   * Runs a `planHumanTyping` plan against `textSink` (client request, 2026-09-15): the executor
+   * half of the human-typing option — `@enkaku/drivers`'s `planHumanTyping` does all the planning
+   * (pure, unit-tested there), this only replays the resulting steps. `delete` steps go through
+   * `key(DEL)`, which every `InputSink` implements (mandatory on the interface, unlike `typeText`
+   * or `gesture`), so this runs on every engine `type()` can otherwise reach.
+   */
+  const runHumanTypingPlan = async (
+    textSink: InputSink,
+    text: string,
+    human: true | Record<string, unknown>,
+  ): Promise<{ typosSimulated: number; pauses: number; plannedMs: number }> => {
+    const plan = planHumanTyping(text, human as never)
+    const delKeyCode = resolveKeyCode('DEL')
+    for (const step of plan.steps) {
+      if (step.kind === 'type') {
+        await textSink.text(step.text)
+      } else if (step.kind === 'delete') {
+        for (let i = 0; i < step.count; i++) await textSink.key(delKeyCode)
+      }
+      if (step.delayMs > 0) await Bun.sleep(step.delayMs)
+    }
+    return { typosSimulated: plan.typosSimulated, pauses: plan.pauses, plannedMs: plan.totalMs }
+  }
+
+  /** The `perCharMs` range `human` resolves to — used to pace the guest-agent IME rung, the one
+   * rung `runHumanTypingPlan` above cannot reach (see the `agent-ime` branch in `type` below). */
+  const resolveHumanPerCharMs = (human: true | Record<string, unknown>): [number, number] => resolveHumanTypingOptions(human as never).perCharMs
+
+  /**
    * Normalised 0..1 → device pixels, using the LATEST frame dimensions
    * (rotation) — plan 94 §3.3, §4.4's coordinate-space rule (see
    * `@enkaku/sdk`'s `DeviceApi` doc comment for the full argument). A
@@ -577,7 +606,11 @@ export function createDeviceExecutor(deps: {
       }
       case 'type': {
         await pause(timing)
-        const instant = call.args.instant ?? timing.gestureCurvature === 0
+        // `human` (client request, 2026-09-15) always means natural, per-character delivery — it
+        // takes priority over `instant` and skips the `ui-server-set-text` shortcut below, which
+        // delivers a whole string in one call and has nothing to pace or interrupt with a typo.
+        const human = call.args.human
+        const instant = !human && (call.args.instant ?? timing.gestureCurvature === 0)
         if (call.args.via === 'adb') {
           // `input text` carries printable ASCII and nothing else; refuse the rest by name
           // rather than let adb mangle it (the same promise the text ladder below keeps).
@@ -587,6 +620,10 @@ export function createDeviceExecutor(deps: {
             })
           }
           const adb = new AdbInput(deps.session.transport)
+          if (human) {
+            const report = await runHumanTypingPlan(adb, call.args.text, human)
+            return { via: 'adb-ascii', clobberedClipboard: false, human: { supported: true, ...report } }
+          }
           if (instant) await adb.text(call.args.text)
           else await adb.typeText(call.args.text, { perCharMs: call.args.perCharMs ?? timing.perCharMs })
           return { via: 'adb-ascii', clobberedClipboard: false }
@@ -646,8 +683,19 @@ export function createDeviceExecutor(deps: {
         const perCharMs = instant ? undefined : (call.args.perCharMs ?? timing.perCharMs)
 
         if (decision.rung === 'agent-ime') {
-          const result = await deps.session.textInput.commitViaAgent(call.args.text, perCharMs)
-          return { via: decision.rung, committed: result.committed, clobberedClipboard: false }
+          // The guest agent's `commitViaAgent` commits the WHOLE string in one IPC call (plan 90
+          // §3.3) — there is no way to backspace partway through it, so `human`'s typo/delete
+          // steps cannot run here at all. Still honour the requested pacing (it already accepts a
+          // `perCharMs` range) and say plainly that typos were skipped, rather than silently
+          // dropping the option with no signal (CLAUDE.md's rule against a silent behaviour change).
+          const agentPerCharMs = human ? resolveHumanPerCharMs(human) : perCharMs
+          const result = await deps.session.textInput.commitViaAgent(call.args.text, agentPerCharMs)
+          return {
+            via: decision.rung,
+            committed: result.committed,
+            clobberedClipboard: false,
+            ...(human ? { human: { supported: false, typosSimulated: 0, pauses: 0, plannedMs: 0 } } : {}),
+          }
         }
         // 'scrcpy-text' / 'adb-ascii': the instant/natural delivery CHOICE below is about
         // mechanics (typeText vs bulk text) — unrelated to which rung the ladder picked, which
@@ -655,6 +703,10 @@ export function createDeviceExecutor(deps: {
         // designed alongside these two and removed as architecturally unreachable —
         // docs/plans/96-m61-hotfixes.md §96.7, §96.8.)
         const textSink = sink()
+        if (human) {
+          const report = await runHumanTypingPlan(textSink, call.args.text, human)
+          return { via: decision.rung, clobberedClipboard: false, human: { supported: true, ...report } }
+        }
         if (!instant && textSink.typeText) {
           // `natural`: per-character delivery, so autocomplete, debounced
           // validation, and per-keystroke listeners actually run — `setText`

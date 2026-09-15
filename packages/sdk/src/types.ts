@@ -6,6 +6,7 @@ import type {
   DeviceMediaKind,
   DeviceMediaListResult,
   FindOutcome,
+  HumanTypingOptions,
   JobStatus,
   JobSummary,
   KeyCode,
@@ -62,6 +63,20 @@ export interface ScriptTypeResult {
    * existing script that reads it needs a breaking change.
    */
   clobberedClipboard: boolean
+  /**
+   * Present only when `opts.human` was set (client request, 2026-09-15) — additive, so a caller
+   * that never asked for it sees no change to this shape at all. `supported: false` means the
+   * rung that actually ran (`via`, above) could not carry the plan's `delete` steps — today only
+   * `agent-ime`, whose guest-agent IME commits a whole string in one call with no way to backspace
+   * partway through it — and the text was still typed correctly, just without any typo simulated.
+   */
+  human?: {
+    supported: boolean
+    typosSimulated: number
+    pauses: number
+    /** The plan's own estimate of the delay it added, in ms — not wall-clock time actually spent. */
+    plannedMs: number
+  }
 }
 
 /**
@@ -172,8 +187,34 @@ export interface DeviceApi {
    * `opts.via: 'adb'` skips the ladder and types through `input text` — the companion of
    * `tap(…, { via: 'adb' })` for the same kind of screen. Printable ASCII only; anything else is
    * refused with `E_INPUT_TEXT_UNSUPPORTED` rather than mangled.
+   *
+   * `opts.human` (client request, 2026-09-15) — an OPT-IN mode that makes this call look like a
+   * person typing, never the default and never changing `type()`'s behaviour when omitted: a
+   * human cadence (slower than plain per-character delivery), occasional typos from a plausible
+   * QWERTY-neighbour that get backspaced and retyped, more delay at the end of a word than
+   * mid-word, and every few words a chance of a longer "thinking" pause. `true` takes every
+   * default; an object overrides only the fields it names (`perCharMs`, `extraPerWordMs`,
+   * `thinkingPause: { probability, everyWords, ms }`, `typo: { probability, noticeAfterChars }`,
+   * `maxTotalMs` — a guard, not an exact budget, so a very long caption cannot silently run for
+   * minutes unless `maxTotalMs` is raised on purpose — and `seed`, for a deterministic run).
+   *
+   * The text that ends up in the field is always exactly what was requested: a typo is always
+   * corrected before this call resolves, never left standing.
+   *
+   * **Where this is unsafe or degraded:**
+   * - A field can lose focus about two seconds after being tapped while a session is attached
+   *   (YouTube's upload details screen is the measured case) — `human`'s pacing makes one `type()`
+   *   call take noticeably LONGER than plain delivery, which makes this worse, not better. Tap,
+   *   settle briefly, then call `type()` once; do not rely on focus surviving a long human-paced run.
+   * - Per-character delivery (which `human` always uses) lets an app's own autocomplete swallow
+   *   text already typed — the same caveat plain per-character typing already carries.
+   * - The guest-agent IME rung (`ScriptTypeResult.via: 'agent-ime'`) commits a whole string in one
+   *   call with no way to backspace partway through it, so typos cannot run there: `human` still
+   *   applies its pacing/pause knobs through that rung's own `perCharMs`, but reports
+   *   `human.supported: false` and `human.typosSimulated: 0` rather than silently skipping typos
+   *   with no signal.
    */
-  type(text: string, opts?: { perCharMs?: [number, number]; instant?: boolean; via?: 'adb' }): Promise<ScriptTypeResult>
+  type(text: string, opts?: { perCharMs?: [number, number]; instant?: boolean; via?: 'adb'; human?: true | HumanTypingOptions }): Promise<ScriptTypeResult>
   key(code: KeyCode): Promise<void>
   /**
    * `null` for both a genuine miss AND a selector refused as a viewport-sized
