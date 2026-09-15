@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { ShellResult } from '@enkaku/protocol'
-import { parseForegroundPackages, resetDevice, type ResetPlan } from './reset'
+import { handBackDevice, parseForegroundPackages, resetDevice, type ResetPlan } from './reset'
 import type { DeviceSession } from './session'
 
 type ExecImpl = (cmd: string, opts?: { signal?: AbortSignal }) => Promise<ShellResult>
@@ -24,6 +24,37 @@ function recordingSession(responses: Record<string, string> = {}) {
   })
   return { session, calls }
 }
+
+describe('handBackDevice — the phone after a job ends', () => {
+  test('force-stops every package the job touched, then returns to the launcher', async () => {
+    const { session, calls } = recordingSession()
+    const outcome = await handBackDevice(session, ['com.ss.android.ugc.trill', 'com.google.android.youtube'], { timeoutMs: 15_000 })
+    expect(calls).toEqual([
+      `am force-stop 'com.ss.android.ugc.trill'`,
+      `am force-stop 'com.google.android.youtube'`,
+      'am start -a android.intent.action.MAIN -c android.intent.category.HOME',
+    ])
+    expect(outcome.warnings).toEqual([])
+  })
+
+  test('with no packages it still goes home, and never stops the inspector', async () => {
+    const { session, calls } = recordingSession()
+    await handBackDevice(session, ['com.github.uiautomator'], { timeoutMs: 15_000 })
+    expect(calls).toEqual(['am start -a android.intent.action.MAIN -c android.intent.category.HOME'])
+  })
+
+  test('a failing step is a warning and the launcher step still runs', async () => {
+    const calls: string[] = []
+    const session = fakeSession(async (cmd) => {
+      calls.push(cmd)
+      if (cmd.startsWith('am force-stop')) throw new Error('device offline')
+      return { stdout: '', stderr: '', exitCode: 0 }
+    })
+    const outcome = await handBackDevice(session, ['com.example.app'], { timeoutMs: 15_000 })
+    expect(outcome.warnings).toEqual(['force-stop:com.example.app: device offline'])
+    expect(calls.at(-1)).toBe('am start -a android.intent.action.MAIN -c android.intent.category.HOME')
+  })
+})
 
 describe('resetDevice — command sequence per policy (plan 35 §4.2, §7)', () => {
   test('"none" issues no commands at all — reproduces today\'s behaviour exactly (acceptance #4)', async () => {

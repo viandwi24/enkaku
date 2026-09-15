@@ -18,7 +18,7 @@ import { SessionError } from '../errors'
 import type { InputSource } from '../input-arbiter'
 import type { Logger } from '../logger'
 import type { SessionManager } from '../manager'
-import { resetDevice, type ResetOutcome, type ResetPlan } from '../reset'
+import { handBackDevice, resetDevice, type ResetOutcome, type ResetPlan } from '../reset'
 import type { DeviceSession } from '../session'
 import type { ArtifactSink, TransferPort } from '../types'
 import {
@@ -65,6 +65,9 @@ export interface ClassifiedFailure {
 
 const FINISH_GRACE_MS = 30_000
 const FINISH_ONLY_TIMEOUT_MS = 30_000
+/** The whole post-job hand-back (force-stop plus launcher), and the wait for a session to run it on. */
+const HAND_BACK_TIMEOUT_MS = 15_000
+const HAND_BACK_ACQUIRE_MS = 10_000
 const SIGKILL_DELAY_MS = 5_000
 /** The child counts as hung after this long with no message at all. */
 const SILENCE_LIMIT_MS = 30_000
@@ -269,6 +272,14 @@ export interface JobRunnerDeps {
   resetPolicy?: () => JobSettings
   /** One `job.reset` device event per pre-job reset (plan 35 §3.5, §4.4). */
   onReset?: (jobId: string, deviceId: string, outcome: ResetOutcome, plan: ResetPlan) => void
+  /**
+   * Whether a job hands the phone back when it ends, whatever the outcome:
+   * every package it declared or launched is force-stopped and the phone
+   * returns to the launcher (`handBackDevice`). Read per job. Undefined means
+   * on. Skipped as well for a farm `resetPolicy` of `'none'` and a job with
+   * `reset: 'none'`, which both ask the farm to leave device state alone.
+   */
+  handBack?: () => boolean
   /**
    * Classifies why an attempt failed — infra vs script vs load (plan 36 §3.2,
    * §4.1). Injected because the canonical table lives in `@enkaku/core`.
@@ -563,6 +574,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     aborter: { current: ((reason: AbortReason, detail?: string) => void) | null }
     /** Force stop (`JobRunner.kill`). Passed only to a 'full' attempt — a finish-only attempt is the cleanup and is never killed early. */
     killer?: { current: (() => void) | null }
+    /** Collects every declared or launched package across the job's attempts, for the hand-back. */
+    targetSink?: Set<string>
     /** Filled from the `ready` message — timeout and retries belong to ScriptDefinition. */
     meta?: { timeoutMs?: number; retries?: number; scriptId?: string; version?: string; pluginId?: string }
     /**
@@ -627,6 +640,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
     let declaredPackages: string[] = []
     const launchedPackages = new Set<string>()
     const reportTargetPackages = (): void => {
+      for (const pkg of declaredPackages) opts.targetSink?.add(pkg)
+      for (const pkg of launchedPackages) opts.targetSink?.add(pkg)
       deps.onTargetPackages?.(job.runId, declaredPackages.length > 0 ? declaredPackages : [...launchedPackages])
     }
     // Plan 91 §3.3, §4.1 — this attempt's identity for the input arbiter's
@@ -1445,6 +1460,46 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         }
       }
 
+      // Every package any attempt declared or launched, force-stopped when the job ends.
+      const handBackPackages = new Set<string>()
+      /**
+       * The phone goes back to the launcher when the job ends — success,
+       * failure or cancel — with the job's own apps closed, so nothing is left
+       * open until the next job's pre-job reset happens to come along. Runs
+       * before the job settles, while it still owns the device, so it can
+       * never close the next job's app. Never throws.
+       */
+      const handBack = async (): Promise<void> => {
+        if (job.reset === 'none' || deps.handBack?.() === false || getResetSettings().resetPolicy === 'none') return
+        const pending = deps.sessions.acquire(job.deviceId, noopFrame)
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const timedOut = new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), HAND_BACK_ACQUIRE_MS)
+        })
+        let handSession: DeviceSession | null = null
+        try {
+          handSession = await Promise.race([pending, timedOut])
+          if (!handSession) {
+            // A late acquire must still be released, or the session keeps a reference forever.
+            void pending.then(() => deps.sessions.release(job.deviceId, noopFrame)).catch(() => undefined)
+            logger.append('warn', 'runner', `hand-back skipped: no session within ${HAND_BACK_ACQUIRE_MS}ms`)
+            return
+          }
+          const outcome = await handBackDevice(handSession, [...handBackPackages], { timeoutMs: HAND_BACK_TIMEOUT_MS })
+          logger.append(
+            outcome.warnings.length > 0 ? 'warn' : 'info',
+            'runner',
+            `hand-back done: applied=${outcome.applied.length} warnings=${outcome.warnings.length} durationMs=${outcome.durationMs}`,
+            { applied: outcome.applied, warnings: outcome.warnings },
+          )
+        } catch (err) {
+          logger.append('warn', 'runner', `hand-back skipped: ${err instanceof Error ? err.message : String(err)}`)
+        } finally {
+          clearTimeout(timer)
+          if (handSession) deps.sessions.release(job.deviceId, noopFrame)
+        }
+      }
+
       try {
         const bundlePath = job.bundlePath
         let attempt = 0
@@ -1560,6 +1615,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               artifacts,
               aborter,
               killer,
+              targetSink: handBackPackages,
               meta,
               tee,
             })
@@ -1588,6 +1644,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
               logger,
               artifacts,
               aborter,
+              targetSink: handBackPackages,
               // `finish()` may call ctx.kv too — carry the namespace already learned from this job's
               // earlier `ready` message (plan 79 §3.2) rather than leaving a finish-only attempt with
               // no namespace at all.
@@ -1655,6 +1712,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       } finally {
         active.delete(job.runId)
         if (session) deps.sessions.release(job.deviceId, noopFrame)
+        await handBack()
         const { bytes } = await logger.close()
         await artifacts
           .save({ kind: 'log', label: 'job', data: bytes, ext: 'log' })

@@ -100,6 +100,37 @@ export function parseForegroundPackages(dumpsysOutput: string): string[] {
   return [...packages]
 }
 
+/**
+ * Hand the phone back after a job, whatever its outcome: force-stop every
+ * package the job declared or launched, then return to the launcher. The
+ * pre-job reset still exists for a job that crashed before this could run;
+ * this is what stops a finished, failed or cancelled job from leaving its app
+ * open on the phone until the next job happens to come along (owner,
+ * 2026-09-15). Never throws; a step that fails is a warning.
+ */
+export async function handBackDevice(
+  session: DeviceSession,
+  packages: string[],
+  opts: { timeoutMs: number },
+): Promise<ResetOutcome> {
+  const start = Date.now()
+  const applied: string[] = []
+  const warnings: string[] = []
+  const controller = new AbortController()
+  const deadline = setTimeout(() => controller.abort(), opts.timeoutMs)
+  const run = makeRunner(session, controller, applied, warnings)
+  try {
+    for (const pkg of packages) {
+      if (AGGRESSIVE_ALWAYS_SKIP.some((re) => re.test(pkg))) continue
+      await run(`force-stop:${pkg}`, `am force-stop ${shellQuote(pkg)}`)
+    }
+    await run('home', 'am start -a android.intent.action.MAIN -c android.intent.category.HOME')
+  } finally {
+    clearTimeout(deadline)
+  }
+  return { applied, warnings, durationMs: Date.now() - start }
+}
+
 export async function resetDevice(
   session: DeviceSession,
   plan: ResetPlan,

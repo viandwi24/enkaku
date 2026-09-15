@@ -115,7 +115,7 @@ export {
   type ArgRedaction,
   type TracePhase,
 } from './runner/trace'
-export { resetDevice, parseForegroundPackages, type ResetPolicy, type ResetPlan, type ResetOutcome } from './reset'
+export { resetDevice, handBackDevice, parseForegroundPackages, type ResetPolicy, type ResetPlan, type ResetOutcome } from './reset'
 export { createJobLogger, type JobLogger, type JobLogEntry } from './runner/job-logger'
 export {
   ChildToParentSchema,

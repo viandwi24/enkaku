@@ -199,6 +199,14 @@ export const JOB_TIMEOUT_IS_INFRA = bool('ENKAKU_JOB_TIMEOUT_IS_INFRA', false)
  * settled `cancelled` by the host, so a cancel never leaves a run `running`.
  */
 export const JOB_CANCEL_KILL_MS = num('ENKAKU_JOB_CANCEL_KILL_MS', 15_000, z.number().int().min(1_000).max(300_000))
+/**
+ * When a job ends — succeeded, failed or cancelled — the runner force-stops
+ * every package it declared or launched and returns the phone to the launcher
+ * (`@enkaku/session`'s `handBackDevice`), while the job still owns the device.
+ * A farm `resetPolicy` of `none` skips it too. Off only for debugging a script
+ * whose end state you want to look at.
+ */
+export const JOB_HAND_BACK_HOME = bool('ENKAKU_JOB_HAND_BACK_HOME', true)
 export const JOB_REBIND_ON_INFRA = bool('ENKAKU_JOB_REBIND_ON_INFRA', true)
 export const JOB_CRASH_POLICY = pick('ENKAKU_JOB_CRASH_POLICY', 'declared', ['ignore', 'declared', 'any'] as const)
 export const WORKFLOW_MAX_TOTAL_MS = num('ENKAKU_WORKFLOW_MAX_TOTAL_MS', 21_600_000, z.number().int().min(60_000).max(604_800_000))

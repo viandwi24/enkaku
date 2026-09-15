@@ -208,10 +208,17 @@ describe('createJobRunner — the ready → reset → init ordering (plan 35 §4
     const initIdx = timeline.indexOf('child:init-received')
     expect(resetIdx).toBeGreaterThanOrEqual(0)
     expect(initIdx).toBeGreaterThan(resetIdx)
-    // The exec calls (the reset itself) all happened before onReset fired.
-    for (const c of execCalls) {
-      expect(timeline.indexOf(`exec:${c}`)).toBeLessThan(resetIdx)
+    // The exec calls before init (the reset itself) all happened before onReset fired.
+    const beforeInit = timeline.slice(0, initIdx).filter((e) => e.startsWith('exec:'))
+    expect(beforeInit.length).toBeGreaterThan(0)
+    for (const e of beforeInit) {
+      expect(timeline.indexOf(e)).toBeLessThan(resetIdx)
     }
+    // And once the job ended, the phone was handed back: its package stopped, then home.
+    expect(timeline.slice(initIdx).filter((e) => e.startsWith('exec:'))).toEqual([
+      `exec:am force-stop 'com.example.app'`,
+      'exec:am start -a android.intent.action.MAIN -c android.intent.category.HOME',
+    ])
     // `reset` is reported as its own phase, ahead of `run`/`finish`.
     expect(timeline.indexOf('phase:reset')).toBeGreaterThanOrEqual(0)
     expect(timeline.indexOf('phase:reset')).toBeLessThan(initIdx)
@@ -628,9 +635,10 @@ describe('createJobRunner — the contamination regression (plan 35 §5.5)', () 
     // second job does not inherit whatever state the aborted first job left.
     expect(resetCalls.map((r) => r.jobId)).toEqual([JOB1.runId, JOB2.runId])
     expect(sentPerSpawn).toHaveLength(3)
-    // The "home" sequence's HOME intent runs once per reset — twice total
-    // (once for job 1, once for job 2), never for the finish-only retry.
-    expect(execCalls.filter((c) => c === 'am start -a android.intent.action.MAIN -c android.intent.category.HOME')).toHaveLength(2)
+    // The HOME intent runs once per pre-job reset (never for the finish-only
+    // retry) and once per job's hand-back when it ends: four in total, and the
+    // cancelled job 1 is handed back like any other.
+    expect(execCalls.filter((c) => c === 'am start -a android.intent.action.MAIN -c android.intent.category.HOME')).toHaveLength(4)
   })
 })
 

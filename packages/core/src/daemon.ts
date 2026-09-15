@@ -66,6 +66,7 @@ import {
   JOB_CRASH_POLICY,
   JOB_MAX_RESULT_BYTES,
   JOB_CANCEL_KILL_MS,
+  JOB_HAND_BACK_HOME,
   JOB_MAX_TIMEOUT_MS,
   JOB_MEMORY_ENFORCE,
   JOB_MEMORY_MAX_BYTES,
@@ -4713,6 +4714,8 @@ let blobGc: BlobGc | null = null
         const runner = createJobRunner({
           logDir: cfg.dataDir,
           sessions,
+          // Close the job's apps and go home when it ends, whatever the outcome.
+          handBack: () => JOB_HAND_BACK_HOME,
           // Plan 211 §3.2 decision 9 — `deps.artifacts` is called with the RUN
           // id (`job.runId`), despite the interface's parameter still being
           // named `jobId`; a workflow step's own `runner.execute()` call now
