@@ -120,6 +120,7 @@ import {
   VIDEO_SILENCE_RESTART_SEC,
 } from './config/constants'
 import { createPerKeyThrottle } from './util/per-key-throttle'
+import { handBackAfterRestart } from './device/restart-hand-back'
 
 import { createNodeRoutes } from './api/nodes'
 import { createNodeAuth } from './tunnel/node-auth'
@@ -252,7 +253,7 @@ import { migrateToolResultContentBlocks } from './db/migrations/tool-result-cont
 import { parkSyntheticRecordingsOwner } from './db/migrations/park-synthetic-recordings'
 import { migrateWorkflowsFromScripts } from './db/migrations/workflows-from-scripts'
 import { migrateJobsToRuns } from './db/migrations/jobs-to-runs'
-import { devices, plugins } from './db/schema'
+import { devices, jobRuns, plugins } from './db/schema'
 import { createReverseRegistry, parseDevicePortRange, parseReverseList, removeReverse } from './network/reverse-registry'
 import { createDeviceStateMachine } from './device/state-machine'
 import { createAdbEndpointManager, bunAdbEndpointListen, type AdbEndpointManager } from './device/adb-endpoint'
@@ -1581,6 +1582,18 @@ let blobGc: BlobGc | null = null
 
       // 3. Queue / heartbeat / scheduler (M3)
       const jobStore = createJobStore(db)
+      // The phones those orphaned runs were driving. Their job died with the old process, so neither
+      // its finish() nor the runner's hand-back ran and its app was left open mid-flow (production,
+      // 2026-09-15). Each is handed back when it next comes online (`onDeviceReady` below).
+      const restartOrphanDevices = new Set(
+        db
+          .select({ deviceId: jobRuns.deviceId })
+          .from(jobRuns)
+          .where(eq(jobRuns.status, 'running'))
+          .all()
+          .map((r) => r.deviceId)
+          .filter((id): id is string => typeof id === 'string'),
+      )
       const orphans = jobStore.failOrphanRunning()
       if (orphans > 0) log.warn(`recovery boot: ${orphans} job 'running' yatim ditandai failed (core restarted)`)
 
@@ -5026,6 +5039,20 @@ let blobGc: BlobGc | null = null
             // phone left on auto-rotate meanwhile opens its next app sideways. Check-first: a phone
             // already locked costs one read.
             void sessions?.ensureRotation?.(deviceId, 'device-online')
+            // A phone whose job the last core process died in the middle of: close what that job left
+            // open and go home (`handBackAfterRestart`). Once per phone per boot, and never over a job
+            // that has already claimed the phone again.
+            if (restartOrphanDevices.delete(deviceId) && JOB_HAND_BACK_HOME) {
+              const client = adb
+              const serial = db.select({ serial: devices.serial }).from(devices).where(eq(devices.id, deviceId)).get()?.serial
+              if (client && serial && !jobStore.runningByDevice(deviceId)) {
+                void handBackAfterRestart((cmd) => client.exec(serial, cmd, { profile: 'appLifecycle' }))
+                  .then(({ stopped, warnings }) =>
+                    log.info(`handed ${deviceId} back after the core restart: stopped ${stopped.join(', ') || 'nothing'}, opened home${warnings.length > 0 ? ` (${warnings.length} warning(s): ${warnings.join('; ')})` : ''}`),
+                  )
+                  .catch((err) => log.warn(`hand-back after the core restart failed for ${deviceId}, tolerated: ${String(err)}`))
+              }
+            }
             scheduler?.kick()
             recomputeAdbConcurrency()
             // The device just came online — restore any persisted `vpn-helper`
