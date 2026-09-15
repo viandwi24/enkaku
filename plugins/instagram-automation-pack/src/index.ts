@@ -8,6 +8,7 @@ import scrollFeed from './scroll-feed'
 import watchStories from './watch-stories'
 import exploreReels from './explore-reels'
 import postVideo from './post-video'
+import clearDrafts from './clear-drafts'
 
 /**
  * Instagram automation pack.
@@ -51,15 +52,25 @@ import postVideo from './post-video'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.9.2',
+  version: '0.10.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
   description: 'Browse Reels, the feed, stories and Explore, check inbox, notifications and profile, search, and post Reels — with keyword-tilted random behaviour.',
-  scripts: [scrollReels, checkInbox, checkActivity, checkProfile, searchKeyword, scrollFeed, watchStories, exploreReels, postVideo],
+  scripts: [scrollReels, checkInbox, checkActivity, checkProfile, searchKeyword, scrollFeed, watchStories, exploreReels, postVideo, clearDrafts],
 
   /**
    * ## Changelog
+   *
+   * **0.10.0 — `clear-drafts`: every draft on the account, deleted on its
+   * own.** The owner asked (2026-09-16) for draft cleaning as a script of its
+   * own on every platform, triggered from the Social Media Manager page.
+   * Instagram keeps TWO lists, both measured on the owner's moto that night: the
+   * new-post gallery's "Draf" → "Kelola" list (a Compose page whose row menu
+   * "Hapus" deletes at once) and the Reel gallery's "Draf · N" → "Draf Reel"
+   * (row menu "Hapus", then "Hapus draf?"). The member empties the list of the
+   * gallery "+" opens, then reaches the other; every deletion is proven by the
+   * row count, and a tap that did not take is tried again. A dry run counts.
    *
    * **0.9.2 — leaving the new-post gallery is read from what is drawn.**
    * Production #59 (0.9.0, 2026-09-15) failed "the new-post gallery has no REEL

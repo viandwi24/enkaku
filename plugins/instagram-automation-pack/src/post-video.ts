@@ -553,7 +553,7 @@ function fail(code: string, message: string): never {
   throw Object.assign(new Error(message), { code })
 }
 
-async function tapCentre(ctx: ScriptContext<unknown>, node: UiNode): Promise<void> {
+export async function tapCentre(ctx: ScriptContext<unknown>, node: UiNode): Promise<void> {
   await ctx.device.tap({ point: centre(node) })
 }
 
@@ -649,7 +649,7 @@ const CREATE_RETAPS = 2
  * button exactly where "+" was ("Batal" at 0,70–98,168 in `screen-new-post.json`, "Kembali ke Beranda" in
  * `screen-reel-gallery.json`), and a re-tap from a stale reading would close it.
  */
-async function tapCreate(ctx: ScriptContext<unknown>, button: UiNode, find: (tree: UiNode) => UiNode | null, where: string): Promise<Waited> {
+export async function tapCreate(ctx: ScriptContext<unknown>, button: UiNode, find: (tree: UiNode) => UiNode | null, where: string): Promise<Waited> {
   await tapCentre(ctx, button)
   let opened = await waitForTree(ctx, createFlowShowing, { budgetMs: 15_000 })
   for (let retap = 0; retap < CREATE_RETAPS && !opened.ok; retap++) {
@@ -673,7 +673,7 @@ async function tapCreate(ctx: ScriptContext<unknown>, button: UiNode, find: (tre
  * ("Mulai video baru"), a draft sheet ("Mulai dari awal") — and stop on a dialog the reader still cannot see when the
  * wait runs out. `tag` prefixes the artifacts, `origin` names the button in messages.
  */
-async function answerCreatePrompts(ctx: ScriptContext<unknown>, first: Waited, where: { tag: string; origin: string }): Promise<Waited> {
+export async function answerCreatePrompts(ctx: ScriptContext<unknown>, first: Waited, where: { tag: string; origin: string }): Promise<Waited> {
   let opened = first
   const menu = createMenuSheet(opened.tree)
   if (menu) {
@@ -721,7 +721,7 @@ async function answerCreatePrompts(ctx: ScriptContext<unknown>, first: Waited, w
  * "Mulai dari awal" should one come up, BACK only when neither is readable — never "Selanjutnya". Done when the bottom
  * navigation is back with no gallery drawn. Three rounds at most.
  */
-async function leaveNewPostGallery(ctx: ScriptContext<unknown>): Promise<{ ok: boolean; tree: UiNode }> {
+export async function leaveNewPostGallery(ctx: ScriptContext<unknown>): Promise<{ ok: boolean; tree: UiNode }> {
   const left = (t: UiNode): boolean => isReady(t) && gallerySurface(t) === null
   let tree = await ctx.device.dump()
   for (let round = 0; round < 3 && !left(tree); round++) {
@@ -747,7 +747,7 @@ async function leaveNewPostGallery(ctx: ScriptContext<unknown>): Promise<{ ok: b
  * `screen-create-menu-sheet.json`, and its Reel row reaching the Reel gallery is the 0.4.0/0.4.1 routed runs
  * (`screen-reel-gallery-resume-draft.json`). Returns what it reached; the caller decides.
  */
-async function openReelGalleryFromProfile(ctx: ScriptContext<unknown>): Promise<Waited> {
+export async function openReelGalleryFromProfile(ctx: ScriptContext<unknown>): Promise<Waited> {
   await backToNav(ctx)
   const profile = await openTab(ctx, 'profile_tab', (t) => profileCreateButton(t) !== null || createMenuSheet(t) !== null, 15_000)
   let opened: Waited = { tree: profile.tree, ok: createMenuSheet(profile.tree) !== null, waitedMs: 0 }
