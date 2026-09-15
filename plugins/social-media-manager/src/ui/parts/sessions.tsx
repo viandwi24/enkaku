@@ -178,6 +178,11 @@ interface Loaded {
   posts: Post[]
   /** Artifact id → the operator's own name for that video. Missing when the upload has since been deleted. */
   videos: Map<string, string>
+  /**
+   * The Files list was read (0.34.0). Only then does an id missing from `videos` mean the file is GONE — a failed read
+   * must never turn every row into "file deleted".
+   */
+  videosRead: boolean
   /** Device id → `#7 Galaxy A15`. Missing when the phone has left the farm (or the device list could not be read). */
   devices: Map<string, string>
   /** The fleet itself, in the farm's order — what the edit form's phone picker offers. */
@@ -199,20 +204,22 @@ interface Loaded {
  * for.
  */
 async function loadAll(): Promise<Loaded> {
-  const [groups, posts, videos, devices] = await Promise.all([
+  const [groups, posts, videoRead, devices] = await Promise.all([
     listGroups(),
     listPosts(),
-    listVideos().catch(() => []),
+    listVideos()
+      .then((list) => ({ ok: true, list }))
+      .catch(() => ({ ok: false, list: [] as Awaited<ReturnType<typeof listVideos>> })),
     listDevices().catch(() => []),
   ])
   const names = new Map<string, string>()
-  for (const video of videos) {
-    const label = video.label?.trim()
-    if (label) names.set(video.id, label)
+  for (const video of videoRead.list) {
+    // Every upload is in the map, named or not, so "not in the map" can mean "deleted" (0.34.0).
+    names.set(video.id, video.label?.trim() || video.id.slice(0, 8))
   }
   const phones = new Map<string, string>()
   for (const device of devices) phones.set(device.id, deviceName(device))
-  return { groups, posts, videos: names, devices: phones, fleet: devices }
+  return { groups, posts, videos: names, videosRead: videoRead.ok, devices: phones, fleet: devices }
 }
 
 /** `g-1757…-4f2a` → `g-175781`: an id an operator can match against a row, never a whole uuid in a sentence. */
@@ -407,6 +414,12 @@ const RetryFailedResultSchema = z.object({
   platforms: z.array(z.string()).default([]),
   skipped: z.array(z.string()).default([]),
 })
+
+/** Has this video posted on every platform it was sent to? A deleted file no longer matters for such a row (0.34.0). */
+function isFullyPosted(post: Post): boolean {
+  const states = Object.values(post.dispatch)
+  return states.length > 0 && states.every((s) => s.state === 'posted')
+}
 
 /** Does any current attempt of this video, on any platform, stand failed? What a row's Retry failed would re-send. */
 function hasFailed(post: Post): boolean {
@@ -1022,7 +1035,10 @@ export function SessionDetail({ groupId, refreshKey, onBack }: { groupId: string
   const group = (data?.groups ?? []).find((g) => g.id === groupId) ?? null
   const posts = useMemo(() => postsOf(data, groupId), [data, groupId])
   const videos = data?.videos ?? EMPTY_MAP
+  const videosRead = data?.videosRead ?? false
   const devices = data?.devices ?? EMPTY_MAP
+  // Videos whose file was deleted from Files (0.34.0): the phones cannot fetch them, so they fail when sent.
+  const deletedVideos = videosRead ? posts.filter((p) => !videos.has(p.videoArtifactId) && !isFullyPosted(p)).length : 0
 
   return (
     // No vertical padding of its own — the host pads the view — and the same
@@ -1070,6 +1086,16 @@ export function SessionDetail({ groupId, refreshKey, onBack }: { groupId: string
 
           <LiveLine moving={moving} updatedAt={updatedAt} posts={posts} now={now} />
 
+          {deletedVideos > 0 ? (
+            <div className="rounded-card border border-danger/30 bg-danger-soft px-3.5 py-2.5 text-[12px] text-text-2">
+              <strong className="text-danger">
+                {deletedVideos} video{deletedVideos === 1 ? '' : 's'} in this session {deletedVideos === 1 ? 'has' : 'have'} been deleted from Files.
+              </strong>{' '}
+              The phones cannot fetch {deletedVideos === 1 ? 'it' : 'them'}, so sending fails and Retry is blocked on {deletedVideos === 1 ? 'that row' : 'those rows'}. Upload the
+              video again and add it to a new session, or remove the session if it is no longer needed.
+            </div>
+          ) : null}
+
           {posts.length === 0 ? (
             <p className="text-[11.5px] leading-relaxed text-dim">
               No video rows carry this session’s id. They may have been removed, or this session was made by a build that stored them differently.
@@ -1079,6 +1105,7 @@ export function SessionDetail({ groupId, refreshKey, onBack }: { groupId: string
               group={group}
               posts={posts}
               videos={videos}
+              videosRead={videosRead}
               devices={devices}
               fleet={data?.fleet ?? EMPTY_FLEET}
               now={now}
@@ -1148,6 +1175,7 @@ function SessionTable({
   group,
   posts,
   videos,
+  videosRead,
   devices,
   fleet,
   now,
@@ -1158,6 +1186,7 @@ function SessionTable({
   group: Group
   posts: readonly Post[]
   videos: ReadonlyMap<string, string>
+  videosRead: boolean
   devices: ReadonlyMap<string, string>
   fleet: readonly Device[]
   now: number
@@ -1401,6 +1430,7 @@ function SessionTable({
                   group={group}
                   platforms={platforms}
                   videos={videos}
+                  videoDeleted={videosRead && !videos.has(post.videoArtifactId)}
                   devices={devices}
                   now={now}
                   filter={filter}
@@ -1879,6 +1909,7 @@ function VideoRows({
   group,
   platforms,
   videos,
+  videoDeleted,
   devices,
   now,
   filter,
@@ -1905,6 +1936,7 @@ function VideoRows({
   group: Group
   platforms: readonly string[]
   videos: ReadonlyMap<string, string>
+  videoDeleted: boolean
   devices: ReadonlyMap<string, string>
   now: number
   filter: Filter
@@ -1958,6 +1990,11 @@ function VideoRows({
           <div className="max-w-[14rem] truncate text-[12.5px] font-medium text-text @3xl:max-w-[20rem]" title={name}>
             {name}
           </div>
+          {videoDeleted ? (
+            <Badge variant="destructive" className="mt-1 px-1.5 py-0 text-[10px]" title="This video's file was deleted from Files — the phones cannot fetch it, so sending it fails.">
+              File deleted
+            </Badge>
+          ) : null}
           {/* Narrow boxes hide the Turn column; its fact moves under the name rather than vanish. */}
           <div className="mt-0.5 text-[11px] text-faint @xl:hidden">Turn {turnText(post, now)}</div>
         </TableCell>
@@ -2016,7 +2053,7 @@ function VideoRows({
         ))}
         <TableCell className="align-top">
           <div data-row-action className="flex flex-wrap justify-end gap-1.5">
-            {hasFailed(post) ? <RetryVideoButton post={post} name={name} outcome={outcome} /> : null}
+            {hasFailed(post) ? <RetryVideoButton post={post} name={name} outcome={outcome} deleted={videoDeleted} /> : null}
             <Button
               variant={editing ? 'secondary' : 'outline'}
               size="sm"
@@ -2881,8 +2918,17 @@ function MarkByHandButton({ post, platform, name, phone, outcome }: { post: Post
 }
 
 /** A row's own Retry failed: this one video, to the phones where it failed, behind a confirm. */
-function RetryVideoButton({ post, name, outcome }: { post: Post; name: string; outcome: OutcomeActions }): ReactElement {
+function RetryVideoButton({ post, name, outcome, deleted }: { post: Post; name: string; outcome: OutcomeActions; deleted: boolean }): ReactElement {
   const busy = outcome.busy(post)
+  // A deleted file cannot be sent again (0.34.0): the button says why instead of re-sending a job that can only fail.
+  if (deleted) {
+    return (
+      <Button variant="outline" size="sm" disabled title="This video's file was deleted from Files, so it cannot be sent again. Upload it again and add it to a new session.">
+        <ArrowsClockwiseIcon aria-hidden />
+        Retry failed
+      </Button>
+    )
+  }
   return (
     <ConfirmDialog
       trigger={

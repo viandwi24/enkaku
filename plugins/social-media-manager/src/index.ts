@@ -75,6 +75,13 @@ import {
  *
  * ## Changelog
  *
+ * - **0.34.0 — a video whose file was deleted from Files says so.** The owner
+ *   (2026-09-16) asked for file cleaning and for what depends on a file to be
+ *   handled when it goes. A session's page now reads the Files list and marks a
+ *   row whose upload is gone "File deleted", counts such rows in a notice above
+ *   the table, and blocks that row's Retry failed with the reason, instead of
+ *   re-sending a job the phones can only fail. A failed read of Files marks
+ *   nothing.
  * - **0.33.0 — YouTube can be picked in the Drafts tab.** Its pack's
  *   `clear-drafts` (YouTube 0.39.0) was measured on the owner's moto and ships now.
  * - **0.32.0 — a Drafts tab clears drafts on the phones picked.** The owner's
@@ -1201,7 +1208,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.33.0',
+  version: '0.34.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
