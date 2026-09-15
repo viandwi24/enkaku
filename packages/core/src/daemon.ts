@@ -1273,6 +1273,8 @@ let blobGc: BlobGc | null = null
       // ending, and the GET /:id/viewers route).
       let broadcastDeviceViewers: ((deviceId: string) => void) | null = null
       let viewersOfDevice: ((deviceId: string) => Viewer[]) | null = null
+      // `DeviceInfo.inUse.viewers` — open Device Control windows, read through the same forward ref.
+      let controlViewersOfDevice: ((deviceId: string) => number) | null = null
       // Same forward-ref pattern: a device going offline (below) must stop
       // its monitor streams (plan 24 §4.5) even with viewers still attached,
       // but the hub holding that state lives inside the WS router built
@@ -1961,6 +1963,7 @@ let blobGc: BlobGc | null = null
       const activitiesOf = (deviceId: string): DeviceActivityState => ({
         activities: activities.list(deviceId),
         lastControl: activities.lastControl(deviceId),
+        controlViewers: controlViewersOfDevice?.(deviceId) ?? 0,
       })
 
       // Device lifecycle — Forget and Block (plan 47 §4.3). Constructed
@@ -4242,6 +4245,7 @@ let blobGc: BlobGc | null = null
         publishDeviceEvent = handler.publishEvent
         broadcastDeviceViewers = handler.broadcastViewers
         viewersOfDevice = handler.viewersOf
+        controlViewersOfDevice = handler.controlViewerCount
         stopMonitorsForDevice = handler.stopMonitorsForDevice
         releaseShellSession = handler.releaseShellSession
         stopRecordingForDisconnect = handler.stopRecordingForDisconnect

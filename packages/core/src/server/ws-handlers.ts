@@ -206,6 +206,12 @@ interface StreamBinding {
    * now resolve the wrong slot whenever the other quality is also open.
    */
   quality?: Quality
+  /**
+   * The quality the CLIENT asked for, which `quality` above may not be (a
+   * control request served by the wall encoder). `control` means a Device
+   * Control window; `wall` a Screens tile. Read by `controlViewerCount`.
+   */
+  requestedQuality?: Quality
   lastSize: { width: number; height: number }
   /** Unix seconds — when this binding was created (plan 31 §4.1 Viewer.since). */
   since: number
@@ -737,6 +743,26 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
   }
 
   /**
+   * How many connections have this device open in Device Control — a stream
+   * the client requested at `control` quality (`DeviceInfo.inUse.viewers`).
+   * One per connection however many streams it holds. Wall tiles are left
+   * out on purpose: an open Screens grid is not someone using each phone.
+   */
+  const controlViewerCount = (deviceId: string): number => {
+    let count = 0
+    for (const [ws, state] of conns) {
+      if (ws.readyState !== 1) continue
+      for (const binding of state.streams.values()) {
+        if (binding.deviceId === deviceId && binding.requestedQuality === 'control') {
+          count += 1
+          break
+        }
+      }
+    }
+    return count
+  }
+
+  /**
    * Fan the current viewer list out to every connection watching this
    * device (plan 31 §3.5, §4.2) — the same scoping `publishEvent` uses for
    * log subscriptions, so a busy farm's presence churn never lands on a WS
@@ -882,6 +908,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
   return {
     publishEvent,
     viewersOf,
+    controlViewerCount,
     broadcastViewers,
     /** Sent the moment a WS opens (plan 31 §4.2) — before any client message. */
     handleOpen(ws: ServerWebSocket<unknown>): void {
@@ -1002,6 +1029,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             // Defaults to `control` — every pre-plan-42 caller, and the
             // device page itself. Only the Wall asks for `wall` (Plan 42 §4.5).
             const requestedQuality = msg.payload.quality ?? 'control'
+            binding.requestedQuality = requestedQuality
             let codec: 'png' | 'h264'
             let frameSize: { width: number; height: number }
             let quality: Quality = 'control'

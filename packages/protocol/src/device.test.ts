@@ -98,6 +98,12 @@ describe('DeviceInfoSchema.activities / lastControl (plan 205, MVP 04)', () => {
     expect(info.lastControl).toBeNull()
   })
 
+  test('inUse defaults to nobody using the phone, and carries control plus Device Control viewers (owner report, 2026-09-15)', () => {
+    expect(DeviceInfoSchema.parse(BASE).inUse).toEqual({ control: false, viewers: 0 })
+    expect(DeviceInfoSchema.parse({ ...BASE, inUse: { control: true, viewers: 2 } }).inUse).toEqual({ control: true, viewers: 2 })
+    expect(DeviceInfoSchema.safeParse({ ...BASE, inUse: { control: false, viewers: -1 } }).success).toBe(false)
+  })
+
   test('carries one or more live activities', () => {
     const activity: DeviceActivity = {
       id: 'control:client-1',

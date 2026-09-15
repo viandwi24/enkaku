@@ -165,6 +165,7 @@ export function DevicesScreen() {
   )
 
   const filteredIds = useMemo(() => filtered.map((d) => d.id), [filtered])
+  const filteredIdSet = useMemo(() => new Set(filteredIds), [filteredIds])
 
   // Device Control is mounted once by the root layout now (plan 215's window
   // used to live here, which is why navigating away killed the cast). This
@@ -178,12 +179,30 @@ export function DevicesScreen() {
     // `selectedNow` comes from the hook rather than from `selection` in this
     // closure: reading it back off the object being declared here made the
     // mirror depend on whether a pending collapse had already fired.
+    //
+    // The mirror is COPIED out of the visible selection and never written back
+    // into it (owner field report, 2026-09-15). This used to call
+    // `selection.set(mirror)`, so the phones under Device Control became the
+    // actions selection; switch tabs, tick twenty other phones, run a
+    // workflow, and the controlled phones were quietly still in the target.
     onOpenControl: (id, selectedNow) => {
-      const mirror = retargetSelection(id, selectedNow)
-      selection.set(mirror)
-      setFocus(id, mirror)
+      const visibleNow = selectedNow.filter((sid) => filteredIdSet.has(sid))
+      setFocus(id, retargetSelection(id, visibleNow))
     },
   })
+
+  /**
+   * What every action on this screen acts on: the selected devices the
+   * operator can SEE under the active tab, filters and search, in view order.
+   *
+   * The selection itself is kept whole rather than trimmed whenever the list
+   * changes, because trimming throws away a careful multi-select the moment
+   * someone searches for one more phone to add to it. But a device that is
+   * not on screen is never acted on — the pill says how many are held back,
+   * so nothing is targeted that the operator cannot see ticked.
+   */
+  const visibleSelected = useMemo(() => filteredIds.filter((id) => selection.selected.has(id)), [filteredIds, selection.selected])
+  const hiddenSelectedCount = selection.selected.size - visibleSelected.length
 
   // Plan 218 §4.14 — the Jobs screen's "Open device" button links here with
   // `?device=<id>`. Consumed once and stripped, so a reload or a Back does
@@ -202,7 +221,7 @@ export function DevicesScreen() {
 
   const pendingCount = discovered.length
 
-  const target: Target = { deviceIds: [...selection.selected] }
+  const target: Target = { deviceIds: visibleSelected }
 
   /**
    * Right-click resolves the selection the way every file manager does:
@@ -215,8 +234,9 @@ export function DevicesScreen() {
   const openContextMenu = (deviceId: string, e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    const inSelection = selection.selected.has(deviceId)
-    const ids = inSelection ? [...selection.selected] : [deviceId]
+    // The VISIBLE selection, the same set the bulk pill acts on.
+    const inSelection = visibleSelected.includes(deviceId)
+    const ids = inSelection ? visibleSelected : [deviceId]
     if (!inSelection) selection.set(ids)
     setContextTarget(ids)
     setContextMenu({ deviceId, x: e.clientX, y: e.clientY, count: ids.length })
@@ -290,9 +310,10 @@ export function DevicesScreen() {
 
       {selection.selected.size > 0 && (
         <BulkPill
-          count={selection.selected.size}
+          count={visibleSelected.length}
+          hiddenCount={hiddenSelectedCount}
           target={target}
-          devices={(devices ?? []).filter((d) => selection.selected.has(d.id))}
+          devices={filtered.filter((d) => selection.selected.has(d.id))}
           onLabelsChanged={labelState.reload}
           onClear={selection.clear}
         />

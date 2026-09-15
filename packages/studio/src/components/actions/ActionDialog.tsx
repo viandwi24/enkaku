@@ -67,7 +67,10 @@ export function ActionDialog<P>({
   const label = busy
     ? 'Working…'
     : target.needsForce
-      ? `Continue for ${target.warnedIds.length} device${target.warnedIds.length === 1 ? '' : 's'}`
+      ? spec.holdsOnWarn
+        ? // Nothing started: confirming sends the WHOLE target again, as one batch.
+          `${spec.submitLabel(target.count)} anyway`
+        : `Continue for ${target.warnedIds.length} device${target.warnedIds.length === 1 ? '' : 's'}`
       : spec.submitLabel(target.count)
 
   async function submit(force: boolean) {

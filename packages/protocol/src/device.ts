@@ -231,6 +231,27 @@ export const DeviceMetricsMessage = z.object({
 })
 export type DeviceMetricsEvent = z.infer<typeof DeviceMetricsMessage>
 
+/**
+ * Whether someone is using a device (owner field report, 2026-09-15).
+ *
+ * `activities` alone cannot answer it: a `control` marker exists only while
+ * input flows and ends `CONTROL_IDLE_SEC` after the last one, so a phone an
+ * operator is WATCHING in Device Control looked free to every plugin that
+ * picks phones itself. A plugin should also treat a non-null `lastControl`
+ * (the tail kept after a marker ends) as a quiet period.
+ */
+export const DeviceInUseSchema = z.object({
+  /** A live `control` marker is on the device: someone sent input within the idle window. */
+  control: z.boolean(),
+  /**
+   * Open Device Control windows on this device: live streams requested at
+   * `control` quality. Wall tiles are NOT counted — every phone on an open
+   * Screens grid has one, and counting them would mark the whole farm busy.
+   */
+  viewers: z.number().int().min(0),
+})
+export type DeviceInUse = z.infer<typeof DeviceInUseSchema>
+
 export const DeviceInfoSchema = z.object({
   id: z.string(),
   stableId: z.string(),
@@ -299,6 +320,12 @@ export const DeviceInfoSchema = z.object({
    * marker has ever ended or the tail has expired.
    */
   lastControl: LastControlSchema.nullable().default(null),
+  /**
+   * Is a person using this phone right now? Read by plugins that pick phones
+   * on their own (the SMM router, TikTok auto-post) so they leave it alone.
+   * Defaulted so an older payload still parses.
+   */
+  inUse: DeviceInUseSchema.default(() => ({ control: false, viewers: 0 })),
   /**
    * How this device is reached (plan 88 §3.1, §4.1) — computed by
    * `deriveConnection` (`packages/core/src/registry/device-registry.ts`),

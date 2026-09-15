@@ -1,4 +1,5 @@
-import type { ActivityKind, ActionVerb } from '@enkaku/protocol'
+import type { ActionVerb } from '@enkaku/protocol'
+import type { StartingKind } from '../activity/policy'
 import type { Permission } from '../auth/acl'
 import { ACTION_FANOUT_MAX, ACTION_SOCKET_FANOUT, ACTION_SYNC_FANOUT_MAX } from '../config/constants'
 import { computeAsyncFanout, computeSyncFanout } from '../device/adb-scaling'
@@ -9,7 +10,7 @@ export type VerbGate = { permission: Permission } | { gate: 'shell' } | { gate: 
 export interface VerbSpec {
   gate: VerbGate
   /** The row of MVP 04 §1.3 evaluated before dispatch; null means the implementation's own refusals are the only guard. */
-  policyKind: ActivityKind | null
+  policyKind: StartingKind | null
   /** Whether an offline or quarantined device is dispatched (`allow`) or reported `skipped` (`skip`). */
   offline: 'allow' | 'skip'
   /** `sync` answers `done` in the 202; `async` answers `accepted` and settles on the operation. */
@@ -33,8 +34,11 @@ export interface VerbSpec {
 }
 
 export const VERBS: Record<ActionVerb, VerbSpec> = {
-  'run-script':   { gate: { permission: 'job.run' },            policyKind: null,            offline: 'skip',  mode: 'sync' },
-  'run-workflow': { gate: { permission: 'job.run' },            policyKind: null,            offline: 'skip',  mode: 'sync' },
+  // `run` (activity/policy.ts): warns over a live control or agent marker, so
+  // the dialog says so before anything queues. `runAction` holds the whole
+  // dispatch while any device is warned — see `RUN_VERBS_HOLD_ON_WARN`.
+  'run-script':   { gate: { permission: 'job.run' },            policyKind: 'run',           offline: 'skip',  mode: 'sync' },
+  'run-workflow': { gate: { permission: 'job.run' },            policyKind: 'run',           offline: 'skip',  mode: 'sync' },
   install:        { gate: { gate: 'files' },                    policyKind: 'install',       offline: 'skip',  mode: 'async' },
   push:           { gate: { gate: 'files' },                    policyKind: 'transfer',      offline: 'skip',  mode: 'async' },
   pull:           { gate: { gate: 'files' },                    policyKind: 'transfer',      offline: 'skip',  mode: 'async' },

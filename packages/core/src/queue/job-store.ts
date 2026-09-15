@@ -164,9 +164,11 @@ export interface JobStore {
   /**
    * Single-writer transaction: claim a queued RUN for an online device (spec
    * §10.3, plan 20 §4.2, plan 205 §4.7, plan 211 §4.6). `excludeDeviceIds`
-   * (plan 71 §3.7) skips a device still inside its post-control-use quiet
-   * period — the run KEEPS its place; it is simply not eligible to claim
-   * THAT device yet.
+   * skips a device the scheduler holds back — today only one with a live
+   * `install` (`scheduler.ts` `computeInstallBlocked`). It used to carry plan
+   * 71 §3.7's post-control quiet period; that gate was struck on 2026-09-04
+   * (a person driving never holds a job back). The run KEEPS its place; it is
+   * simply not eligible to claim THAT device yet.
    */
   claimNext(jobTtlSec: number, excludeDeviceIds?: string[]): ClaimedJob | null
   /** Distinct device ids with at least one `queued` run — the quiet-period wait (plan 71 §3.7) only needs to evaluate these, not the whole fleet. */

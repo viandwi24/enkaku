@@ -220,6 +220,8 @@ export function createNode(opts: NodeOptions): Node {
               // snapshot but never touches its live activities.
               activities: [],
               lastControl: null,
+              // Who is using the device is control-plane state too, same as `activities`.
+              inUse: { control: false, viewers: 0 },
               connection: connectionFromSerial(snapshot.serial),
               // The guest agent's provisioning state (plan 90 §3.8, §4.3) is
               // local-core-only, exactly like readiness/activities above — a

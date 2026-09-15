@@ -1,7 +1,13 @@
 import type { ActivityKind, DeviceActivity, PolicyDecision } from '@enkaku/protocol'
 
 export type Decision = 'allow' | 'warn' | 'forbid'
-export type StartingKind = ActivityKind
+/**
+ * The activity about to start. Every `ActivityKind`, plus `run`: the
+ * operator's `run-script`/`run-workflow` action, which is never a live
+ * activity of its own (the queue starts a `job` later, when it claims), so it
+ * is a row and never a column.
+ */
+export type StartingKind = ActivityKind | 'run'
 export type ExistingKind = ActivityKind
 
 /**
@@ -51,6 +57,18 @@ export const POLICY: Record<StartingKind, Partial<Record<ExistingKind, Decision>
   prep: { job: 'forbid', 'workflow-job': 'forbid', install: 'forbid', control: 'allow', command: 'allow', prep: 'warn' },
   // Proposed (§9 Q1): an agent is an operator with a longer attention span; same row as `control`.
   agent: { job: 'warn', 'workflow-job': 'warn', install: 'warn', control: 'allow', command: 'allow', prep: 'allow' },
+  /*
+    The Run dialog, before it queues anything (owner field report,
+    2026-09-15: a warm-up run reached phones someone was controlling).
+
+    WARN, never forbid, and ONLY over a person or an agent driving the phone.
+    A job never waits on control (the scheduler's quiet gate was struck on
+    2026-09-04), so this is the one moment anyone can be told. Everything
+    else stays `allow` on purpose: a run queues behind a running job or an
+    install, and the claim already sequences that — a forbid here would
+    refuse the ordinary "run this on twenty phones, some are busy".
+  */
+  run: { control: 'warn', agent: 'warn' },
 }
 
 export interface ControlPolicySettings {
@@ -69,7 +87,12 @@ const DECISION_RANK: Record<Decision, number> = { allow: 0, warn: 1, forbid: 2 }
 
 export const SENTENCES: Record<Decision, (starting: StartingKind, conflicting: DeviceActivity) => string> = {
   allow: () => '',
-  warn: (s, c) => (s === 'control' || s === 'agent' ? `${c.label}; your taps will interfere` : `${c.label}; starting ${s} anyway`),
+  warn: (s, c) =>
+    s === 'control' || s === 'agent'
+      ? `${c.label}; your taps will interfere`
+      : s === 'run'
+        ? `${c.label}; the run would start on this phone while it is in use`
+        : `${c.label}; starting ${s} anyway`,
   forbid: (s, c) => `${c.label}; ${s} cannot start until it ends`,
 }
 

@@ -218,6 +218,8 @@ export interface FarmNetwork {
 export interface DeviceActivityState {
   activities: DeviceActivity[]
   lastControl: LastControl | null
+  /** Open Device Control windows (control-quality streams) on the device; omitted means none known. Projected into `DeviceInfo.inUse`. */
+  controlViewers?: number
 }
 
 const NO_ACTIVITY: DeviceActivityState = { activities: [], lastControl: null }
@@ -403,6 +405,10 @@ export function rowToDeviceInfo(
     readiness: readiness ?? staticReadinessFallback(row),
     activities: activityState.activities,
     lastControl: activityState.lastControl,
+    inUse: {
+      control: activityState.activities.some((a) => a.kind === 'control'),
+      viewers: activityState.controlViewers ?? 0,
+    },
     connection: deriveConnection(row.serial, networks, declaredMedia.get(`${row.stableId} ${row.serial}`)),
     agent: deriveAgentState(row),
     preparing,

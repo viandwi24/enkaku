@@ -200,6 +200,9 @@ async function dispatchBounded<T>(items: T[], concurrency: number, fn: (item: T)
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()))
 }
 
+/** The verbs whose dispatch is one batch, held whole while any chosen device is `warned` (see `runAction`). */
+export const RUN_VERBS_HOLD_ON_WARN: ReadonlySet<ActionVerb> = new Set<ActionVerb>(['run-script', 'run-workflow'])
+
 export async function runAction(deps: ActionsDeps, request: ActionRequest, actor: ActionActor): Promise<ActionResponse> {
   checkGate(deps, actor, request.verb)
   // The whole-request route validation `set-network op: set` needs (plan
@@ -249,6 +252,26 @@ export async function runAction(deps: ActionsDeps, request: ActionRequest, actor
     }
     candidates.push(usable.deviceId)
   }
+
+  /*
+    A run is ONE batch, so a warning holds all of it (owner field report,
+    2026-09-15: a warm-up reached phones someone was controlling).
+
+    Every other verb dispatches its clean devices and reports the warned ones
+    for a forced retry. A run cannot: the retry re-sends the whole target, so
+    the clean phones would run twice, and even a retry of only the warned
+    phones would be a SECOND batch — splitting `$run.index`, the sequential
+    sub-groups and the pacing across two dispatches. So nothing queues until
+    the operator has read the warning and asked again with `force`.
+  */
+  if (RUN_VERBS_HOLD_ON_WARN.has(request.verb) && !request.force && results.some((r) => r.status === 'warned')) {
+    for (const deviceId of candidates) {
+      results.push({ deviceId, status: 'skipped', message: 'not started: another chosen phone is in use; confirm to run on all of them' })
+    }
+    const held = deps.operations.create({ verb: request.verb, target: request.target, createdBy: actor.id, results })
+    return deps.operations.get(held.operationId)!
+  }
+
   for (const deviceId of candidates) results.push({ deviceId, status: 'accepted' })
 
   const activityActor = activityActorOf(deps, actor)

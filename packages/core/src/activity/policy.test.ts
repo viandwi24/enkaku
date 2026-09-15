@@ -119,6 +119,16 @@ describe('SENTENCES wording', () => {
     expect(result.message).toBe('')
   })
 
+  test('the run row warns only over a person or an agent driving the phone', () => {
+    expect(evaluate('run', [activity('control')], ALLOW).decision).toBe('warn')
+    expect(evaluate('run', [activity('agent')], ALLOW).decision).toBe('warn')
+    expect(evaluate('run', [activity('control')], ALLOW).message).toContain('while it is in use')
+    // A run queues behind these; the claim sequences it, so no sentence.
+    for (const kind of ['job', 'workflow-job', 'install', 'command', 'prep', 'transfer', 'wake', 'network-apply'] as const) {
+      expect(evaluate('run', [activity(kind)], ALLOW).decision).toBe('allow')
+    }
+  })
+
   test('forbid names the conflicting activity and says it must end first', () => {
     const msg = evaluate('job', [activity('job')], ALLOW).message
     expect(msg).toContain('cannot start until it ends')

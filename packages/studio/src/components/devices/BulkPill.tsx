@@ -15,12 +15,16 @@ import { ActionMenu } from './ActionMenu'
  */
 export function BulkPill({
   count,
+  hiddenCount = 0,
   target,
   devices,
   onLabelsChanged,
   onClear,
 }: {
+  /** Selected AND visible under the current tab, filters and search — exactly what `target` holds. */
   count: number
+  /** Selected but filtered out of view. Never acted on; shown so the operator knows they are still held. */
+  hiddenCount?: number
   target: Target
   /** The selected devices as live rows — `LabelAssign` shows a per-label answer across them, not a boolean. */
   devices: DeviceInfo[]
@@ -47,6 +51,13 @@ export function BulkPill({
               Clear
             </button>
           </div>
+          {hiddenCount > 0 && (
+            <p className="px-[10px] pb-1.5 text-meta text-faint">
+              {hiddenCount} more selected {hiddenCount === 1 ? 'device is' : 'devices are'} hidden by the current tab, filter or search, and nothing here acts on {hiddenCount === 1 ? 'it' : 'them'}.
+            </p>
+          )}
+          {count > 0 && (
+          <>
           {/*
             Labels, where an operator selecting devices actually looks for it.
 
@@ -78,6 +89,8 @@ export function BulkPill({
             </div>
           )}
           <ActionMenu target={target} onDone={handleDone} />
+          </>
+          )}
         </div>
       )}
       <button
@@ -86,6 +99,7 @@ export function BulkPill({
         className="flex h-10 items-center gap-2 rounded-pill bg-accent px-4 text-body font-medium text-on-accent shadow-bulk-pill"
       >
         {count} selected
+        {hiddenCount > 0 && <span className="font-normal">({hiddenCount} hidden)</span>}
         <CaretDownIcon className={cn('size-3.5 transition-transform', open && 'rotate-180')} aria-hidden />
       </button>
       <button

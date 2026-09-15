@@ -194,6 +194,56 @@ describe('the activity policy is evaluated before dispatch (MVP 04 §1.3)', () =
   })
 })
 
+/**
+ * A run on a phone someone is controlling (owner field report, 2026-09-15).
+ * `run-script`/`run-workflow` carry the `run` policy row: a live control
+ * marker WARNS, and because a run is one batch the warning holds every chosen
+ * phone — nothing queues until the operator confirms with `force`.
+ */
+describe('run verbs warn over live control and hold the whole batch (policy row `run`)', () => {
+  const control: DeviceActivity = { id: 'control:c1', kind: 'control', label: 'Controlled by Rani', actor: { kind: 'user', id: 'c1', label: 'Rani' }, startedAt: 0, updatedAt: 0 }
+
+  function withSecondOnline(db: Db) {
+    db.insert(devices).values({ id: 'd-clean', stableId: 's-clean', serial: 'ser-clean', label: 'clean', status: 'online' }).run()
+  }
+
+  test('run-script: the controlled phone is warned and the clean phone is held, with nothing dispatched', async () => {
+    const { db, deps, activities } = setUp()
+    withSecondOnline(db)
+    activities.seed('d-online', control)
+    // `batchesFor` is `unused` in this fixture: reaching it would throw, so a
+    // resolved response proves no batch was created.
+    const res = await runAction(deps, { verb: 'run-script', target: { deviceIds: ['d-online', 'd-clean'] }, force: false, scriptId: 's1', params: {} } as never, actor)
+    const byId = new Map(res.results.map((r) => [r.deviceId, r]))
+    expect(byId.get('d-online')?.status).toBe('warned')
+    expect(byId.get('d-online')?.message).toContain('Controlled by Rani')
+    expect(byId.get('d-clean')?.status).toBe('skipped')
+  })
+
+  test('run-workflow is held the same way', async () => {
+    const { db, deps, activities } = setUp()
+    withSecondOnline(db)
+    activities.seed('d-online', control)
+    const res = await runAction(deps, { verb: 'run-workflow', target: { deviceIds: ['d-online', 'd-clean'] }, force: false, workflowName: 'w', params: {} } as never, actor)
+    expect(res.results.map((r) => r.status).sort()).toEqual(['skipped', 'warned'])
+  })
+
+  test('force dispatches every chosen phone together', async () => {
+    const { db, deps, activities } = setUp()
+    withSecondOnline(db)
+    activities.seed('d-online', control)
+    const dispatched = { ...deps, batchesFor: () => { throw new Error('dispatched') } }
+    await expect(runAction(dispatched, { verb: 'run-script', target: { deviceIds: ['d-online', 'd-clean'] }, force: true, scriptId: 's1', params: {} } as never, actor)).rejects.toThrow('dispatched')
+  })
+
+  test('a running job does not warn or hold a run — the queue sequences it', async () => {
+    const { deps, activities } = setUp()
+    activities.seed('d-online', { id: 'job:j1', kind: 'job', label: 'Running a job', actor: { kind: 'system', id: 'core', label: 'core' }, startedAt: 0, updatedAt: 0 })
+    const dispatched = { ...deps, batchesFor: () => { throw new Error('dispatched') } }
+    await expect(runAction(dispatched, { verb: 'run-script', target: { deviceIds: ['d-online'] }, force: false, scriptId: 's1', params: {} } as never, actor)).rejects.toThrow('dispatched')
+  })
+})
+
 describe('the per-device gate is independent per device in one request', () => {
   test('one warned device and one clean device in the same operation both get their own result', async () => {
     const { deps, activities } = setUp()

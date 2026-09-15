@@ -363,7 +363,7 @@ export function DeviceControl({
             <BroadcastIcon className="size-4" aria-hidden />
             <b>Host device</b>
             <span>
-              Mirroring input to {selectedIds.length - 1} other selected devices · {selectedIds.length} under control
+              Mirroring input to {selectedIds.length - 1} other device{selectedIds.length === 2 ? '' : 's'} · {selectedIds.length} under control
             </span>
           </div>
         )}

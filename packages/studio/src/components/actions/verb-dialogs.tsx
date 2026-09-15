@@ -6,6 +6,7 @@ import type { ActionResponse, ActionVerb, DeviceSettingsPatch, ScriptListItem } 
 import {
   Button,
   Checkbox,
+  DeviceName,
   Input,
   Label,
   Combobox,
@@ -84,6 +85,13 @@ export interface VerbDialogSpec<P> {
    * fifteen one-column dialogs keep the width they were designed at.
    */
   wide?: boolean
+  /**
+   * The core starts NOTHING while any chosen device is warned (a run is one
+   * batch — `RUN_VERBS_HOLD_ON_WARN` in `actions/run.ts`), so confirming
+   * re-sends the whole target, and the button must say that rather than
+   * "Continue for the warned devices".
+   */
+  holdsOnWarn?: boolean
   /** Blocks submit while false. */
   canSubmit: (value: P) => boolean
   /** The plan-207 request params. May upload an artifact first, which is why it is async. */
@@ -307,6 +315,31 @@ function BatchPacingFields({
   )
 }
 
+/**
+ * Exactly which phones a run will start on, by number and name (owner field
+ * report, 2026-09-15: a warm-up reached phones the operator never meant). The
+ * collapsed picker line says only "20 devices"; a count is not a list, and a
+ * run is the one action that cannot be taken back.
+ */
+function RunTargetRoster({ target }: { target: TargetState }) {
+  if (target.chips.length === 0) return null
+  const usable = target.chips.map((c) => c.device).filter((d) => d.status !== 'offline' && d.status !== 'quarantined')
+  const unavailable = target.chips.length - usable.length
+  return (
+    <div className="space-y-1.5 rounded-button bg-panel-2 px-2.5 py-2">
+      <p className="text-meta text-dim">
+        Starts on exactly {n(usable.length)}
+        {unavailable > 0 ? ` · ${unavailable} offline or quarantined, skipped` : ''}
+      </p>
+      <div className="flex max-h-24 flex-wrap gap-x-3 gap-y-1 overflow-y-auto">
+        {usable.map((d) => (
+          <DeviceName key={d.id} number={d.number} label={d.label} className="text-meta" />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /** The `pacing` block a `BatchPacingValue` becomes on the wire — omitted entirely when no delay was asked for, so an unpaced batch keeps the exact shape it took before the field existed. */
 function pacingOf(v: BatchPacingValue): { pacing: { count: number; intervalMs: [number, number]; deviceIntervalMs: number; deviceDelayMs: [number, number] } } | Record<string, never> {
   if (secondsOf(v.delayMax) <= 0) return {}
@@ -340,7 +373,7 @@ function secondsOf(raw: string): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
 }
 
-function RunScriptFields({ value, onChange, target }: { value: RunScriptValue; onChange: (v: RunScriptValue | ((prev: RunScriptValue) => RunScriptValue)) => void; target: { count: number } }) {
+function RunScriptFields({ value, onChange, target }: { value: RunScriptValue; onChange: (v: RunScriptValue | ((prev: RunScriptValue) => RunScriptValue)) => void; target: TargetState }) {
   const [scripts, setScripts] = useState<ScriptListItem[] | null>(null)
   useEffect(() => {
     let cancelled = false
@@ -393,6 +426,7 @@ function RunScriptFields({ value, onChange, target }: { value: RunScriptValue; o
           onCanSubmitChange={(ok) => onChange((prev) => ({ ...prev, formOk: ok }))}
         />
       )}
+      <RunTargetRoster target={target} />
       <BatchPacingFields
         idPrefix="run-script"
         value={value}
@@ -408,6 +442,7 @@ const runScript: VerbDialogSpec<RunScriptValue> = {
   submitLabel: (c) => `Run on ${n(c)}`,
   initial: { scriptId: null, params: undefined, concurrency: 0, order: 'as-listed', delayMin: '0', delayMax: '0', formOk: true, explicit: false },
   Fields: RunScriptFields,
+  holdsOnWarn: true,
   // An inverted range is refused here rather than at the server boundary, so
   // the operator sees it beside the field they typed it in.
   canSubmit: (v) => Boolean(v.scriptId) && v.formOk && secondsOf(v.delayMin) <= secondsOf(v.delayMax),
@@ -444,7 +479,7 @@ interface RunWorkflowValue extends BatchPacingValue {
   workflowName: string
   params: unknown
 }
-function RunWorkflowFields({ value, onChange, target }: { value: RunWorkflowValue; onChange: (v: RunWorkflowValue) => void; target: { count: number } }) {
+function RunWorkflowFields({ value, onChange, target }: { value: RunWorkflowValue; onChange: (v: RunWorkflowValue) => void; target: TargetState }) {
   const [workflows, setWorkflows] = useState<WorkflowInfo[]>([])
   useEffect(() => {
     void listWorkflows().then(setWorkflows)
@@ -495,6 +530,7 @@ function RunWorkflowFields({ value, onChange, target }: { value: RunWorkflowValu
         one, 20-30 seconds apart, in a random order" was always supported by
         the queue and simply had nowhere to be typed.
       */}
+      <RunTargetRoster target={target} />
       <BatchPacingFields idPrefix="run-workflow" value={value} onChange={(patch) => onChange({ ...value, ...patch })} deviceCount={target.count} />
     </div>
   )
@@ -505,6 +541,7 @@ const runWorkflow: VerbDialogSpec<RunWorkflowValue> = {
   submitLabel: (c) => `Run on ${n(c)}`,
   initial: { workflowName: '', params: undefined, concurrency: 0, order: 'as-listed', delayMin: '0', delayMax: '0' },
   Fields: RunWorkflowFields,
+  holdsOnWarn: true,
   // The inverted-range refusal run-script already makes, for the same reason:
   // the operator sees it beside the field they typed it in.
   canSubmit: (v) => Boolean(v.workflowName) && secondsOf(v.delayMin) <= secondsOf(v.delayMax),
