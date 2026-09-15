@@ -72,6 +72,13 @@ const SIGKILL_DELAY_MS = 5_000
 /** The child counts as hung after this long with no message at all. */
 const SILENCE_LIMIT_MS = 30_000
 /**
+ * While the child is waiting on a device call, silence is not a hang (2026-09-15): a `dump` of TikTok's Drafts
+ * grid took 17.9 s on the owner's moto g06 and a `denyPermissions` 19.4 s, and with a memory limit configured the
+ * silence window is 6 s, so healthy runs were killed as "hung". Every device call carries its own timeout; this
+ * cap only bounds a child that stays silent far longer than any of them.
+ */
+const DEVICE_CALL_SILENCE_CAP_MS = 120_000
+/**
  * Plan 98 §4.7 — the cadence the parent asks the child to self-report RSS on
  * WHEN NO MEMORY LIMIT IS CONFIGURED (`resolved.maxRssBytes === null`).
  * Cheap, coarse, peak-recording-only cadence — matches 98.2 exactly. Once a
@@ -680,6 +687,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
       let startupTimer: ReturnType<typeof setTimeout> | null = null
       let graceTimer: ReturnType<typeof setTimeout> | null = null
       let silenceTimer: ReturnType<typeof setTimeout> | null = null
+      /** Device calls the child is still waiting on — see `DEVICE_CALL_SILENCE_CAP_MS`. */
+      let pendingDeviceCalls = 0
+      /** When the child last showed a sign of life; the cap is measured from here, not from each re-arm. */
+      let lastActivityAt = Date.now()
       let abortReason: AbortReason | null = null
       let abortDetail: string | undefined
       // Set by a force stop (`doKill` below): the attempt is reported with
@@ -738,12 +749,21 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         resolve(outcome)
       }
 
-      const resetSilenceTimer = () => {
-        if (silenceTimer) clearTimeout(silenceTimer)
+      const armSilenceTimer = () => {
         silenceTimer = setTimeout(() => {
-          logger.append('error', 'runner', `the child reported nothing for ${effectiveSilenceLimitMs}ms — treating it as hung`)
+          if (pendingDeviceCalls > 0 && Date.now() - lastActivityAt < DEVICE_CALL_SILENCE_CAP_MS) {
+            // Waiting on the device, not hung: look again after another window.
+            armSilenceTimer()
+            return
+          }
+          logger.append('error', 'runner', `the child reported nothing for ${Math.round((Date.now() - lastActivityAt) / 1000)}s — treating it as hung`)
           doAbort('hung')
         }, effectiveSilenceLimitMs)
+      }
+      const resetSilenceTimer = () => {
+        if (silenceTimer) clearTimeout(silenceTimer)
+        lastActivityAt = Date.now()
+        armSilenceTimer()
       }
 
       const doAbort = (reason: AbortReason, detail?: string) => {
@@ -1085,7 +1105,13 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           // Zod-parsed. `begin` is synchronous and returns a token; nothing
           // about `execDevice` moves.
           const traceToken = tee.begin(call.data)
+          pendingDeviceCalls += 1
           void execDevice(call.data)
+            .finally(() => {
+              pendingDeviceCalls -= 1
+              // The child could not speak while it waited, so its silence starts when the answer reaches it.
+              if (!settled && !abortReason) resetSilenceTimer()
+            })
             .then((value) => {
               // Plan 74 §3.5, §4.3, criterion 12 — a `find` refusal is
               // diagnosable from the job log even for a script that only

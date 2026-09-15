@@ -1803,6 +1803,40 @@ describe('createJobRunner — the memory limit (plan 98 §3.5, §3.6, §4.8)', (
     // 30s `SILENCE_LIMIT_MS` a job with no memory limit configured would wait.
     expect(elapsed).toBeLessThan(5_000)
   }, 10_000)
+
+  test('a device call slower than the silence window is not a hang (moto g06, 2026-09-15)', async () => {
+    // A `dump` of TikTok's Drafts grid took 17.9 s against a 6 s window; here a 2 s call against 750 ms.
+    const { isolation } = fakeIsolation([
+      {
+        ready: { t: 'ready', scriptId: 's', version: '1.0.0' },
+        onInit: (_init, emit) => {
+          emit({ t: 'device.call', callId: 'c1', method: 'app.forceStop', args: { pkg: 'com.example' } } as never)
+          setTimeout(() => emit({ t: 'result', ok: true, value: 'done', finishRan: true }), 2_400)
+        },
+        onAbort: (_reason, _emit, exit) => exit(1),
+      },
+    ])
+    const slowExec = async (cmd: string) => {
+      if (cmd.startsWith('am force-stop')) await new Promise((r) => setTimeout(r, 2_000))
+      return { stdout: '' } as never
+    }
+    const runner = createJobRunner({
+      isolation,
+      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
+      sessions: fakeSessions(fakeSession(slowExec)),
+      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
+      log: silentLog(),
+      onLog: () => {},
+      onArtifact: () => {},
+      onPhase: () => {},
+      heartbeat: () => {},
+      resetPolicy: () => memorySettings('kill', 250),
+    })
+
+    const outcome = await runner.execute(JOB)
+    expect(outcome.ok).toBe(true)
+    expect(outcome.value).toBe('done')
+  }, 10_000)
 })
 
 /**
