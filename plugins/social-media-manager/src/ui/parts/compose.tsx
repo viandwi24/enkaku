@@ -22,6 +22,7 @@ import {
   fileSize,
   useAction,
 } from '@enkaku/ui'
+import { PLATFORM_IDS } from '../../platforms'
 import { autoCaption } from '../autocaption'
 import {
   PLATFORMS,
@@ -236,6 +237,12 @@ interface VideoDraft {
   /** As typed — normalised with `parseHashtags` when sent. */
   hashtags: string
   source: CaptionSource
+  /**
+   * The words auto caption wrote for each platform (0.27.0), sent as `videoPlatformTexts`; `add-group` fits each with
+   * the video's hashtags into that platform's own caption. Dropped the moment the caption is typed over, so a platform
+   * never posts words the operator has since replaced.
+   */
+  platformTexts?: Partial<Record<PlatformId, string>>
 }
 
 export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null) => void }): React.ReactElement {
@@ -475,10 +482,14 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
         name: video.label ?? video.id,
         style: setup.style,
         fixedHashtags: fixedTags,
+        // All three, whatever is ticked now: the platforms may still change before the session is created.
+        platforms: PLATFORM_IDS,
         signal,
         onStage: (phase) => setAuto(video.id, { phase }),
       })
-      if (outcome.status === 'done') setDraft(video.id, { caption: outcome.caption, hashtags: hashtagText(outcome.hashtags), source: 'auto' })
+      if (outcome.status === 'done') {
+        setDraft(video.id, { caption: outcome.caption, hashtags: hashtagText(outcome.hashtags), source: 'auto', platformTexts: outcome.platformTexts })
+      }
       else if (outcome.status === 'no-speech') setDraft(video.id, { caption: '', hashtags: '', source: 'no-speech' })
       setAuto(video.id, stateOf(outcome))
     },
@@ -619,6 +630,11 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
                   : {
                       videoCaptions: Object.fromEntries(perVideo.map(({ video, draft }) => [video.id, draft.caption.trim()])),
                       videoHashtags: Object.fromEntries(perVideo.map(({ video, draft }) => [video.id, parseHashtags(draft.hashtags)])),
+                      videoPlatformTexts: Object.fromEntries(
+                        perVideo.flatMap(({ video, draft }) =>
+                          draft.platformTexts !== undefined && Object.keys(draft.platformTexts).length > 0 ? [[video.id, draft.platformTexts]] : [],
+                        ),
+                      ),
                     }),
                 hashtags: { fixed: fixedTags, lines: hashtagLines, randomLine },
                 platforms: chosenPlatforms,
@@ -1252,9 +1268,15 @@ function VideoCaptionRow({
         disabled={disabled || working}
         placeholder={noSpeech ? 'No speech found — write this one' : 'Caption'}
         aria-label={`Caption for ${name}`}
-        onChange={(e) => onChange({ ...draft, caption: e.target.value, source: 'typed' })}
+        onChange={(e) => onChange({ caption: e.target.value, hashtags: draft.hashtags, source: 'typed' })}
       />
       {noSpeech ? <p className="text-[11px] text-warn">No speech found — write this one.</p> : null}
+      {draft.platformTexts !== undefined && Object.keys(draft.platformTexts).length > 0 ? (
+        <p className="text-[11px] text-faint">
+          Auto caption also wrote a caption for each platform, fitted to its limits when the session is created. Typing over the caption drops
+          them; they can be changed on the session’s page.
+        </p>
+      ) : null}
       <Input
         className="h-7 text-[12px]"
         value={draft.hashtags}

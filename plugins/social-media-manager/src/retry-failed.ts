@@ -4,20 +4,22 @@ import { z } from 'zod'
 import { platformById } from './platforms'
 import { PostSchema, failedDevices, nextRound, postKeyFor, rollUp, stateFor, withRetired, withSummary, type Attempt, type Post } from './posts'
 import { GroupSchema, groupKeyFor, type Group } from './groups'
-import { NO_HASHTAG_RULE, composePostText, hashtagsFor } from './hashtags'
+import { NO_HASHTAG_RULE } from './hashtags'
+import { platformPostText } from './platform-captions'
 import { refreshGroupProgress } from './resolve-attempt'
 
 /**
- * The text a retry sends — the same the router sends (0.19.0): the caption and the session's fixed hashtags, the line
- * this video was given, and its own. The session row is read once per call and shared through `cache`.
+ * The text a retry sends to one platform — the same the router sends: that platform's own caption when the video has
+ * one (0.27.0), otherwise the caption and the session's fixed hashtags, the line this video was given, and its own
+ * (0.19.0). The session row is read once per call and shared through `cache`.
  */
-async function postTextFor(ctx: ScriptContext<unknown>, post: Post, cache: Map<string, Group | null>): Promise<string> {
+async function postTextFor(ctx: ScriptContext<unknown>, post: Post, platformId: string, cache: Map<string, Group | null>): Promise<string> {
   let group: Group | null = null
   if (post.groupId !== null) {
     if (!cache.has(post.groupId)) cache.set(post.groupId, await ctx.storage.global.get(groupKeyFor(post.groupId), GroupSchema).catch(() => null))
     group = cache.get(post.groupId) ?? null
   }
-  return composePostText(post.caption, hashtagsFor({ rule: group?.hashtags ?? NO_HASHTAG_RULE, line: post.hashtagLine, own: post.hashtags }))
+  return platformPostText(post, platformId, group?.hashtags ?? NO_HASHTAG_RULE)
 }
 
 const groupCache = new Map<string, Group | null>()
@@ -133,7 +135,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         router refreshes it on its next pass either way.
       */
       const namedBefore = new Map(state.attempts.map((a) => [a.deviceId, a.deviceName]))
-      const postText = await postTextFor(ctx, post, groupCache)
+      const postText = await postTextFor(ctx, post, platformId, groupCache)
       if (postText === '') {
         skipped.push(`${platformId}: this video has no caption or hashtags yet — write one before retrying`)
         continue

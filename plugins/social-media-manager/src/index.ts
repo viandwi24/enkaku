@@ -9,7 +9,8 @@ import retryGroup from './retry-group'
 import updatePost from './update-post'
 import resolveAttempt from './resolve-attempt'
 import { warmupRotation } from './workflows/warmup-rotation'
-import { NO_HASHTAG_RULE, composePostText, hashtagsFor } from './hashtags'
+import { NO_HASHTAG_RULE } from './hashtags'
+import { platformPostTexts } from './platform-captions'
 import { GROUP_PREFIX, GroupSchema, groupKeyFor, isRowDue, roomInFlight, withProgress, type Group, type RowState } from './groups'
 import retryFailed from './retry-failed'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
@@ -72,6 +73,31 @@ import {
  * memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.27.0 — regenerate captions, and a caption per platform.** The owner
+ *   (2026-09-15): auto caption could only fill EMPTY captions, and one text
+ *   fitted no platform — YouTube types it as a 100-character title through
+ *   adb (emoji dropped), Instagram keeps five hashtags. A session's page now
+ *   has **Regenerate all captions**, behind a confirm, which rewrites every
+ *   video's caption, own hashtags and per-platform captions (a video with no
+ *   speech keeps what it has), and a row's Auto button reads **Regenerate**
+ *   once the video has a caption and overwrites it the same way. A post row
+ *   gains `platformCaptions` (`platform-captions.ts`): an optional text for
+ *   TikTok, YouTube and Instagram that, when set, is exactly what that
+ *   platform's job receives instead of the shared caption and hashtags.
+ *   Generation writes all three in one AI call and fits each to limits read
+ *   from the packs — TikTok 2200 characters and 5 hashtags (its member's
+ *   caption `.max` and `maxHashtags` default), YouTube a 100-character ASCII
+ *   title with at most 3 hashtags (`TITLE_MAX`; 3 is this plugin's policy),
+ *   Instagram 2200 ASCII characters and 5 hashtags (`CAPTION_MAX`,
+ *   `INSTAGRAM_HASHTAG_LIMIT`). The router and Retry failed send each
+ *   platform its own text, and fall back to the shared text when it has none;
+ *   a platform with nothing to post is held while the others go. Edit shows
+ *   and edits the three texts, refusing only a text over its platform's
+ *   length and warning about emoji or hashtags the pack would drop. New
+ *   session passes the generated texts through `add-group`. A row written by
+ *   an older build parses with no per-platform captions; a row written by
+ *   this version does not parse in 0.26.0 or older.
  *
  * - **0.26.0 — "Queued on phone" is not "Running", and a retry goes one at a time.**
  *   The owner (2026-09-15): after Retry failed, one phone showed TikTok,
@@ -924,13 +950,18 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
       nothing to post is held with a note rather than sent, because the direct upload path refuses an empty text on the
       phone and the operator is expected to write one (auto caption leaves a video without speech empty on purpose).
     */
+    /*
+      Per platform since 0.27.0: a platform with its own caption posts that text, the rest post the shared one
+      (`platformPostTexts`). A platform with nothing to post is held with the note; the others still go, so a
+      video whose only text is its YouTube title is sent to YouTube and waits everywhere else.
+    */
     const rule = post.groupId !== null ? (groups.get(post.groupId)?.hashtags ?? NO_HASHTAG_RULE) : NO_HASHTAG_RULE
-    const postText = composePostText(post.caption, hashtagsFor({ rule, line: post.hashtagLine, own: post.hashtags }))
-    if (postText === '') {
+    const { texts, bare } = platformPostTexts(post, rule)
+    if (bare.length > 0) {
       const note = `${NO_CAPTION_YET} — write a caption or hashtags for this video on its session's page`
       const dispatch: Post['dispatch'] = { ...post.dispatch }
       let changed = false
-      for (const id of post.platforms) {
+      for (const id of bare) {
         const state = stateFor(post, id)
         if (state.state !== 'pending' || state.note === note) continue
         dispatch[id] = withSummary({ ...state, note })
@@ -938,10 +969,15 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
       }
       if (changed) {
         const written = await ctx.storage.global.setIfVersion(entry.key, { ...post, dispatch }, entry.version)
-        if (written) entry.version += 1
+        // Someone wrote the row meanwhile; the next tick re-reads it rather than planning on a stale copy.
+        if (!written) continue
+        entry.version += 1
+        post = { ...post, dispatch }
       }
-      continue
+      if (bare.length === post.platforms.length) continue
     }
+    // Only the platforms that have something to post are planned; the held ones keep their note.
+    const planned: Post = bare.length > 0 ? { ...post, platforms: post.platforms.filter((id) => !bare.includes(id)) } : post
 
     /*
       A group row waits for two things before it may send: its own turn
@@ -957,7 +993,7 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     }
 
     const devices: RouterDevice[] = fleet.items
-    const plan = planDispatch({ post, devices, busy: claimed, now: nowSec, maxDevicesPerPlatform: settings.maxDevicesPerPlatform })
+    const plan = planDispatch({ post: planned, devices, busy: claimed, now: nowSec, maxDevicesPerPlatform: settings.maxDevicesPerPlatform })
     if (plan.dispatches.length === 0 && Object.keys(plan.states).length === 0 && plan.note === post.lastNote) continue
 
     /*
@@ -982,7 +1018,7 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     const attempts: Record<string, Attempt[]> = {}
     for (const dispatch of plan.dispatches) {
       try {
-        const params = { source: 'direct', videoArtifactId: post.videoArtifactId, caption: postText }
+        const params = { source: 'direct', videoArtifactId: post.videoArtifactId, caption: texts.get(dispatch.platform) ?? '' }
         const job = await ctx.farm.call('job.run', { scriptRef: dispatch.script, deviceId: dispatch.deviceId, params }, JobRunOutput)
         claimed.add(dispatch.deviceId)
         sent.push(dispatch.platform)
@@ -1093,7 +1129,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.26.0',
+  version: '0.27.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

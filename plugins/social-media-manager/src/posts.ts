@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { normalizeHashtags } from './hashtags'
+import { PlatformCaptionsSchema, checkPlatformCaption, type PlatformCaptions } from './platform-captions'
 import { PLATFORM_IDS, PlatformIdSchema, deviceCarriesPlatform, platformById, type PlatformId } from './platforms'
 
 /**
@@ -443,6 +444,12 @@ export const PostSchema = z
     hashtags: z.array(z.string().min(2).max(100)).max(30).default([]),
     /** Which of the session's hashtag lines this video was given, picked once when the session was made; null for none. */
     hashtagLine: z.number().int().nonnegative().nullable().default(null),
+    /**
+     * A text per platform (0.27.0), each exactly what that platform's job receives INSTEAD of the shared caption
+     * and hashtags (`platform-captions.ts` `platformPostText`). Absent keys post the shared text. Defaulted so a
+     * row written before this field existed parses, as "every platform posts the shared text" — what it meant.
+     */
+    platformCaptions: PlatformCaptionsSchema.default({}),
     /** Which platforms this video is for. Empty is legal and simply never dispatches. */
     platforms: z.array(PlatformIdSchema),
     /**
@@ -1249,6 +1256,7 @@ export function newPost(input: { videoArtifactId: string; caption: string; platf
     lastNote: null,
     hashtags: [],
     hashtagLine: null,
+    platformCaptions: {},
   }
 }
 
@@ -1322,6 +1330,8 @@ export interface PostEdit {
   caption?: string
   /** The video's own hashtags; normalised on the way in. */
   hashtags?: string[]
+  /** A text per platform (0.27.0). An empty text removes that platform's own caption; a platform left out is unchanged. */
+  platformCaptions?: Partial<Record<PlatformId, string>>
 }
 
 /** The start of the note on a row held for having nothing to post. The session page matches on it, so it is exported. */
@@ -1412,6 +1422,32 @@ export function applyPostEdit(input: { post: Post; edit: PostEdit; sessionRows: 
       next = { ...next, caption }
       changed.push('caption')
     }
+  }
+
+  if (edit.platformCaptions !== undefined) {
+    // Refused only past the platform's own length (a YouTube title over 100); emoji and extra hashtags the pack
+    // survives are warned about, never refused.
+    const captions: PlatformCaptions = { ...next.platformCaptions }
+    for (const id of PLATFORM_IDS) {
+      const raw = edit.platformCaptions[id]
+      if (raw === undefined) continue
+      const text = raw.trim()
+      if (text === '') {
+        if (captions[id] !== undefined) {
+          delete captions[id]
+          changed.push(`${id} caption`)
+        }
+        continue
+      }
+      const check = checkPlatformCaption(id, text)
+      if (check.error !== null) return { ok: false, code: 'E_PARAMS_INVALID', message: check.error }
+      warnings.push(...check.warnings)
+      if (captions[id] !== text) {
+        captions[id] = text
+        changed.push(`${id} caption`)
+      }
+    }
+    next = { ...next, platformCaptions: captions }
   }
 
   return { ok: true, post: next, changed, warnings }

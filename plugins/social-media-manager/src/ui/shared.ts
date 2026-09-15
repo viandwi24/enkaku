@@ -206,6 +206,11 @@ export const PostSchema = z.object({
   hashtags: z.array(z.string()).default([]),
   /** Which of the session's hashtag lines this video was given, when the session picks one at random. */
   hashtagLine: z.number().nullable().default(null),
+  /** A text per platform, posted there instead of the caption and hashtags (0.27.0). Older rows carry none. */
+  platformCaptions: z
+    .object({ tiktok: z.string().optional(), instagram: z.string().optional(), youtube: z.string().optional() })
+    .catch({})
+    .default({}),
   platforms: z.array(z.string()),
   groupId: z.string().nullable().default(null),
   notBeforeAt: z.number().nullable().default(null),

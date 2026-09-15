@@ -1,6 +1,7 @@
 import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
+import { PLATFORM_CAPTION_STORED_MAX } from './platform-captions'
 import { PLATFORM_IDS } from './platforms'
 import { POST_PREFIX, PostSchema, applyPostEdit, postKeyFor, type Post } from './posts'
 
@@ -26,6 +27,16 @@ const params = z.object({
   platforms: z.array(z.enum(PLATFORM_IDS)).min(1).optional().describe('Where this video posts.').meta(ui({ title: 'Platforms' })),
   caption: z.string().max(2_200).optional().describe('The caption for the next attempt. Empty is allowed while the video keeps hashtags.').meta(ui({ title: 'Caption' })),
   hashtags: z.array(z.string().max(100)).max(30).optional().describe('The video\'s own hashtags (the session\'s fixed ones and its picked line are added when it posts).').meta(ui({ title: 'Hashtags' })),
+  platformCaptions: z
+    .object({
+      tiktok: z.string().max(PLATFORM_CAPTION_STORED_MAX).optional(),
+      instagram: z.string().max(PLATFORM_CAPTION_STORED_MAX).optional(),
+      youtube: z.string().max(PLATFORM_CAPTION_STORED_MAX).optional(),
+    })
+    .strict()
+    .optional()
+    .describe('A text per platform, posted there instead of the caption and hashtags. An empty text removes that platform\'s own caption; a platform left out is unchanged.')
+    .meta(ui({ title: 'Caption per platform' })),
 })
 
 const result = z.object({
@@ -69,6 +80,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       ...(ctx.params.platforms !== undefined ? { platforms: ctx.params.platforms } : {}),
       ...(ctx.params.caption !== undefined ? { caption: ctx.params.caption } : {}),
       ...(ctx.params.hashtags !== undefined ? { hashtags: ctx.params.hashtags } : {}),
+      ...(ctx.params.platformCaptions !== undefined ? { platformCaptions: ctx.params.platformCaptions } : {}),
     }
     const outcome = applyPostEdit({ post, edit, sessionRows })
     if (!outcome.ok) throw Object.assign(new Error(outcome.message), { code: outcome.code })

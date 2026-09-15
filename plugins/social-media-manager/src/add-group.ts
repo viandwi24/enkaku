@@ -1,5 +1,6 @@
 import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
-import { HashtagRuleSchema, NO_HASHTAG_RULE, normalizeHashtags, pickHashtagLine } from './hashtags'
+import { HashtagRuleSchema, NO_HASHTAG_RULE, hashtagsFor, normalizeHashtags, pickHashtagLine } from './hashtags'
+import { PLATFORM_CAPTION_STORED_MAX, fitPlatformCaptions } from './platform-captions'
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
 import { ASSIGNMENTS, GroupSchema, groupKeyFor, maxDevicesFor, newGroupId, shuffled } from './groups'
@@ -68,6 +69,20 @@ const params = z.object({
     .optional()
     .describe('Each video\'s own hashtags, by video id.')
     .meta(ui({ title: 'Hashtags per video', group: 'Group' })),
+  videoPlatformTexts: z
+    .record(
+      z.string(),
+      z
+        .object({
+          tiktok: z.string().max(PLATFORM_CAPTION_STORED_MAX).optional(),
+          instagram: z.string().max(PLATFORM_CAPTION_STORED_MAX).optional(),
+          youtube: z.string().max(PLATFORM_CAPTION_STORED_MAX).optional(),
+        })
+        .strict(),
+    )
+    .optional()
+    .describe('Words written for each platform, by video id (auto caption). Each is fitted to its platform with the video\'s hashtags and stored as that platform\'s own caption.')
+    .meta(ui({ title: 'Text per platform per video', group: 'Group' })),
   hashtags: HashtagRuleSchema.optional()
     .describe('The session\'s hashtags: fixed ones on every video, and lines one of which each video is given at random.')
     .meta(ui({ title: 'Session hashtags', group: 'Group' })),
@@ -216,6 +231,16 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       next.hashtags = normalizeHashtags(videoHashtags?.[videoArtifactId] ?? [])
       // Picked once, here, so every attempt and every retry of this video posts the same line.
       next.hashtagLine = pickHashtagLine(hashtagRule)
+      // Fitted here, after the line is picked, so each platform's own caption carries the same hashtags the shared text would (0.27.0).
+      const texts = ctx.params.videoPlatformTexts?.[videoArtifactId]
+      if (texts !== undefined) {
+        next.platformCaptions = fitPlatformCaptions({
+          platforms: next.platforms,
+          caption,
+          texts,
+          hashtags: hashtagsFor({ rule: hashtagRule, line: next.hashtagLine, own: next.hashtags }),
+        })
+      }
 
       if (existing) {
         for (const id of next.platforms) {

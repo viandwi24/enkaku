@@ -23,6 +23,10 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
   Textarea,
   TrashIcon,
   api,
@@ -32,6 +36,8 @@ import {
   z,
   type ComboboxOption,
 } from '@enkaku/ui'
+import { PLATFORM_CAPTION_LIMITS, checkPlatformCaption, isCaptionPlatform } from '../../platform-captions'
+import { PLATFORM_IDS, type PlatformId } from '../../platforms'
 import { autoCaption } from '../autocaption'
 import {
   CORE,
@@ -152,6 +158,8 @@ interface PostChanges {
   caption?: string
   /** The video's OWN hashtags, replacing the ones it had. */
   hashtags?: string[]
+  /** A text per platform (0.27.0); an empty text removes that platform's own caption, a platform left out is unchanged. */
+  platformCaptions?: Partial<Record<PlatformId, string>>
 }
 
 type SaveEdit = (post: Post, changes: PostChanges, name: string, onDone: (warnings: string[]) => void) => void
@@ -1190,9 +1198,11 @@ function SessionTable({
   }, [])
 
   /**
-   * One row through the pipeline, saved through the same `smm/update-post` path a typed edit takes. No speech leaves
-   * the row exactly as it was and says so; hashtags are sent only when the AI gave some, so a video's typed hashtags
-   * are not wiped by a style that asks for none.
+   * One row through the pipeline, saved through the same `smm/update-post` path a typed edit takes. It REPLACES what
+   * the row has (0.27.0: a row's Regenerate and the session's Regenerate all both come here). No speech leaves the row
+   * exactly as it was and says so; hashtags are sent only when the AI gave some, so a video's typed hashtags are not
+   * wiped by a style that asks for none. Every platform the video posts to gets its new text, or loses its old one
+   * when the writer gave none, so a stale platform caption never outlives the caption it was written beside.
    */
   const runAuto = useCallback(
     async (post: Post, signal: AbortSignal): Promise<void> => {
@@ -1203,22 +1213,31 @@ function SessionTable({
         videoArtifactId: id,
         name,
         style: setup.style,
-        fixedHashtags: group.hashtags.fixed,
+        fixedHashtags: composedHashtags(group.hashtags.fixed, lineTagsOf(group, post), []),
+        platforms: post.platforms,
         signal,
         onStage: (phase) => setAuto(id, { phase }),
       })
       if (outcome.status === 'done') {
-        onSave(post, { caption: outcome.caption, ...(outcome.hashtags.length > 0 ? { hashtags: outcome.hashtags } : {}) }, name, (list) => keepWarnings(id, list))
+        const platformCaptions: Partial<Record<PlatformId, string>> = {}
+        for (const platform of PLATFORM_IDS) if (post.platforms.includes(platform)) platformCaptions[platform] = outcome.platformCaptions[platform] ?? ''
+        onSave(
+          post,
+          { caption: outcome.caption, ...(outcome.hashtags.length > 0 ? { hashtags: outcome.hashtags } : {}), platformCaptions },
+          name,
+          (list) => keepWarnings(id, list),
+        )
       }
       setAuto(id, stateOf(outcome))
     },
-    [videos, setup.style, group.hashtags.fixed, setAuto, onSave, keepWarnings],
+    [videos, setup.style, group, setAuto, onSave, keepWarnings],
   )
 
-  const emptyPosts = useMemo(() => posts.filter((p) => p.caption.trim() === '' && !isWorking(autoStates.get(p.videoArtifactId))), [posts, autoStates])
+  /** Every row not already being captioned — what Regenerate all rewrites. */
+  const idlePosts = useMemo(() => posts.filter((p) => !isWorking(autoStates.get(p.videoArtifactId))), [posts, autoStates])
+  const emptyPosts = useMemo(() => idlePosts.filter((p) => p.caption.trim() === ''), [idlePosts])
 
-  const runEmpty = useCallback(async (): Promise<void> => {
-    const targets = emptyPosts
+  const runMany = useCallback(async (targets: readonly Post[]): Promise<void> => {
     setAutoStates((prev) => {
       const next = new Map(prev)
       for (const post of targets) next.set(post.videoArtifactId, { phase: 'queued' })
@@ -1230,7 +1249,7 @@ function SessionTable({
       for (const [id, state] of next) if (state.phase === 'queued') next.delete(id)
       return next
     })
-  }, [emptyPosts, bulk.start, runAuto])
+  }, [bulk.start, runAuto])
 
   /** Why Auto is off, as a sentence for the button's tooltip — the full reasons sit above the table. */
   const autoBlocked =
@@ -1270,15 +1289,43 @@ function SessionTable({
         <div className="grow" />
         <BulkProgress bulk={bulk} noun="captioned" />
         {bulk.running ? null : (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={autoBlocked !== null || emptyPosts.length === 0}
-            title={autoBlocked ?? 'Transcribe each video whose caption is empty, then write its caption and hashtags'}
-            onClick={() => void runEmpty()}
-          >
-            Auto caption empty captions ({emptyPosts.length})
-          </Button>
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={autoBlocked !== null || emptyPosts.length === 0}
+              title={autoBlocked ?? 'Transcribe each video whose caption is empty, then write its caption, hashtags and a caption per platform'}
+              onClick={() => void runMany(emptyPosts)}
+            >
+              Auto caption empty captions ({emptyPosts.length})
+            </Button>
+            {/* Replaces words someone may have typed by hand, on every video at once — so behind a confirm (0.27.0). */}
+            <ConfirmDialog
+              trigger={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={autoBlocked !== null || idlePosts.length === 0}
+                  title={autoBlocked ?? 'Transcribe every video again and replace its caption, hashtags and per-platform captions'}
+                >
+                  <ArrowsClockwiseIcon aria-hidden />
+                  Regenerate all captions ({idlePosts.length})
+                </Button>
+              }
+              title={`Regenerate the captions of all ${idlePosts.length} video${idlePosts.length === 1 ? '' : 's'}?`}
+              confirmLabel="Regenerate all"
+              description={
+                <>
+                  Every video in this session is transcribed again and gets a new caption, new hashtags of its own and a new caption for each of
+                  its platforms — <strong>replacing what it has now, including anything typed by hand</strong>. A video with no speech keeps what it
+                  has. An upload already running keeps the text it started with; the new text goes out with the next attempt.
+                </>
+              }
+              onConfirm={() => {
+                void runMany(idlePosts)
+              }}
+            />
+          </>
         )}
       </div>
 
@@ -1585,6 +1632,9 @@ function CaptionCell({
 }): ReactElement {
   const [draft, setDraft] = useState<string | null>(null)
   const editing = draft !== null
+  /** The platforms this video posts its OWN caption to, not this one (0.27.0). */
+  const ownOn = PLATFORM_IDS.filter((id) => post.platforms.includes(id) && (post.platformCaptions[id] ?? '') !== '')
+  const ownOnWords = ownOn.map(platformTitle).join(', ')
   const problem =
     draft === null
       ? null
@@ -1619,17 +1669,30 @@ function CaptionCell({
             <span className="text-[11.5px] text-faint">No caption — click to write one</span>
           )}
         </button>
+        {ownOn.length > 0 ? (
+          <p
+            className="max-w-[20rem] px-1 text-[11px] text-faint"
+            title={ownOn.map((id) => `${platformTitle(id)}: ${post.platformCaptions[id] ?? ''}`).join('\n\n')}
+          >
+            Own caption on {ownOnWords}
+          </p>
+        ) : null}
         <div data-row-action className="flex max-w-[20rem] flex-wrap items-center gap-x-2 gap-y-0.5">
           <Button
             type="button"
             variant="ghost"
             size="sm"
             disabled={autoBlocked !== null || working || saving}
-            title={autoBlocked ?? 'Transcribe this video, then write its caption and hashtags'}
+            title={
+              autoBlocked ??
+              (post.caption.trim() === ''
+                ? 'Transcribe this video, then write its caption, hashtags and a caption per platform'
+                : 'Transcribe this video again and replace its caption, hashtags and per-platform captions')
+            }
             onClick={() => onAuto(post)}
           >
-            {working ? <Spinner className="size-3" /> : null}
-            Auto
+            {working ? <Spinner className="size-3" /> : <ArrowsClockwiseIcon aria-hidden className={cn(post.caption.trim() === '' && 'hidden')} />}
+            {post.caption.trim() === '' ? 'Auto' : 'Regenerate'}
           </Button>
           <AutoStatus state={auto} noSpeech="No speech found — caption left as it was" />
         </div>
@@ -1665,6 +1728,7 @@ function CaptionCell({
         </span>
       </div>
       {problem !== null ? <p className="text-[11px] text-danger">{problem}</p> : null}
+      {ownOn.length > 0 ? <p className="text-[11px] text-dim">{ownOnWords} post{ownOn.length === 1 ? 's' : ''} its own caption, not this one — change it with Edit.</p> : null}
     </div>
   )
 }
@@ -1838,7 +1902,8 @@ function VideoRows({
 }): ReactElement {
   const name = videos.get(post.videoArtifactId) ?? shortId(post.videoArtifactId)
   const detailId = `smm-video-${post.videoArtifactId}`
-  const hasTags = composedHashtags(group.hashtags.fixed, lineTagsOf(group, post), post.hashtags).length > 0
+  const tags = composedHashtags(group.hashtags.fixed, lineTagsOf(group, post), post.hashtags)
+  const hasTags = tags.length > 0
 
   function onRowClick(e: MouseEvent<HTMLTableRowElement>): void {
     const target = e.target as HTMLElement
@@ -1979,6 +2044,7 @@ function VideoRows({
                 fleet={fleet}
                 owners={owners}
                 hasTags={hasTags}
+                tags={tags}
                 saving={saving}
                 onSave={onSave}
                 onSaved={(list) => {
@@ -2201,6 +2267,12 @@ function VideoDetail({
                 {attempts.some(markedByHand) ? <HandBadge /> : null}
               </div>
               {state?.note ? <p className="text-[11px] leading-relaxed text-dim">{state.note}</p> : null}
+              {isCaptionPlatform(platform) && (post.platformCaptions[platform] ?? '') !== '' ? (
+                <p className="line-clamp-3 text-[11px] leading-relaxed whitespace-pre-wrap text-text-2 wrap-anywhere" title={post.platformCaptions[platform]}>
+                  <span className="text-faint">Posts its own caption: </span>
+                  {post.platformCaptions[platform]}
+                </p>
+              ) : null}
 
               <div>
                 <p className="text-[10.5px] font-medium tracking-wide text-faint uppercase">
@@ -2281,8 +2353,13 @@ function sameSet(a: readonly string[], b: readonly string[]): boolean {
  * carries on as it started.
  *
  * What still blocks Save is only what the member refuses (`E_PARAMS_INVALID`):
- * no platform, an empty or over-long caption. Save sends only the fields that
- * differ from the row as loaded; with nothing changed it stays disabled.
+ * no platform, an empty or over-long caption, a platform's own caption over
+ * that platform's length. Save sends only the fields that differ from the row
+ * as loaded; with nothing changed it stays disabled.
+ *
+ * **Caption per platform** (0.27.0) is one tab per chosen platform: empty posts
+ * the shared text (shown under it), anything typed is exactly what that
+ * platform posts.
  */
 function EditPostForm({
   post,
@@ -2291,6 +2368,7 @@ function EditPostForm({
   fleet,
   owners,
   hasTags,
+  tags,
   saving,
   onSave,
   onSaved,
@@ -2303,6 +2381,8 @@ function EditPostForm({
   owners: ReadonlyMap<string, readonly Owner[]>
   /** Whether the video posts with any hashtag; only then may the caption be empty. */
   hasTags: boolean
+  /** Every hashtag the shared text carries — for the preview of what a platform without its own caption posts. */
+  tags: readonly string[]
   saving: boolean
   onSave: SaveEdit
   onSaved: (warnings: string[]) => void
@@ -2319,17 +2399,29 @@ function EditPostForm({
   const [phone, setPhone] = useState<string | null>(post.assignedDeviceId)
   const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set(post.platforms))
   const [caption, setCaption] = useState(post.caption)
+  const [ownTexts, setOwnTexts] = useState<Record<PlatformId, string>>(() => ({
+    tiktok: post.platformCaptions.tiktok ?? '',
+    instagram: post.platformCaptions.instagram ?? '',
+    youtube: post.platformCaptions.youtube ?? '',
+  }))
+  const [ownTab, setOwnTab] = useState('')
 
   const options = useMemo(() => phoneOptions(post, fleet, devices, owners), [post, fleet, devices, owners])
 
   const postable = PLATFORMS.filter((p) => p.postable)
   const nextPlatforms = [...chosen]
+  const ownPlatforms = PLATFORM_IDS.filter((id) => chosen.has(id))
+  const activeTab = ownPlatforms.find((id) => id === ownTab) ?? ownPlatforms[0] ?? ''
 
   const changes: PostChanges = {}
   if (onePerPhone && phone !== null && phone !== post.assignedDeviceId) changes.assignedDeviceId = phone
   if (!sameSet(nextPlatforms, post.platforms)) changes.platforms = nextPlatforms
   if (caption !== post.caption) changes.caption = caption
+  const ownChanges: Partial<Record<PlatformId, string>> = {}
+  for (const id of PLATFORM_IDS) if (ownTexts[id].trim() !== (post.platformCaptions[id] ?? '')) ownChanges[id] = ownTexts[id]
+  if (Object.keys(ownChanges).length > 0) changes.platformCaptions = ownChanges
   const dirty = Object.keys(changes).length > 0
+  const ownProblem = PLATFORM_IDS.map((id) => (ownTexts[id].trim() === '' ? null : checkPlatformCaption(id, ownTexts[id]).error)).find((e) => e !== null) ?? null
 
   const platformProblem = postable.some((p) => chosen.has(p.id)) ? null : 'Choose at least one platform.'
   const captionProblem =
@@ -2338,7 +2430,7 @@ function EditPostForm({
       : caption.length > CAPTION_MAX
         ? `The caption is ${caption.length} characters; the limit is ${CAPTION_MAX}.`
         : null
-  const canSave = dirty && platformProblem === null && captionProblem === null && !saving
+  const canSave = dirty && platformProblem === null && captionProblem === null && ownProblem === null && !saving
 
   const phoneOwner = onePerPhone && phone !== null ? otherOwner(owners, phone, post.videoArtifactId) : undefined
   const phoneLabel = options.find((o) => o.value === phone)?.label ?? (phone !== null ? `device ${shortId(phone)}` : '')
@@ -2423,6 +2515,42 @@ function EditPostForm({
         {captionProblem !== null ? <p className="text-[11px] text-danger">{captionProblem}</p> : null}
       </div>
 
+      {ownPlatforms.length > 0 ? (
+        <div className="space-y-1">
+          <p className="text-[11.5px] font-medium text-text-2">Caption per platform</p>
+          <p className="max-w-prose text-[11px] leading-relaxed text-dim">
+            Optional. A platform with its own caption posts exactly that text, hashtags included, instead of the caption and hashtags above. Leave it
+            empty to post the shared text.
+          </p>
+          <Tabs value={activeTab} onValueChange={setOwnTab}>
+            <TabsList>
+              {ownPlatforms.map((id) => (
+                <TabsTrigger key={id} value={id}>
+                  {platformTitle(id)}
+                  {ownTexts[id].trim() !== '' ? (
+                    <>
+                      <span className="ml-1 inline-block size-1.5 rounded-full bg-accent" aria-hidden />
+                      <span className="sr-only"> (own caption)</span>
+                    </>
+                  ) : null}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            {ownPlatforms.map((id) => (
+              <TabsContent key={id} value={id}>
+                <PlatformCaptionField
+                  platform={id}
+                  value={ownTexts[id]}
+                  shared={postedText(caption, tags)}
+                  disabled={saving}
+                  onChange={(text) => setOwnTexts((prev) => ({ ...prev, [id]: text }))}
+                />
+              </TabsContent>
+            ))}
+          </Tabs>
+        </div>
+      ) : null}
+
       <p className="max-w-prose text-[11.5px] leading-relaxed text-dim">
         Changes apply to the next attempt. A platform that already posted stays posted; failed ones go to the new phone when you press Retry failed;
         a newly added platform goes out at this video’s next turn.
@@ -2449,6 +2577,72 @@ function EditPostForm({
         {!dirty ? <span className="text-[11px] text-faint">Nothing changed yet.</span> : null}
       </div>
     </form>
+  )
+}
+
+/** What the pack does with a platform's text, in one line, from the same limits the service enforces. */
+function limitLine(platform: PlatformId): string {
+  const limit = PLATFORM_CAPTION_LIMITS[platform]
+  if (platform === 'youtube') return `Typed as the Short’s title through adb: at most ${limit.maxLength} characters, one line, no emoji.`
+  if (platform === 'instagram') return `Typed through adb: at most ${limit.maxLength} characters and ${limit.maxHashtags} hashtags, no emoji.`
+  return `At most ${limit.maxLength} characters; the upload flow keeps the first ${limit.maxHashtags} hashtags. Emoji are fine.`
+}
+
+/** One platform's own caption in the edit form: the text, its count against that platform's limit, and what the pack will drop. */
+function PlatformCaptionField({
+  platform,
+  value,
+  shared,
+  disabled,
+  onChange,
+}: {
+  platform: PlatformId
+  value: string
+  /** What the platform posts while this is empty. */
+  shared: string
+  disabled: boolean
+  onChange: (text: string) => void
+}): ReactElement {
+  const ids = useId()
+  const limit = PLATFORM_CAPTION_LIMITS[platform]
+  const text = value.trim()
+  const check = text === '' ? null : checkPlatformCaption(platform, value)
+  return (
+    <div className="space-y-1 pt-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <label htmlFor={`${ids}-own`} className="text-[11.5px] font-medium text-text-2">
+          {platformTitle(platform)} {platform === 'youtube' ? 'title' : 'caption'}
+        </label>
+        <span className={cn('readout text-[11px] tabular-nums', text.length > limit.maxLength ? 'text-danger' : 'text-faint')}>
+          {text.length} / {limit.maxLength}
+        </span>
+        {text !== '' ? (
+          <Button type="button" variant="ghost" size="sm" className="ml-auto" disabled={disabled} onClick={() => onChange('')}>
+            Use the shared text
+          </Button>
+        ) : null}
+      </div>
+      <Textarea
+        id={`${ids}-own`}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={platform === 'youtube' ? 2 : 3}
+        disabled={disabled}
+        placeholder="Empty — posts the shared text"
+      />
+      {text === '' ? (
+        <p className="line-clamp-3 text-[11px] whitespace-pre-line text-faint wrap-anywhere" title={shared}>
+          Posts the shared text: {shared === '' ? '—' : shared}
+        </p>
+      ) : null}
+      <p className="text-[11px] text-faint">{limitLine(platform)}</p>
+      {check?.error ? <p className="text-[11px] text-danger">{check.error}</p> : null}
+      {check?.warnings.map((w) => (
+        <p key={w} className="text-[11px] text-warn">
+          {w}
+        </p>
+      ))}
+    </div>
   )
 }
 

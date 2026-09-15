@@ -1,5 +1,7 @@
 import { BadResponseError, api, coreBase, describeApiError } from '@enkaku/ui'
 import { z } from 'zod'
+import { fitPlatformCaptions, type PlatformCaptions } from '../platform-captions'
+import { PLATFORM_IDS, type PlatformId } from '../platforms'
 import { CORE, normaliseHashtags, uploadArtifact } from './shared'
 
 /**
@@ -311,9 +313,35 @@ function encodeWav(samples: Float32Array, sampleRate: number): Blob {
 /** How much transcript the model is shown. Ten minutes of speech is far more than a caption needs. */
 const TRANSCRIPT_CHARS = 8000
 
-function buildPrompts(style: CaptionStyle, transcript: string, name: string, fixed: readonly string[]): { system: string; prompt: string } {
+/**
+ * What the writer is asked for each platform (0.27.0), WITHOUT hashtags — they are added afterwards and fitted to the
+ * platform's own limits (`platform-captions.ts`). The YouTube title is kept well under its 100 characters so a few
+ * hashtags still fit beside it.
+ */
+function platformRule(id: PlatformId, style: CaptionStyle): string {
+  switch (id) {
+    case 'tiktok':
+      return `"tiktok": a TikTok caption with a strong first line, under ${style.maxLength} characters. Emoji are allowed.`
+    case 'instagram':
+      return `"instagram": an Instagram Reels caption, under ${style.maxLength} characters, with NO emoji (they cannot be typed on Instagram).`
+    case 'youtube':
+      return '"youtube": a YouTube Shorts TITLE of at most 60 characters: one line, plain words, NO emoji (they cannot be typed on YouTube).'
+  }
+}
+
+function buildPrompts(
+  style: CaptionStyle,
+  transcript: string,
+  name: string,
+  fixed: readonly string[],
+  platforms: readonly PlatformId[],
+): { system: string; prompt: string } {
   const language = titleOf(CAPTION_LANGUAGES, style.language)
   const tone = titleOf(CAPTION_TONES, style.tone).toLowerCase()
+  const shape =
+    platforms.length === 0
+      ? '{"caption": "…", "hashtags": ["#…"]}'
+      : `{"caption": "…", "hashtags": ["#…"], "platforms": {${platforms.map((id) => `"${id}": "…"`).join(', ')}}}`
   const rules = [
     'You write captions for short social media videos (TikTok, YouTube Shorts, Instagram Reels).',
     `Write the caption in ${language}, in a ${tone} tone.`,
@@ -327,7 +355,10 @@ function buildPrompts(style: CaptionStyle, transcript: string, name: string, fix
     'Base it only on what the transcript says; never invent prices, results, promises or facts that are not in it.',
     'Plain text only: no quotation marks around the caption, no markdown, no title.',
     style.extra.trim() !== '' ? `Also: ${style.extra.trim()}` : null,
-    'Answer with strictly one JSON object and nothing else, exactly of the form {"caption": "…", "hashtags": ["#…"]}.',
+    platforms.length > 0
+      ? `Also write the words for each platform in the "platforms" object, in the same language and tone, with NO hashtags in them:\n${platforms.map((id) => `- ${platformRule(id, style)}`).join('\n')}`
+      : null,
+    `Answer with strictly one JSON object and nothing else, exactly of the form ${shape}.`,
   ]
   const clipped = transcript.length > TRANSCRIPT_CHARS ? `${transcript.slice(0, TRANSCRIPT_CHARS)}…` : transcript
   return {
@@ -336,7 +367,18 @@ function buildPrompts(style: CaptionStyle, transcript: string, name: string, fix
   }
 }
 
-const AnswerSchema = z.object({ caption: z.string().catch(''), hashtags: z.array(z.string()).catch([]) })
+const AnswerSchema = z.object({
+  caption: z.string().catch(''),
+  hashtags: z.array(z.string()).catch([]),
+  platforms: z.record(z.string(), z.unknown()).catch({}).default({}),
+})
+
+export interface ParsedAnswer {
+  caption: string
+  hashtags: string[]
+  /** The words written for each platform, cleaned, with any hashtags taken out; a platform the answer left out is absent. */
+  platformTexts: Partial<Record<PlatformId, string>>
+}
 
 /** Trailing `#tags` off the end of a text: `great video #a #b` → `great video`, `['#a', '#b']`. */
 function splitTrailingTags(text: string): { caption: string; tags: string[] } {
@@ -352,9 +394,10 @@ function splitTrailingTags(text: string): { caption: string; tags: string[] } {
  * Hashtags written inside the caption anyway are moved out; the session's fixed hashtags and anything past the style's
  * count are dropped.
  */
-export function parseAnswer(raw: string, count: number, fixed: readonly string[]): { caption: string; hashtags: string[] } {
+export function parseAnswer(raw: string, count: number, fixed: readonly string[]): ParsedAnswer {
   let caption = raw
   let tags: string[] = []
+  let written: Record<string, unknown> = {}
   const start = raw.indexOf('{')
   const end = raw.lastIndexOf('}')
   if (start !== -1 && end > start) {
@@ -363,6 +406,7 @@ export function parseAnswer(raw: string, count: number, fixed: readonly string[]
       if (parsed.success) {
         caption = parsed.data.caption
         tags = parsed.data.hashtags
+        written = parsed.data.platforms
       }
     } catch {
       /* not JSON after all — read as plain text below */
@@ -372,7 +416,14 @@ export function parseAnswer(raw: string, count: number, fixed: readonly string[]
   const split = splitTrailingTags(cleaned)
   const taken = new Set(normaliseHashtags(fixed).map((t) => t.toLowerCase()))
   const hashtags = normaliseHashtags([...tags, ...split.tags]).filter((t) => !taken.has(t.toLowerCase()))
-  return { caption: split.caption, hashtags: hashtags.slice(0, count) }
+  const platformTexts: Partial<Record<PlatformId, string>> = {}
+  for (const id of PLATFORM_IDS) {
+    const value = written[id]
+    if (typeof value !== 'string') continue
+    const text = splitTrailingTags(cleanCaption(value)).caption
+    if (text !== '') platformTexts[id] = text
+  }
+  return { caption: split.caption, hashtags: hashtags.slice(0, count), platformTexts }
 }
 
 const QUOTE_PAIRS: readonly [string, string][] = [
@@ -416,7 +467,16 @@ export function cleanCaption(raw: string): string {
 export type CaptionStage = 'extracting' | 'transcribing' | 'writing'
 
 export type CaptionOutcome =
-  | { status: 'done'; caption: string; hashtags: string[]; transcript: string }
+  | {
+      status: 'done'
+      caption: string
+      hashtags: string[]
+      transcript: string
+      /** The writer's words per requested platform, before any hashtag is added (what `add-group` fits once the session's line is picked). */
+      platformTexts: Partial<Record<PlatformId, string>>
+      /** Each requested platform's text, fitted with the fixed and the new hashtags — what a session row stores (0.27.0). */
+      platformCaptions: PlatformCaptions
+    }
   | { status: 'no-speech'; caption: ''; hashtags: []; reason: string }
   | { status: 'failed'; reason: string }
   | { status: 'stopped' }
@@ -425,13 +485,16 @@ export async function autoCaption(input: {
   videoArtifactId: string
   name: string
   style: CaptionStyle
-  /** The session's fixed hashtags — never asked for again. */
+  /** The hashtags the session adds anyway (its fixed ones, and the video's picked line) — never asked for again, and the first to go into each platform's text. */
   fixedHashtags?: readonly string[]
+  /** The platforms to write a caption of their own for (0.27.0). None: only the shared caption, as before. */
+  platforms?: readonly string[]
   signal?: AbortSignal
   onStage?: (stage: CaptionStage) => void
 }): Promise<CaptionOutcome> {
   const { videoArtifactId, name, style, signal, onStage } = input
   const fixed = input.fixedHashtags ?? []
+  const platforms = PLATFORM_IDS.filter((id) => input.platforms?.includes(id) === true)
   let stage: CaptionStage = 'extracting'
   let wavId: string | null = null
   try {
@@ -450,16 +513,14 @@ export async function autoCaption(input: {
 
     stage = 'writing'
     onStage?.('writing')
-    const { system, prompt } = buildPrompts(style, transcript, name, fixed)
-    const written = await cap(
-      'ai.generate',
-      { prompt, system, maxOutputTokens: Math.min(2000, Math.max(300, style.maxLength + 200)), temperature: 0.7 },
-      AiGenerateSchema,
-      signal,
-    )
+    const { system, prompt } = buildPrompts(style, transcript, name, fixed, platforms)
+    // Each platform's words cost about another caption's worth of tokens.
+    const tokens = Math.min(4000, Math.max(300, (style.maxLength + 200) * (1 + platforms.length)))
+    const written = await cap('ai.generate', { prompt, system, maxOutputTokens: tokens, temperature: 0.7 }, AiGenerateSchema, signal)
     const answer = parseAnswer(written.text, style.hashtags, fixed)
     if (answer.caption === '') return { status: 'failed', reason: 'The AI answered with no caption text.' }
-    return { status: 'done', caption: answer.caption, hashtags: answer.hashtags, transcript }
+    const platformCaptions = fitPlatformCaptions({ platforms, caption: answer.caption, texts: answer.platformTexts, hashtags: [...fixed, ...answer.hashtags] })
+    return { status: 'done', caption: answer.caption, hashtags: answer.hashtags, transcript, platformTexts: answer.platformTexts, platformCaptions }
   } catch (e: unknown) {
     if (isAbort(e) || signal?.aborted) return { status: 'stopped' }
     return { status: 'failed', reason: failureReason(stage, e) }
