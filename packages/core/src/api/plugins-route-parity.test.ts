@@ -98,8 +98,18 @@ const NOT_IN_STUDIO_BY_DESIGN: Record<string, string> = {
   // (`app/plugins/detail/page.tsx`, and `ResetPluginAction` for the handler it
   // is about to run), which is what let the list shed all three. The entry is
   // deleted rather than reworded — the route has a caller.
-  'POST /:id/verify':
-    'Verification is not a separate step in any browser flow: `POST /` verifies in the same call unless `stageOnly` is set, and Reload re-verifies a live plugin (both wired in step 108.9). This route is the companion of `enkaku publish --stage-only`, documented in `packages/sdk/src/cli/publish.ts` for a pipeline that wants to stage and verify as two jobs.',
+  // `POST /:id/verify` was excused here on the reasoning that "verification is
+  // not a separate step in any browser flow". It is one now: the bulk upgrade
+  // added on 2026-09-13 (`ActivateLatestPlugins.tsx`, reached from the Plugins
+  // page's Activate-latest button) verifies each staged version it is about to
+  // activate, as its own request, and shows the per-plugin `verifying` state
+  // while it does. So the route has a caller, and the entry was a written
+  // statement that it did not.
+  //
+  // Deleted rather than reworded, exactly as `GET /:name/:version` was above
+  // and for the same reason. The `enkaku publish --stage-only` companion the
+  // old reason named is still true of the route; it is simply no longer the
+  // ONLY way in, which is all this list is about.
   'POST /dev':
     'A dev slot is pushed by `enkaku dev` from the author\'s machine (`packages/sdk/src/cli/dev.ts`), because it carries a bundle built from local source Studio cannot see. Studio owns the other two thirds of the dev-slot lifecycle — `GET /dev` lists them (`app/device/page.tsx`, `RunScriptDialog`) and `DELETE /dev/:name` drops them (P3, step 108.9).',
 }

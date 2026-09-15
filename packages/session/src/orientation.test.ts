@@ -166,19 +166,50 @@ describe('applyRotation — asserted at session build, with nothing to revert', 
     expect('revert' in lock).toBe(false)
   })
 
-  test('"lock-portrait": captures nothing, writes the lock, pins, and CONFIRMS it in one read-back', async () => {
+  test('"lock-portrait" on a drifted device: one drift read, then the lock, the pin, and the confirming read-back', async () => {
     const { transport, calls, display } = fakeDevice({ accel: '1', user: '0' })
     const { log } = silentLog()
     const lock = await applyRotation(transport, { rotation: 'lock-portrait', log })
     expect(calls).toEqual([
+      // Plan 228 §3.3 — the drift read that decides whether the five writes
+      // below are needed at all. It captures nothing: see the test after next.
+      READBACK_COMMAND,
       'wm user-rotation lock 0',
       'settings put system accelerometer_rotation 0',
       'settings put system user_rotation 0',
       'wm fixed-to-user-rotation enabled',
       READBACK_COMMAND,
     ])
-    expect(lock.outcome).toEqual({ mode: 'lock-portrait', target: '0', applied: true })
+    expect(lock.outcome).toEqual({ mode: 'lock-portrait', target: '0', applied: true, drifted: true })
     expect(display.fixed).toBe('enabled')
+  })
+
+  /**
+   * The saving plan 228 §3.3 is for, and the case a farm is in almost always:
+   * a device already holding the lock the farm asked for. It used to cost five
+   * serialised adb round trips on EVERY build, reprofile, rebuild and blip; it
+   * now costs one, and adb is serialised per device, so that is four round
+   * trips off the critical line between a click and a picture.
+   */
+  test('a device already holding the lock costs ONE read and writes nothing (plan 228 §3.3)', async () => {
+    const { transport, calls, store } = fakeDevice({ accel: '0', user: '0' })
+    const { log } = silentLog()
+    const lock = await applyRotation(transport, { rotation: 'lock-portrait', log })
+    expect(calls).toEqual([READBACK_COMMAND])
+    expect(lock.outcome).toEqual({ mode: 'lock-portrait', target: '0', applied: true })
+    expect(store).toEqual({ accelerometer_rotation: '0', user_rotation: '0' })
+  })
+
+  /**
+   * "Could not tell" must never be reported as "in force" — an unreadable
+   * device counts as drift and gets the full assert, exactly as
+   * `ensureRotationLock` documents.
+   */
+  test('a device whose settings cannot be read is treated as drifted and written anyway', async () => {
+    const { transport, calls } = fakeDevice({ accel: '0', user: '0', throwOn: READBACK_COMMAND })
+    const { log } = silentLog()
+    await applyRotation(transport, { rotation: 'lock-portrait', log })
+    expect(calls).toContain('settings put system accelerometer_rotation 0')
   })
 
   test('"lock-landscape": user_rotation 1', async () => {
@@ -197,8 +228,16 @@ describe('applyRotation — asserted at session build, with nothing to revert', 
     const { log } = silentLog()
     await applyRotation(transport, { rotation: 'lock-portrait', log })
     expect(store.accelerometer_rotation).toBe('0')
-    // Nothing is READ before the lock is written (no capture of a "prior" state) — the one read is the read-back last.
-    expect(calls.slice(0, -1).some((c) => c.startsWith('settings get system '))).toBe(false)
+    /*
+      The reads here are the DRIFT check and the confirming read-back, and
+      neither is a capture: `ensureRotationLock`/`assertRotationLock` are
+      stateless, so there is nowhere for a "prior" state to be recorded and no
+      revert that could ever put one back (`rotationActionFor`). What this
+      pins is that the only `settings get` issued is the batched read-back
+      command — never a per-key read whose value something could keep.
+    */
+    expect(calls.filter((c) => c.startsWith('settings get system '))).toEqual([READBACK_COMMAND, READBACK_COMMAND])
+    expect(calls[0]).toBe(READBACK_COMMAND)
     expect(calls[calls.length - 1]).toBe(READBACK_COMMAND)
     expect(calls).not.toContain('wm fixed-to-user-rotation')
   })

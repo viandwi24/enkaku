@@ -74,8 +74,23 @@ const RESTART_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 15_000]
  * Cheap enough to repeat: one control message per interval, and scrcpy's
  * own repeat-frame timer means a healthy stream never reaches this at all.
  */
-const STALE_KEYFRAME_AFTER_SEC = 6
-const STALE_KEYFRAME_EVERY_SEC = 10
+/*
+  Lowered from 6 s / 10 s (plan 228 §3.7).
+
+  The server drops deltas the instant its socket congests and resumes only on
+  the next IDR, and the keyframe nudge is what supplies that IDR — so the
+  threshold is how long a tile stays frozen in exactly the state this recovers
+  from. Six seconds of a frozen picture also outlives `castStatusOf`'s own
+  patience, so the operator was told "Reconnecting" about a stream that was
+  fine and one small message away from resuming.
+
+  Three seconds is still well clear of a healthy stream: scrcpy's repeat-frame
+  timer means a live encoder never goes that long silent, so this cannot fire
+  on a working picture. The repeat interval stops a device that genuinely
+  cannot produce an IDR from being asked twice a second.
+*/
+const STALE_KEYFRAME_AFTER_SEC = 3
+const STALE_KEYFRAME_EVERY_SEC = 5
 
 export interface CastStats {
   streaming: boolean

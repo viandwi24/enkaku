@@ -217,7 +217,15 @@ export interface SessionManager {
   get(deviceId: string): DeviceSession | null
   getByQuality(deviceId: string, quality: Quality): DeviceSession | null
   closeDevice(deviceId: string): Promise<void>
-  closeAll(reason?: string): Promise<number>
+  /**
+   * Close every open entry and report how many there were.
+   *
+   * `skipPowerRevert` (plan 228 §3.4) is passed straight through to each
+   * `DeviceSession.close()` — see its own doc comment. The one caller that
+   * sets it is `daemon.stop()`, which has just run the release sweep and so
+   * has already handed every device's screen back.
+   */
+  closeAll(reason?: string, opts?: { skipPowerRevert?: boolean }): Promise<number>
   restartAt?(deviceId: string, quality: Quality, detail?: string): Promise<void>
   /**
    * An operator changed `prep.rotation` (plan 85 §3.7): a lock mode is asserted, `'device'` hands
@@ -382,14 +390,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     for (const cb of entry.frameSubscribers) cb(chunk, meta)
   }
 
-  async function closeEntry(key: string, reason = 'released'): Promise<void> {
+  async function closeEntry(key: string, reason = 'released', closeOpts?: { skipPowerRevert?: boolean }): Promise<void> {
     const entry = entries.get(key)
     if (!entry) return
     entries.delete(key)
     if (entry.lingerTimer) timers.clear(entry.lingerTimer)
     entry.clipboardUnsubscribe?.()
     for (const sub of entry.frameSubscribers) subscriberEntry.delete(sub)
-    await entry.session.close().catch((err) => deps.log.warn(`failed to close session ${entry.deviceId}: ${String(err)}`))
+    await entry.session.close(closeOpts).catch((err) => deps.log.warn(`failed to close session ${entry.deviceId}: ${String(err)}`))
     deps.onEvent?.(entry.deviceId, 'session.closed', { reason })
     deps.log.info(`session closed: ${entry.deviceId} (${entry.quality})`)
   }
@@ -996,10 +1004,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       if (keys.length > 0) deps.onSessionEnded?.(deviceId, 'device_gone')
     },
 
-    async closeAll(reason = 'shutdown') {
+    async closeAll(reason = 'shutdown', opts) {
       const keys = [...entries.keys()]
       pendingSwitches.clear()
-      await Promise.all(keys.map((key) => closeEntry(key, reason)))
+      await Promise.all(keys.map((key) => closeEntry(key, reason, opts)))
       return keys.length
     },
 

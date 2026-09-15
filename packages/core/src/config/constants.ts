@@ -331,6 +331,14 @@ export const PREPARATION_SWEEP_MS = num('ENKAKU_PREPARATION_SWEEP_MS', 60_000, z
  * that semaphore (1..24, and pinnable down to 2 by `adb.maxConcurrent`) is the
  * real limiter, and the shutdown widens it to at least this for the sweep.
  * Higher stops buying anything once the server is the bottleneck.
+ *
+ * It is a FLOOR, not the width (plan 228 §3.4). Read as the width it was
+ * silently the narrower of the two on any farm at auto concurrency —
+ * `computeAutoConcurrency` gives a 73-device farm 24 lanes, so a release ran
+ * eight at a time through a queue three times that wide and the sweep, not the
+ * semaphore it was sized against, was the thing an operator waited for.
+ * `daemon.releaseDevices()` passes adb's live width and `releaseAll` takes the
+ * larger of the two.
  */
 export const RELEASE_SWEEP_WORKERS = num('ENKAKU_RELEASE_SWEEP_WORKERS', 8, z.number().int().min(1).max(24))
 

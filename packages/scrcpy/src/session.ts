@@ -789,11 +789,39 @@ async function connectVideoSocket(
   onClose: (reason: string) => void,
   log: (level: 'debug' | 'info' | 'warn', msg: string) => void,
 ): Promise<Socket> {
+  /*
+    A RAMPED POLL, not a flat one (plan 228 §3.2).
+
+    This used to be 40 attempts of a flat 400 ms silence window plus a flat
+    150 ms sleep, and the two together made the effective poll interval 550 ms
+    on EVERY session build. That interval is what the caller waits: the
+    device-side `app_process` JVM takes a second or two to come up, adb's
+    forward refuses (or accepts and immediately closes) every connection until
+    it is, and only a socket the SERVER itself accepted ever receives the dummy
+    byte — so a socket opened before the server was listening can never become
+    the live one, however long we hold it. A server ready at 1.2 s was
+    therefore first noticed at 1.65 s, and 450 ms of an operator's wait for a
+    picture was spent not looking.
+
+    Now the interval itself is the ladder: ~120 ms while a fast device is the
+    likely explanation, widening to 800 ms once it plainly is not, and it is an
+    interval rather than a sleep — the time an attempt already spent waiting
+    for data counts towards it, so a rejected connection does not busy-loop and
+    a silent one is not made to wait twice.
+
+    The TOTAL budget is deliberately NOT cut (~27 s against the old ~22 s): a
+    phone that was served before is still served. Only the distribution
+    changed — fast devices are noticed sooner, slow ones get the same patience.
+  */
+  const POLL_LADDER_MS = [120, 120, 160, 200, 250, 300, 400, 500, 600, 800]
   const ATTEMPTS = 40
-  const SILENCE_MS = 400
   let lastErr: unknown = null
 
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+    const pollMs = POLL_LADDER_MS[Math.min(attempt, POLL_LADDER_MS.length - 1)]!
+    const startedAt = Date.now()
+    /** Whatever is left of this attempt's poll interval — never negative, never a double wait. */
+    const waitOutInterval = (): Promise<void> => Bun.sleep(Math.max(0, pollMs - (Date.now() - startedAt)))
     let live = false
     const { promise, resolve, reject } = Promise.withResolvers<void>()
     let socket: Socket
@@ -817,21 +845,21 @@ async function connectVideoSocket(
       })
     } catch (err) {
       lastErr = err
-      await Bun.sleep(150)
+      await waitOutInterval()
       continue
     }
 
-    const timer = setTimeout(() => reject(new Error(`no data within ${SILENCE_MS}ms`)), SILENCE_MS)
+    const timer = setTimeout(() => reject(new Error(`no data within ${pollMs}ms`)), pollMs)
     try {
       await promise
       clearTimeout(timer)
-      if (attempt > 0) log('debug', `the video socket came up on attempt ${attempt + 1}`)
+      if (attempt > 0) log('debug', `the video socket came up on attempt ${attempt + 1} after ${Date.now() - startedAt}ms`)
       return socket
     } catch (err) {
       clearTimeout(timer)
       lastErr = err
       socket.end()
-      await Bun.sleep(150)
+      await waitOutInterval()
     }
   }
   throw new Error(`the scrcpy server never answered on port ${port}: ${String(lastErr)}`)

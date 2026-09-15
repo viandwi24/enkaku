@@ -334,7 +334,22 @@ export async function ensureRotationLock(transport: Transport, mode: RotationMod
 /**
  * Screen rotation lock at session build (plan 85 §3.7, §4.1, step 85.8). Called by `createSession`
  * for EVERY build — wall and fast-path control alike: the device may have drifted since the last
- * write, and writing the same values again costs a few shell calls and cannot be wrong.
+ * write, and asserting the lock again cannot be wrong.
+ *
+ * ### Why this is `ensureRotationLock`, not `assertRotationLock` (plan 228 §3.3)
+ *
+ * It used to be the unconditional assert, on the reasoning that re-writing the same values "costs
+ * a few shell calls". It costs **five**, serialised — `wm user-rotation lock`, two `settings put`,
+ * `wm fixed-to-user-rotation`, then the read-back — and adb access is strictly serialised per
+ * device (`PerDeviceQueue`), so those five are five round trips on the critical line between an
+ * operator's click and the picture, on every build, reprofile, rebuild and blip. On a farm pinned
+ * to `lock-portrait` it was the largest fixed prep cost after the jar push and the scrcpy handshake.
+ *
+ * `ensureRotationLock` is the same guarantee reached the cheap way: ONE batched read-back, and the
+ * full five-call assert only when the device has actually drifted off the lock. It is the call
+ * device-online, job-finished and the periodic sweep already use for exactly this reason, and it
+ * treats an unreadable device as drift — so "could not tell" still writes, and is still never
+ * reported as "in force".
  *
  * `'device'` writes nothing at build — the device's own behaviour is left alone. There is no
  * `revert`: see `rotationActionFor`.
@@ -342,7 +357,7 @@ export async function ensureRotationLock(transport: Transport, mode: RotationMod
 export async function applyRotation(transport: Transport, opts: { rotation: RotationMode; log: Logger }): Promise<RotationLock> {
   const { log } = opts
   let mode: RotationMode = opts.rotation
-  let outcome: RotationOutcome = isLockMode(mode) ? await assertRotationLock(transport, mode, log) : { mode, target: null, applied: true }
+  let outcome: RotationOutcome = isLockMode(mode) ? await ensureRotationLock(transport, mode, log) : { mode, target: null, applied: true }
 
   return {
     get mode() {
