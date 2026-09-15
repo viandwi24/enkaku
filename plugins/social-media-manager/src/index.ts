@@ -73,6 +73,15 @@ import {
  *
  * ## Changelog
  *
+ * - **0.24.0 — a phone someone is using is never handed a post.** The owner
+ *   (2026-09-15): a run reached phones that were open in Device Control. The
+ *   router counted a phone free when it was online with no activity, but a
+ *   `control` activity exists only while input is being sent, so a phone
+ *   being watched looked idle. `isDeviceFree` now also reads `device.list`'s
+ *   `inUse` (control or an open Device Control window) and treats a
+ *   `lastControl` tail as a quiet period. A post waits for such a phone the
+ *   way it waits for a busy one. A farm older than `inUse` routes as before.
+ *
  * - **0.23.0 — force a post's status by hand, either way.** The owner
  *   (2026-09-14): YouTube Shorts landed on the channel while the farm said
  *   `failed` ("neither the trim screen nor the Shorts editor appeared", a run
@@ -521,6 +530,13 @@ const DeviceListOutput = z.object({
        */
       label: z.string().default(''),
       number: z.number().int().nullable().default(null),
+      /**
+       * 0.24.0 — who is using the phone (`isDeviceFree`). Defaulted so a farm
+       * older than the field still answers; that farm is routed on
+       * `activities` alone, exactly as before.
+       */
+      inUse: z.object({ control: z.boolean(), viewers: z.number().int().min(0) }).default({ control: false, viewers: 0 }),
+      lastControl: z.object({ endedAt: z.number() }).nullable().default(null),
     }),
   ),
 })
@@ -1032,7 +1048,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.23.0',
+  version: '0.24.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

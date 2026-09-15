@@ -984,6 +984,10 @@ export interface RouterDevice {
   status: string
   activities: readonly { kind: string }[]
   labels: readonly { name: string }[]
+  /** `device.list`'s `inUse` (0.24.0). Optional: a farm older than the field sends none, and the router then decides on `activities` alone. */
+  inUse?: { control: boolean; viewers: number }
+  /** Present while the tail after a control marker lasts — the quiet period after someone stopped using the phone. */
+  lastControl?: { endedAt: number } | null
 }
 
 export interface PlannedDispatch {
@@ -1018,9 +1022,22 @@ export interface DispatchPlan {
  * device while five sit idle. `job.list` is deliberately not consulted —
  * `activities` already answers this, and asking for a permission the plugin
  * does not need is a permission the operator is shown at install for nothing.
+ *
+ * `activities` is not the whole answer, though (0.24.0, owner field report
+ * 2026-09-15). A `control` marker lives only while input flows, so a phone an
+ * operator has open in Device Control and is merely watching carried no
+ * activity and was handed a post. `inUse` says who is looking, and a
+ * `lastControl` tail is a quiet period after someone stopped.
  */
 export function isDeviceFree(device: RouterDevice): boolean {
-  return device.status === 'online' && device.activities.length === 0
+  return device.status === 'online' && device.activities.length === 0 && !isDeviceInUse(device)
+}
+
+/** Someone is controlling or watching the phone in Device Control, or stopped only moments ago. */
+export function isDeviceInUse(device: Pick<RouterDevice, 'inUse' | 'lastControl'>): boolean {
+  if (device.inUse?.control === true) return true
+  if ((device.inUse?.viewers ?? 0) > 0) return true
+  return device.lastControl !== undefined && device.lastControl !== null
 }
 
 /**

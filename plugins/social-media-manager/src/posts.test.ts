@@ -5,6 +5,7 @@ import {
   describePlatform,
   deviceDisplayName,
   failedDevices,
+  isDeviceFree,
   isJobGone,
   platformNote,
   markPost,
@@ -118,6 +119,24 @@ describe('planDispatch — the routing rules', () => {
     // The distinction that matters: this is a normal, self-resolving wait, not
     // a setup mistake, and the two must not read the same.
     expect(plan.states.tiktok?.note).toContain('offline or busy')
+  })
+
+  test('a phone open in Device Control is not free, even with no activity (0.24.0)', () => {
+    const watched = device({ id: 'd1', inUse: { control: false, viewers: 1 } })
+    const driven = device({ id: 'd2', inUse: { control: true, viewers: 0 } })
+    const justLeft = device({ id: 'd3', lastControl: { endedAt: NOW - 10 } })
+    expect(isDeviceFree(watched)).toBe(false)
+    expect(isDeviceFree(driven)).toBe(false)
+    expect(isDeviceFree(justLeft)).toBe(false)
+    const plan = planDispatch({ post: post(), devices: [watched, driven, justLeft], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.dispatches).toEqual([])
+  })
+
+  test('a phone nobody is using is free, and a farm that sends no inUse still routes', () => {
+    expect(isDeviceFree(device({ id: 'd1', inUse: { control: false, viewers: 0 }, lastControl: null }))).toBe(true)
+    expect(isDeviceFree(device({ id: 'd2' }))).toBe(true)
+    const plan = planDispatch({ post: post(), devices: [device({ id: 'd1', inUse: { control: false, viewers: 1 } }), device({ id: 'd2' })], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.dispatches.map((d) => d.deviceId)).toEqual(['d2'])
   })
 
   test('an offline phone is not eligible', () => {
