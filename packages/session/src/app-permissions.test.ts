@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { AppDenyPermissionsArgsSchema, AppGrantPermissionsArgsSchema } from '@enkaku/protocol'
 import { denyAppPermissions, grantAppPermissions, parseRuntimePermissions, readPackageCommand } from './app-permissions'
 
 /**
@@ -132,6 +133,20 @@ describe('denyAppPermissions', () => {
     const pm = fakePm({ perms: { 'android.permission.CAMERA': { granted: false, flags: [] } }, ignoreFlags: true })
     const [result] = await denyAppPermissions(pm.exec, 'com.example.app', ['CAMERA'])
     expect(result?.outcome).toBe('failed')
+  })
+
+  test('contacts can be refused and fixed — the hidden "Izinkan TikTok mengakses kontak?" never shows', async () => {
+    const pm = fakePm({ perms: { 'android.permission.READ_CONTACTS': { granted: false, flags: [] } } })
+    const [result] = await denyAppPermissions(pm.exec, 'com.example.app', ['READ_CONTACTS'])
+    expect(result).toEqual({ permission: 'READ_CONTACTS', outcome: 'denied' })
+    expect(pm.perms['android.permission.READ_CONTACTS']).toEqual({ granted: false, flags: ['USER_SET', 'USER_FIXED'] })
+  })
+})
+
+describe('the allowlists', () => {
+  test('contacts may be refused but never granted', () => {
+    expect(AppDenyPermissionsArgsSchema.safeParse({ pkg: 'com.example.app', permissions: ['READ_CONTACTS'] }).success).toBe(true)
+    expect(AppGrantPermissionsArgsSchema.safeParse({ pkg: 'com.example.app', permissions: ['READ_CONTACTS'] }).success).toBe(false)
   })
 })
 

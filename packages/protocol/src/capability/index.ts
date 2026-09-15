@@ -21,6 +21,8 @@ export {
   GRANTABLE_APP_PERMISSIONS,
   AppGrantPermissionsArgsSchema,
   AppDenyPermissionsArgsSchema,
+  DENIABLE_APP_PERMISSIONS,
+  type DeniableAppPermission,
   type GrantableAppPermission,
   type AppPermissionGrant,
   type AppPermissionDenial,

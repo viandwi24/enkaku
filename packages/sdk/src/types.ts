@@ -264,7 +264,7 @@ export interface DeviceApi {
      */
     denyPermissions(
       pkg: string,
-      permissions: readonly import('@enkaku/protocol').GrantableAppPermission[],
+      permissions: readonly import('@enkaku/protocol').DeniableAppPermission[],
     ): Promise<import('@enkaku/protocol').AppPermissionDenial[]>
   }
   /** Device clipboard get/set over the scrcpy control socket (plan 38 §4.6). */

@@ -247,11 +247,24 @@ export interface AppPermissionGrant {
  * phone has never been asked, so the dialog appears — hidden — the first time. Refusing it before
  * launch gives that phone the same state the walk was done in.
  */
-export const AppDenyPermissionsArgsSchema = AppGrantPermissionsArgsSchema
+/**
+ * What a script may REFUSE: every grantable permission, plus ones it may only ever refuse. A
+ * refusal hands nothing out, so this list may be wider than the grant list. Contacts is the first
+ * such (production SM-A075F, 2026-09-15): TikTok raised Android's own "Izinkan TikTok mengakses
+ * kontak?" during a warm-up — hidden from the farm's reader like every system permission dialog —
+ * and the run sat under it. Refused and fixed before launch, the dialog never shows.
+ */
+export const DENIABLE_APP_PERMISSIONS = [...GRANTABLE_APP_PERMISSIONS, 'READ_CONTACTS'] as const
+export type DeniableAppPermission = (typeof DENIABLE_APP_PERMISSIONS)[number]
+
+export const AppDenyPermissionsArgsSchema = z.object({
+  pkg: PackageNameSchema,
+  permissions: z.array(z.enum(DENIABLE_APP_PERMISSIONS)).min(1).max(DENIABLE_APP_PERMISSIONS.length),
+})
 
 /** `denied` — was granted or never answered, and now reads refused AND user-fixed. The rest as `AppPermissionGrant`. */
 export interface AppPermissionDenial {
-  permission: GrantableAppPermission
+  permission: DeniableAppPermission
   outcome: 'denied' | 'already' | 'not-requested' | 'failed'
   detail?: string
 }

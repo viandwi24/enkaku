@@ -241,7 +241,7 @@ function makeDeviceApi(request: DeviceRequest) {
         method: 'app.grantPermissions',
         args: { pkg, permissions: [...permissions] },
       } as never),
-    denyPermissions: (pkg: string, permissions: readonly import('@enkaku/protocol').GrantableAppPermission[]) =>
+    denyPermissions: (pkg: string, permissions: readonly import('@enkaku/protocol').DeniableAppPermission[]) =>
       request<import('@enkaku/protocol').AppPermissionDenial[]>({
         method: 'app.denyPermissions',
         args: { pkg, permissions: [...permissions] },

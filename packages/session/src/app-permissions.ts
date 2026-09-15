@@ -1,4 +1,4 @@
-import type { AppPermissionDenial, AppPermissionGrant, GrantableAppPermission } from '@enkaku/protocol'
+import type { AppPermissionDenial, AppPermissionGrant, DeniableAppPermission, GrantableAppPermission } from '@enkaku/protocol'
 
 /**
  * `app.grantPermissions` / `app.denyPermissions` — answering an app's runtime permission dialogs
@@ -116,9 +116,9 @@ export async function grantAppPermissions(exec: Exec, pkg: string, permissions: 
   })
 }
 
-export async function denyAppPermissions(exec: Exec, pkg: string, permissions: readonly GrantableAppPermission[]): Promise<AppPermissionDenial[]> {
+export async function denyAppPermissions(exec: Exec, pkg: string, permissions: readonly DeniableAppPermission[]): Promise<AppPermissionDenial[]> {
   const before = await readPackage(exec, pkg)
-  const said = new Map<GrantableAppPermission, string>()
+  const said = new Map<DeniableAppPermission, string>()
   const results: AppPermissionDenial[] = []
 
   for (const permission of [...new Set(permissions)]) {
