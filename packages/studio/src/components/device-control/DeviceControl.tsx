@@ -250,7 +250,7 @@ export function DeviceControl({
 
   /**
    * The live stream's ratio once frames arrive; the device's own screen until
-   * they do.
+   * they do — and never the SUBSTITUTE stream's (plan 228 §3.6).
    *
    * This used to fall straight back to `DEFAULT_RATIO` (9:19.5), so a window
    * opened at the wrong width and visibly jumped a second later when the
@@ -260,13 +260,28 @@ export function DeviceControl({
    * frame exists it wins here, and rotation still resizes the window in the
    * same render as the picture. But as the opening guess it is the device's
    * actual screen rather than a guess about phones in general.
+   *
+   * `stats.substitute` is the remaining half of that jump, and the one an
+   * operator still felt. Device Control does not open on its own encoder: it
+   * is served from the always-on WALL stream (`maxSize` 240-640) while the
+   * `control` encoder (`maxSize` 720-1600) builds behind it, and two or three
+   * seconds later the switch lands. scrcpy rounds both to multiples of 8
+   * against the phone's real screen, so the two streams' ratios differ by a
+   * percent or two — enough to resize the window and move the picture under a
+   * mouse that was already aiming at something. Every click the operator had
+   * lined up then missed, and they had to find the target again.
+   *
+   * So while a substitute is on screen the layout follows the DEVICE, not the
+   * stand-in: same geometry before and after the switch, and the only thing
+   * that changes at the switch is the sharpness — which is the one thing the
+   * switch is for. A rotation mid-substitute still moves the window, because
+   * `screenW/screenH` is re-fetched on `device.changed`.
    */
+  const deviceRatio = device?.screenW && device?.screenH ? device.screenW / device.screenH : null
   const ratio =
-    cast.stats.width > 0
+    cast.stats.width > 0 && !cast.stats.substitute
       ? cast.stats.width / cast.stats.height
-      : device?.screenW && device?.screenH
-        ? device.screenW / device.screenH
-        : DEFAULT_RATIO
+      : (deviceRatio ?? (cast.stats.width > 0 ? cast.stats.width / cast.stats.height : DEFAULT_RATIO))
   const width = windowWidthPx(ratio, height)
   const nodeOwned = device?.nodeId !== null && device?.nodeId !== undefined
 
@@ -293,7 +308,7 @@ export function DeviceControl({
         />
       </div>
 
-      <Cast cast={cast} ratio={ratio} latencyOverlay={readLocalPrefs().latencyOverlay ?? false} onStartDrag={startDrag} />
+      <Cast cast={cast} ratio={ratio} height={height} latencyOverlay={readLocalPrefs().latencyOverlay ?? false} onStartDrag={startDrag} />
 
       <div className="flex w-[274px] shrink-0 flex-col overflow-y-auto border-l border-line">
         <div className="flex h-11 shrink-0 cursor-grab items-center gap-2 border-b border-line px-3" onMouseDown={startDrag} data-drag-handle="1">

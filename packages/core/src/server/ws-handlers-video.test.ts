@@ -7,7 +7,7 @@ import { devices } from '../db/schema'
 import { createDeviceStateMachine } from '../device/state-machine'
 import { createActivityRegistry } from '../activity/registry'
 import { createLogger } from '../util/logger'
-import { createWsMessageHandler, MAX_BUFFERED, type WsHandlerDeps } from './ws-handlers'
+import { bufferedLimitFor, createWsMessageHandler, MAX_BUFFERED, WS_BUFFER_CEILING, WS_BUFFER_PER_STREAM, type WsHandlerDeps } from './ws-handlers'
 
 /**
  * The one rule protecting video start-up: **RESET_VIDEO is never sent to an
@@ -550,5 +550,53 @@ describe('backpressure (plan 206 §3.8, §4.8, R8)', () => {
     const before = handler.transportStats().framesDroppedTotal
     emit(new Uint8Array([1, 2, 3]), frameMeta())
     expect(handler.transportStats().framesDroppedTotal).toBe(before + 1)
+  })
+})
+
+/**
+ * The 60-tile keyframe storm (plan 228 §3.1).
+ *
+ * `getBufferedAmount()` is a property of the SOCKET, and Studio runs one
+ * socket for the whole page, so a flat per-socket threshold is divided by
+ * however many tiles the Screens grid has open. At sixty tiles the old 512 KB
+ * came to 8.5 KB per stream — under one keyframe — so the socket read as
+ * congested permanently, every binding on it dropped to `awaitingKeyframe`,
+ * and sixty encoders were asked for the largest frame they produce at once.
+ * The wall then flapped between frozen tiles and "Reconnecting" while every
+ * individual device was streaming perfectly.
+ */
+describe('congestion threshold scales with the streams sharing the socket (plan 228 §3.1)', () => {
+  test('one stream is byte-identical to the old flat limit', () => {
+    expect(bufferedLimitFor(1)).toBe(MAX_BUFFERED)
+    // Defensive: a binding not yet in the map is counted as one, never zero.
+    expect(bufferedLimitFor(0)).toBe(MAX_BUFFERED)
+  })
+
+  test('each additional stream adds its own share, up to the ceiling', () => {
+    expect(bufferedLimitFor(2)).toBe(MAX_BUFFERED + WS_BUFFER_PER_STREAM)
+    expect(bufferedLimitFor(9)).toBe(MAX_BUFFERED + 8 * WS_BUFFER_PER_STREAM)
+    // 60 tiles would ask for 512K + 59×64K = 4.2 MB; the ceiling is what
+    // stops the budget growing without bound.
+    expect(bufferedLimitFor(60)).toBe(WS_BUFFER_CEILING)
+    expect(bufferedLimitFor(600)).toBe(WS_BUFFER_CEILING)
+  })
+
+  test('a buffer that congested a single stream no longer congests two', async () => {
+    const db = setUpDb()
+    seedDevice(db, 'dev-1')
+    seedDevice(db, 'dev-2')
+    const fake = fakeSession('dev-1', { config: null, keyframe: null })
+    const { manager, emit } = fakeSessionManagerCapturing(fake.session)
+    const handler = setUpHandler(db, fake.session, manager)
+    const a = fakeConn({ bufferedAmount: () => MAX_BUFFERED + 1 })
+
+    await handler.handleMessage(a.ws, JSON.stringify({ type: 'stream.start', id: 's1', payload: { deviceId: 'dev-1', quality: 'wall' } }))
+    await handler.handleMessage(a.ws, JSON.stringify({ type: 'stream.start', id: 's2', payload: { deviceId: 'dev-2', quality: 'wall' } }))
+    const before = handler.transportStats().framesDroppedTotal
+    const meta: FrameMeta = { width: 1080, height: 2400, codec: 'h264', seq: 1, ptsUs: 1_000n, hostReceivedAt: Date.now(), keyframe: false }
+    emit(new Uint8Array([1, 2, 3]), meta)
+    // Two streams share this socket, so the threshold is 576 KB and 512 KB + 1
+    // is not congestion any more — nothing is dropped and no IDR is demanded.
+    expect(handler.transportStats().framesDroppedTotal).toBe(before)
   })
 })

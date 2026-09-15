@@ -132,13 +132,40 @@ export async function wakeDevice(transport: Transport, opts: WakeDeviceOpts): Pr
       : await applyScreenOffTimeout(transport, wantTimeout, current.screenOffTimeoutMs, log)
   const stayOn = await applyStayOn(transport, keepAwake, current.stayOnWhilePluggedIn, log)
 
-  await pressKey(transport, KEYCODE_WAKEUP, 'the wake nudge', opts)
+  /*
+    The wake nudge and the keyguard probe, in ONE round trip where we can
+    (plan 228 §3.3).
+
+    These were two separate `transport.exec` calls, and adb access is strictly
+    serialised per device (`PerDeviceQueue`), so they were two round trips —
+    one of them an `input keyevent`, which is a shell wrapper around
+    `app_process` and therefore starts a JVM on the phone. Both sit on the
+    critical line between an operator's click and the picture, on every cold
+    session build and every readiness reconcile.
+
+    The shell can do both in one command, and the ORDER is the point: the
+    keyevent runs first, so the keyguard is probed AFTER the wake rather than
+    before it — which is also more correct than the old sequence, where a
+    device woken by the nudge was asked about its lock screen in the same
+    breath as being woken and could answer from the state it was leaving.
+
+    `injectKey` is the one case that stays split: it sends the keycode down an
+    already-open control socket and costs no adb round trip at all, so there
+    is nothing to batch it with — the probe then runs on its own, exactly as
+    it always did.
+  */
+  let locked: boolean
+  if (opts.injectKey) {
+    await pressKey(transport, KEYCODE_WAKEUP, 'the wake nudge', opts)
+    locked = await isKeyguardShowing(transport)
+  } else {
+    locked = await wakeAndProbeKeyguard(transport, opts)
+  }
 
   // Only nudge the lock screen when there is one. KEYCODE_MENU dismisses a
   // swipe-only keyguard, but on a phone that is already unlocked it opens the
   // launcher's wallpaper/widget menu — and the user's next tap just closes
   // that menu instead of hitting the app they aimed at.
-  const locked = await isKeyguardShowing(transport)
   if (locked) {
     await pressKey(transport, KEYCODE_MENU, 'the keyguard nudge', opts)
   }
@@ -195,6 +222,29 @@ async function pressKey(transport: Transport, keycode: number, what: string, opt
  * opened under the operator's first tap (guessing true), and the fallback
  * costs one extra call on exactly the devices that need it.
  */
+/**
+ * `input keyevent KEYCODE_WAKEUP` and the cheap keyguard probe in one shell
+ * command (plan 228 §3.3) — one adb round trip instead of two.
+ *
+ * Reads exactly like `isKeyguardShowing`'s first rung and falls back to the
+ * same full `dumpsys window` when the output is not recognisable, so a ROM
+ * whose section name or flag spelling has moved is no worse off than before.
+ * The keyevent's own failure stays invisible here for the same reason
+ * `pressKey` swallows it: this is the runtime nudge, not the persisted state,
+ * and a dark panel an operator can relight is the tolerated outcome.
+ */
+async function wakeAndProbeKeyguard(transport: Transport, opts: WakeDeviceOpts): Promise<boolean> {
+  const out = await transport
+    .exec(`input keyevent ${KEYCODE_WAKEUP}; dumpsys window policy | grep -m1 isKeyguardShowing`, { profile: 'probe' })
+    .then((r) => r.stdout)
+    .catch((err) => {
+      opts.log.debug(`the wake nudge failed: ${String(err)}`)
+      return null
+    })
+  if (out !== null && /isKeyguardShowing=(true|false)/.test(out)) return /isKeyguardShowing=true/.test(out)
+  return await isKeyguardShowing(transport)
+}
+
 async function isKeyguardShowing(transport: Transport): Promise<boolean> {
   const read = async (cmd: string): Promise<string | null> =>
     transport

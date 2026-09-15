@@ -744,6 +744,38 @@ let blobGc: BlobGc | null = null
   let reprofileDebounceTimer: ReturnType<typeof setTimeout> | null = null
   let stopped = false
   let adbState = 'provisioning'
+  /**
+   * Set by `releaseDevices()` — the shutdown's wake-release sweep has run, so
+   * every device's `stay_on_while_plugged_in` is already back at the value the
+   * session teardown below would otherwise write again (plan 228 §3.4).
+   *
+   * Read once, by `stop()`, and never reset: a sweep that has happened cannot
+   * un-happen, and a `stop()` reached WITHOUT a release (an `app-restart`
+   * control, a test) leaves this false and gets the full revert per session,
+   * exactly as before.
+   */
+  let powerHandedBack = false
+
+  /**
+   * Widen adb's global semaphore to at least `RELEASE_SWEEP_WORKERS` and
+   * return the undo.
+   *
+   * The sweeps a shutdown runs are parallel by device, but every command in
+   * them still queues behind the ONE farm-wide semaphore — and that semaphore
+   * is pinnable down to 2 by the `adb.maxConcurrent` setting, which a large
+   * farm is exactly the kind to pin. At 2, a 65-device teardown is minutes of
+   * pure queueing. Idempotent and safe to nest: a call that finds the width
+   * already at or above the target changes nothing and its undo is a no-op.
+   */
+  const widenAdbForShutdown = (): (() => void) => {
+    const previous = adb?.stats().maxConcurrent ?? null
+    if (!adb || previous === null || previous >= RELEASE_SWEEP_WORKERS) return () => {}
+    const widened = adb
+    widened.setMaxConcurrent(RELEASE_SWEEP_WORKERS)
+    return () => {
+      if (widened.stats().maxConcurrent === RELEASE_SWEEP_WORKERS) widened.setMaxConcurrent(previous)
+    }
+  }
 
   // Plan 120 §4 — a named `const` rather than an inline `return { ... }`
   // (the pre-plan-120 shape) purely so `start()`'s own body, below, can
@@ -5307,12 +5339,22 @@ let blobGc: BlobGc | null = null
         caller anything. The restore is for tests and for `stop()` being
         callable without the process leaving.
       */
-      const previous = adb?.stats().maxConcurrent ?? null
-      if (adb && previous !== null && previous < RELEASE_SWEEP_WORKERS) adb.setMaxConcurrent(RELEASE_SWEEP_WORKERS)
+      const restore = widenAdbForShutdown()
       try {
-        return await readiness.releaseAll(onSettled)
+        powerHandedBack = true
+        /*
+          The sweep runs as wide as adb's lane actually is (plan 228 §3.4).
+
+          `releaseAll`'s own default is `RELEASE_SWEEP_WORKERS` (8), and on a
+          farm at auto concurrency that made the SWEEP the bottleneck rather
+          than the semaphore it was sized against: `computeAutoConcurrency`
+          gives a 73-device farm 24 lanes, so a 73-device release ran eight at
+          a time through a queue twenty-four wide. Read after the widening
+          above, so a farm pinned low gets the widened number too.
+        */
+        return await readiness.releaseAll(onSettled, adb?.stats().maxConcurrent)
       } finally {
-        if (adb && previous !== null) adb.setMaxConcurrent(previous)
+        restore()
       }
     },
 
@@ -5320,6 +5362,23 @@ let blobGc: BlobGc | null = null
       if (stopped) return
       stopped = true
       log.info('stopping...')
+      /*
+        The WHOLE shutdown runs at the widened width, not just the release
+        sweep (plan 228 §3.4).
+
+        `releaseDevices()` has always widened adb's global semaphore for its
+        own sweep and put it back — and then `sessions.closeAll()` below, which
+        is a longer chain of adb commands per device than the release is, ran
+        back at whatever the autoscaler or the `adb.maxConcurrent` setting had
+        left. On a farm pinned to 2 that is every device's teardown queueing
+        behind every other device's, and it is the sub-phase the `stop` number
+        in the exit banner has been dominated by. Nothing is competing for adb
+        by this point: the scheduler is stopped, the jobs are cancelled and the
+        HTTP port is closed, so the width costs no other caller anything. The
+        restore at the end of `stop()` is for tests and for a `stop()` the
+        process does not leave after.
+      */
+      const restoreAdbWidth = widenAdbForShutdown()
       if (heartbeatInterval) clearInterval(heartbeatInterval)
       heartbeatInterval = null
       if (preparationSweepInterval) clearInterval(preparationSweepInterval)
@@ -5349,20 +5408,33 @@ let blobGc: BlobGc | null = null
       retention = null
       blobGc?.stop()
       blobGc = null
-      // Plan 109 §4.2's Unload row, step 109.2 — every `ctx.onStop` disposer
-      // runs (≤5 s each plugin) BEFORE the database and the KV store below are
-      // torn down, because a disposer may well write its last state through
-      // `ctx.storage`. `dispose()` then removes the process-level
-      // `unhandledRejection` handler the host installs, so a core that has
-      // stopped leaves the runtime's default behaviour exactly as it found it.
-      await pluginHost?.unloadAll('the core is shutting down')
+      /*
+        The plugin unload and the always-on stop TOGETHER (plan 228 §3.4).
+
+        Plan 109 §4.2's Unload row, step 109.2 — every `ctx.onStop` disposer
+        runs (≤5 s each plugin) BEFORE the database and the KV store below are
+        torn down, because a disposer may well write its last state through
+        `ctx.storage`. Plan 206 §4.10 — the always-on builder stops before the
+        `closeAll` below, so a shutdown never races a fresh build against it.
+        Both constraints are about what these two finish BEFORE, and neither
+        is about the other: a plugin disposer cannot make the builder start a
+        session, and the builder's own teardown loads no plugin. Sequencing
+        them therefore added the plugin budget to the builder's wait for a
+        build still in flight, every time, for no guarantee.
+
+        Started together, awaited together. `dispose()` still runs only after
+        its own unload has resolved, and both are still complete before the
+        `closeAll` and long before the database closes.
+      */
+      const unloaded = pluginHost?.unloadAll('the core is shutting down') ?? Promise.resolve()
+      const alwaysOnStopped = alwaysOn?.stop() ?? Promise.resolve()
+      await unloaded
+      // `dispose()` removes the process-level `unhandledRejection` handler the
+      // host installs, so a core that has stopped leaves the runtime's default
+      // behaviour exactly as it found it.
       pluginHost?.dispose()
       pluginHost = null
-      // Plan 206 §4.10 — the always-on builder stops FIRST: cancels every
-      // pending build/retry timer and awaits any build still running, so a
-      // shutdown never races a fresh build against the `closeAll` right
-      // after it.
-      await alwaysOn?.stop()
+      await alwaysOnStopped
       // Sessions close first: closing one emits `session.closed`, which the
       // recorder must still be alive to receive. Stopping it first made a
       // clean Ctrl-C crash with `null is not an object (recorder.record)`
@@ -5376,7 +5448,7 @@ let blobGc: BlobGc | null = null
         outer `stop` number cannot tell that apart from a slow database close.
       */
       const closeAllStartedAt = Date.now()
-      const sessionsClosed = (await sessions?.closeAll()) ?? 0
+      const sessionsClosed = (await sessions?.closeAll('shutdown', { skipPowerRevert: powerHandedBack })) ?? 0
       if (sessionsClosed > 0) log.info(`closed ${sessionsClosed} session(s) in ${((Date.now() - closeAllStartedAt) / 1000).toFixed(1)}s`)
       sessions = null
       alwaysOn = null
@@ -5431,6 +5503,7 @@ let blobGc: BlobGc | null = null
       // sessions and the database down.
       dataDirLock?.release()
       dataDirLock = null
+      restoreAdbWidth()
       log.info('stopped')
     },
 
