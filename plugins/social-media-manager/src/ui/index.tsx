@@ -110,7 +110,7 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
             <TabsTrigger value="sessions">Sessions</TabsTrigger>
             <TabsTrigger value="new">New session</TabsTrigger>
             <TabsTrigger value="speech">Speech</TabsTrigger>
-            <TabsTrigger value="drafts">Drafts</TabsTrigger>
+            <TabsTrigger value="drafts">Cleanup</TabsTrigger>
           </TabsList>
           <div className="grow" />
           {tab !== 'new' && tab !== 'drafts' ? (

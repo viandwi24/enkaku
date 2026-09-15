@@ -59,7 +59,8 @@ type JobStatus = z.infer<typeof JobStateSchema>['job']['status']
 
 interface Dispatch {
   key: string
-  platform: PlatformId
+  /** A platform's clear-drafts, or `videos` — the farm-pushed video sweep (0.35.0). */
+  platform: PlatformId | 'videos'
   deviceId: string
   jobId: string | null
   status: JobStatus | 'refused'
@@ -85,6 +86,9 @@ export function DraftsPanel(): ReactElement {
   const [chosen, setChosen] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
   const [dryRun, setDryRun] = useState(false)
+  // The farm-pushed videos left in each phone's DCIM/Camera (0.35.0), swept by `smm/clean-phone-videos`.
+  const [cleanVideos, setCleanVideos] = useState(false)
+  const [olderThanHours, setOlderThanHours] = useState(6)
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
   const [dispatches, setDispatches] = useState<Dispatch[]>([])
@@ -101,6 +105,12 @@ export function DraftsPanel(): ReactElement {
     }
     return out
   }, [platforms, mode, chosen, fleet])
+  /** The videos sweep goes to every phone any picked platform reaches — each phone once. */
+  const videoPhones = useMemo(() => {
+    const seen = new Map<string, Device>()
+    for (const phones of targets.values()) for (const d of phones) seen.set(d.id, d)
+    return [...seen.values()]
+  }, [targets])
   const total = [...targets.values()].reduce((n, phones) => n + phones.length, 0)
 
   const send = useCallback(async () => {
@@ -125,13 +135,29 @@ export function DraftsPanel(): ReactElement {
           })
         }
       }
+      if (cleanVideos && videoPhones.length > 0) {
+        const res = await api(`${CORE}/api/actions/run-script`, RunScriptResult, {
+          method: 'POST',
+          json: { target: { deviceIds: videoPhones.map((d) => d.id) }, scriptRef: 'smm/clean-phone-videos@latest', params: { dryRun, olderThanHours } },
+        })
+        for (const r of res.results) {
+          next.push({
+            key: `videos:${r.deviceId}:${r.jobId ?? 'refused'}`,
+            platform: 'videos',
+            deviceId: r.deviceId,
+            jobId: r.jobId,
+            status: r.jobId === null ? 'refused' : 'queued',
+            detail: r.jobId === null ? (r.message ?? r.status) : null,
+          })
+        }
+      }
     } catch (err) {
       setSendError(describeApiError(err))
     } finally {
       setDispatches((prev) => [...next, ...prev])
       setSending(false)
     }
-  }, [targets, dryRun])
+  }, [targets, dryRun, cleanVideos, videoPhones, olderThanHours])
 
   // Follow every job still out, and read its result's reason once it ends.
   useEffect(() => {
@@ -170,15 +196,18 @@ export function DraftsPanel(): ReactElement {
   })
 
   const blocked = platforms.size === 0 ? 'Pick at least one platform.' : total === 0 ? 'No phone matches — nothing would be sent.' : null
-  const summary = [...targets.entries()].map(([id, phones]) => `${CLEANABLE.find((p) => p.id === id)?.title ?? id} on ${phones.length} phone${phones.length === 1 ? '' : 's'}`).join(', ')
+  const summary = [
+    ...[...targets.entries()].map(([id, phones]) => `${CLEANABLE.find((p) => p.id === id)?.title ?? id} drafts on ${phones.length} phone${phones.length === 1 ? '' : 's'}`),
+    ...(cleanVideos ? [`old farm videos (over ${olderThanHours} h) on ${videoPhones.length} phone${videoPhones.length === 1 ? '' : 's'}`] : []),
+  ].join(', ')
 
   return (
     <div className="space-y-3">
       <Card>
         <CardContent className="space-y-4 py-4">
           <div>
-            <p className="text-row font-medium text-text">Clear drafts</p>
-            <p className="text-[12px] text-dim">Deletes every draft each platform keeps on the phone's account. Permanent — a dry run only opens the lists and counts.</p>
+            <p className="text-row font-medium text-text">Clean up</p>
+            <p className="text-[12px] text-dim">Deletes every draft each platform keeps on the phone's account, and optionally the old videos the post scripts left on the phone. Permanent — a dry run only counts.</p>
           </div>
 
           <div className="space-y-1.5">
@@ -256,6 +285,27 @@ export function DraftsPanel(): ReactElement {
             ) : null}
           </div>
 
+          <div className="space-y-1.5">
+            <label className="flex items-center gap-2 text-[13px]">
+              <Checkbox checked={cleanVideos} onCheckedChange={(on) => setCleanVideos(on === true)} />
+              Also delete old videos the post scripts left on these phones
+            </label>
+            {cleanVideos ? (
+              <div className="flex flex-wrap items-center gap-2 pl-6 text-[12px] text-dim">
+                Older than
+                <Input
+                  type="number"
+                  min={1}
+                  max={2160}
+                  value={olderThanHours}
+                  onChange={(e) => setOlderThanHours(Math.max(1, Math.min(2160, Math.round(Number(e.target.value) || 1))))}
+                  className="h-7 w-20"
+                />
+                hours — only the farm's own post-/ig-/yt- files in DCIM/Camera; a fresher one may still be uploading, and nothing else on the phone is touched.
+              </div>
+            ) : null}
+          </div>
+
           <label className="flex items-center gap-2 text-[13px]">
             <Switch checked={dryRun} onCheckedChange={setDryRun} />
             Dry run — count only, delete nothing
@@ -275,8 +325,8 @@ export function DraftsPanel(): ReactElement {
                     Clear drafts
                   </Button>
                 }
-                title="Delete every draft?"
-                description={`${summary}. Every draft on those accounts is deleted, and a deleted draft cannot be recovered.`}
+                title={cleanVideos ? 'Delete drafts and old videos?' : 'Delete every draft?'}
+                description={`${summary}. Deleted drafts and videos cannot be recovered.`}
                 confirmLabel="Delete drafts"
                 onConfirm={send}
               />
@@ -306,7 +356,7 @@ export function DraftsPanel(): ReactElement {
                     return (
                       <tr key={d.key} className="border-t border-border">
                         <td className="py-1.5 pr-3">{phone ? deviceName(phone) : d.deviceId.slice(0, 8)}</td>
-                        <td className="py-1.5 pr-3">{CLEANABLE.find((p) => p.id === d.platform)?.title ?? d.platform}</td>
+                        <td className="py-1.5 pr-3">{d.platform === 'videos' ? 'Phone videos' : (CLEANABLE.find((p) => p.id === d.platform)?.title ?? d.platform)}</td>
                         <td className="py-1.5 pr-3">
                           <Badge variant={d.status === 'success' ? 'secondary' : d.status === 'failed' || d.status === 'refused' ? 'destructive' : 'default'}>
                             {d.status}

@@ -9,6 +9,7 @@ import retryGroup from './retry-group'
 import updatePost from './update-post'
 import resolveAttempt from './resolve-attempt'
 import updateGroup from './update-group'
+import cleanPhoneVideos from './clean-phone-videos'
 import { warmupRotation } from './workflows/warmup-rotation'
 import { NO_HASHTAG_RULE } from './hashtags'
 import { platformPostTexts } from './platform-captions'
@@ -75,6 +76,12 @@ import {
  *
  * ## Changelog
  *
+ * - **0.35.0 — the Drafts tab is Cleanup, and sweeps old phone videos too.**
+ *   The owner (2026-09-16): the video files the post scripts push pile up. The new
+ *   `clean-phone-videos` member deletes the farm-pushed `post-`/`ig-`/`yt-` videos in a
+ *   phone's DCIM/Camera older than the hours given — never a fresher one an upload
+ *   may still read, never any other file — and the tab can send it to the same
+ *   phones as the drafts cleaning, with a dry run that counts.
  * - **0.34.0 — a video whose file was deleted from Files says so.** The owner
  *   (2026-09-16) asked for file cleaning and for what depends on a file to be
  *   handled when it goes. A session's page now reads the Files list and marks a
@@ -1208,11 +1215,11 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.34.0',
+  version: '0.35.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
-  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, updateGroup],
+  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, updateGroup, cleanPhoneVideos],
   /*
     Plan 315 — workflows this plugin ships. Registered on the farm as
     `smm/<name>` when this version is activated, read-only there; an operator
