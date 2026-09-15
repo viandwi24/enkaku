@@ -146,6 +146,14 @@ export const DEVICE_RESCAN_INTERVAL_SEC = num('ENKAKU_DEVICE_RESCAN_INTERVAL_SEC
 export const DEVICE_AUTO_QUARANTINE = bool('ENKAKU_DEVICE_AUTO_QUARANTINE', true)
 /** After an operator's `unquarantine`, how long neither auto-quarantine path may pull the device back (`device/quarantine-grace.ts`). 0 turns the window off. */
 export const DEVICE_UNQUARANTINE_GRACE_SEC = num('ENKAKU_DEVICE_UNQUARANTINE_GRACE_SEC', 600, z.number().int().min(0).max(86_400))
+/**
+ * A device quarantined for heat returns to the pool on its own once the battery reads this many
+ * degrees BELOW the farm's `tempThresholdC` (`device/battery.ts`). The margin keeps a phone that
+ * sits right at the line from flapping in and out every poll. Before this, a thermal quarantine
+ * needed a hand release although the setting promised "until it cools", and phones that warmed
+ * up while posting stayed out of every later run (production, 2026-09-15).
+ */
+export const THERMAL_RELEASE_MARGIN_C = num('ENKAKU_THERMAL_RELEASE_MARGIN_C', 3, z.number().min(0).max(20))
 export const BATTERY_POLL_INTERVAL_SEC = num('ENKAKU_BATTERY_POLL_INTERVAL_SEC', 60, z.number().int().min(10))
 /** How often every online device's stored rotation lock is re-checked (one `settings get` per device; a write only on drift). 0 turns the sweep off. */
 export const ROTATION_REASSERT_INTERVAL_SEC = num('ENKAKU_ROTATION_REASSERT_INTERVAL_SEC', 300, z.number().int().min(0).max(86_400))

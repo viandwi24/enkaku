@@ -135,6 +135,51 @@ describe('battery poll — bounded parallelism (plan 23 §3.4, §4.5, §6.3)', (
   })
 })
 
+describe('thermal quarantine — released on its own once the phone cools', () => {
+  test('quarantined above the threshold, kept while still near it, released a margin below it', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    seedDevice(db, 'warm', 'SER-WARM', 'online')
+    seedDevice(db, 'held', 'SER-HELD', 'online')
+    db.update(devices).set({ status: 'quarantined', quarantineReason: 'adb:unreachable' }).where(eq(devices.id, 'held')).run()
+
+    let tempDeciC = 480
+    const client = {
+      exec: async () => ({ stdout: dumpsysReply(80, tempDeciC), stderr: '', exitCode: 0 }),
+      stats: () => ({ maxConcurrent: 8, inFlight: 0, waiting: 0 }),
+    } as unknown as AdbClient
+    const recorded: string[] = []
+    const monitor = createBatteryMonitor({
+      db,
+      client: () => client,
+      states: createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} }),
+      settings: createFarmSettingsStore(db),
+      log: createLogger('test'),
+      onBattery: () => {},
+      onMetrics: () => {},
+      record: (ev) => void recorded.push(`${ev.deviceId}:${ev.kind}`),
+    })
+    const row = (id: string) => db.select().from(devices).where(eq(devices.id, id)).get()
+
+    await monitor.pollOnce()
+    expect(row('warm')?.status).toBe('quarantined')
+
+    // 43.5 °C: under the 45 °C threshold but inside the 3 °C margin — stays out.
+    tempDeciC = 435
+    await monitor.pollOnce()
+    expect(row('warm')?.status).toBe('quarantined')
+
+    tempDeciC = 410
+    await monitor.pollOnce()
+    expect(row('warm')?.status).toBe('online')
+    expect(row('warm')?.quarantineReason).toBeNull()
+    expect(recorded).toContain('warm:device.recovered')
+    // A quarantine for another reason is never released by the battery poll.
+    expect(row('held')?.status).toBe('quarantined')
+  })
+})
+
 describe('thermal quarantine — a manual release holds for the grace window', () => {
   test('a still-hot device released by hand is not re-quarantined until the window ends', async () => {
     const opened = openDb(':memory:')

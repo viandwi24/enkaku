@@ -9,7 +9,7 @@ import type { EventRecorder } from '../events/recorder'
 import type { Logger } from '../util/logger'
 import { mapWithConcurrency } from '../util/concurrency'
 import { METRICS_PROBE, parseDeviceMetrics, type CpuSample } from './metrics'
-import { BATTERY_POLL_INTERVAL_SEC, DEVICE_AUTO_QUARANTINE } from '../config/constants'
+import { BATTERY_POLL_INTERVAL_SEC, DEVICE_AUTO_QUARANTINE, THERMAL_RELEASE_MARGIN_C } from '../config/constants'
 import type { QuarantineGrace } from './quarantine-grace'
 
 /** Parse output `dumpsys battery` (spec §15.2). */
@@ -127,6 +127,22 @@ export function createBatteryMonitor(deps: {
             // The device is busy or under manual control → flag it for the next cycle.
             deps.log.warn(`device ${row.label} is hot (${battery.temperatureC}°C) but cannot be quarantined yet (${status})`)
           }
+        }
+      }
+
+      // Cooled down: back in the pool without a human (see `THERMAL_RELEASE_MARGIN_C`). Only a THERMAL
+      // quarantine is released here — `adb:` reasons have their own prober in `health.ts`, and a
+      // quarantine an operator set by hand carries neither prefix and is never touched.
+      if (
+        status === 'quarantined' &&
+        row.quarantineReason?.startsWith('thermal:') &&
+        battery.temperatureC <= cfg.tempThresholdC - THERMAL_RELEASE_MARGIN_C
+      ) {
+        const applied = deps.states.apply(row.id, 'UNQUARANTINE')
+        if (applied) {
+          deps.db.update(devices).set({ quarantineReason: null }).where(eq(devices.id, row.id)).run()
+          deps.log.info(`device ${row.label} cooled to ${battery.temperatureC}°C — back in the pool`)
+          deps.record?.({ deviceId: row.id, stream: 'main', kind: 'device.recovered', meta: {} })
         }
       }
     } catch (err) {
