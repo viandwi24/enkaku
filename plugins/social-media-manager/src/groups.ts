@@ -151,6 +151,48 @@ export function planSchedule(input: {
   })
 }
 
+/** What an operator may change about a started session's pacing (0.30.0). A field left out is unchanged. */
+export interface PacingEdit {
+  concurrency?: number
+  gapMinSec?: number
+  gapMaxSec?: number
+}
+
+/**
+ * The pacing after an edit, and which parts of it changed (0.30.0). The owner (2026-09-15): "4 at a time, 30–120 s
+ * apart" could not be changed once a session existed. A reversed gap range is read as written, like `drawGap`.
+ */
+export function editPacing(pacing: Pacing, edit: PacingEdit): { pacing: Pacing; changed: Array<'concurrency' | 'gap'> } {
+  const lo = edit.gapMinSec ?? Math.min(pacing.gapSec[0], pacing.gapSec[1])
+  const hi = edit.gapMaxSec ?? Math.max(pacing.gapSec[0], pacing.gapSec[1])
+  const next: Pacing = { ...pacing, concurrency: edit.concurrency ?? pacing.concurrency, gapSec: [Math.min(lo, hi), Math.max(lo, hi)] }
+  const changed: Array<'concurrency' | 'gap'> = []
+  if (next.concurrency !== pacing.concurrency) changed.push('concurrency')
+  if (next.gapSec[0] !== Math.min(pacing.gapSec[0], pacing.gapSec[1]) || next.gapSec[1] !== Math.max(pacing.gapSec[0], pacing.gapSec[1])) changed.push('gap')
+  return { pacing: next, changed }
+}
+
+/**
+ * The turns still to come, spaced again by a new gap (0.30.0). Only rows whose turn is in the FUTURE are given; they keep
+ * their order, and the first of them keeps its time — it was already one old gap after the turn before it — so nothing is
+ * pulled in ahead of what was promised, and every later turn follows by a newly drawn gap.
+ */
+export function retimeTurns(
+  rows: readonly { videoArtifactId: string; notBeforeAt: number }[],
+  gapSec: readonly [number, number],
+  now: number,
+  random: () => number = Math.random,
+): ScheduledVideo[] {
+  const ordered = [...rows].sort((a, b) => a.notBeforeAt - b.notBeforeAt)
+  const first = ordered[0]
+  if (!first) return []
+  let at = Math.max(now, first.notBeforeAt)
+  return ordered.map((row, index) => {
+    if (index > 0) at += drawGap(gapSec, random)
+    return { videoArtifactId: row.videoArtifactId, notBeforeAt: at }
+  })
+}
+
 /**
  * The per-row cap this assignment implies.
  *

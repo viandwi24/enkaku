@@ -8,6 +8,7 @@ import startGroup from './start-group'
 import retryGroup from './retry-group'
 import updatePost from './update-post'
 import resolveAttempt from './resolve-attempt'
+import updateGroup from './update-group'
 import { warmupRotation } from './workflows/warmup-rotation'
 import { NO_HASHTAG_RULE } from './hashtags'
 import { platformPostTexts } from './platform-captions'
@@ -73,6 +74,17 @@ import {
  * memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.30.0 — a session's pacing can be changed after it was made.** The
+ *   owner (2026-09-15): "4 at a time, 30–120 s apart" was fixed once a session
+ *   existed. A session's page now has **Edit pacing** beside its pacing line,
+ *   which saves through a new member, `update-group`. "At once" is read by the
+ *   router from the session row on every tick, so it applies from the next
+ *   video sent. The gap is baked into each video's turn at Start, so the videos
+ *   whose turn has not come yet (nothing of them sent) are spaced again with
+ *   the new gap — in their order, the first keeping its time
+ *   (`retimeTurns`); a video already sent or whose turn has passed is left as
+ *   it is, and a session not started yet simply starts with the new gap.
  *
  * - **0.29.1 — a session is created even when the phone the page picked went
  *   offline.** The owner (2026-09-15, right after upgrading): "The session was
@@ -1168,11 +1180,11 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.29.1',
+  version: '0.30.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
-  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt],
+  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, updateGroup],
   /*
     Plan 315 — workflows this plugin ships. Registered on the farm as
     `smm/<name>` when this version is activated, read-only there; an operator

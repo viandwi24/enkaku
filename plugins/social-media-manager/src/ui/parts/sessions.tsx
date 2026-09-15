@@ -734,7 +734,30 @@ function useSessionActions(reload: () => void, onRemoved?: (group: Group) => voi
 
   const outcome: OutcomeActions = { onMark: markPost, onRetry: retryVideo, busy: outcomeBusy }
 
-  return { startSession, retrySession, removeSession, updatePost, saving, busy, outcome }
+  /**
+   * Change a session's pacing (0.30.0) through `smm/update-group`: "at once" applies from the router's next look, and a
+   * new gap spaces the videos whose turn has not come yet again. Nothing already sent is touched.
+   */
+  function updatePacing(group: Group, edit: PacingChange, onDone: () => void): void {
+    void run(
+      `pacing:${group.id}`,
+      async () => {
+        const host = await hostOrRefuse()
+        await runMember('smm/update-group@latest', { groupId: group.id, ...edit }, host.id)
+        return host
+      },
+      {
+        success: `“${group.title}” now runs ${edit.concurrency} at a time, ${edit.gapMinSec}–${edit.gapMaxSec}s apart — turns still to come were spaced again`,
+        failure: `Could not change the pacing of “${group.title}”`,
+        onSuccess: () => {
+          onDone()
+          reload()
+        },
+      },
+    )
+  }
+
+  return { startSession, retrySession, removeSession, updatePost, updatePacing, saving, busy, outcome }
 }
 
 /** One shared empty map, so a render before the first load does not allocate one per card. */
@@ -993,7 +1016,7 @@ export function SessionDetail({ groupId, refreshKey, onBack }: { groupId: string
   // Removing the session removes the page it is on: there is nothing left to
   // watch, so the operator is put back on the list rather than left looking at
   // a header for a thing that no longer exists.
-  const { startSession, retrySession, removeSession, updatePost, saving, busy, outcome } = useSessionActions(reload, onBack)
+  const { startSession, retrySession, removeSession, updatePost, updatePacing, saving, busy, outcome } = useSessionActions(reload, onBack)
   const now = useNow(TICK_MS)
 
   const group = (data?.groups ?? []).find((g) => g.id === groupId) ?? null
@@ -1041,6 +1064,7 @@ export function SessionDetail({ groupId, refreshKey, onBack }: { groupId: string
               onStart={() => startSession(group)}
               onRetry={() => retrySession(group)}
               onRemove={() => removeSession(group)}
+              onEditPacing={(edit, done) => updatePacing(group, edit, done)}
             />
           </Card>
 
@@ -3037,13 +3061,16 @@ function SessionHead({
   onStart,
   onRetry,
   onRemove,
+  onEditPacing,
 }: {
   group: Group
   busy: boolean
   onStart: () => void
   onRetry: () => void
   onRemove: () => void
+  onEditPacing: (edit: PacingChange, onDone: () => void) => void
 }): ReactElement {
+  const [editingPacing, setEditingPacing] = useState(false)
   const p = group.progress
   const total = p?.total ?? group.videoArtifactIds.length
   const summary = summaryLine(group)
@@ -3075,8 +3102,75 @@ function SessionHead({
         <span>{group.platforms.map(platformTitle).join(', ')}</span>
         <span aria-hidden>·</span>
         <span>{pacingLine(group)}</span>
+        <Button type="button" variant="ghost" size="sm" className="h-6 px-1.5 text-[11px]" disabled={busy} onClick={() => setEditingPacing((open) => !open)}>
+          <PencilSimpleIcon aria-hidden />
+          Edit pacing
+        </Button>
       </div>
+      {editingPacing ? (
+        <PacingForm group={group} busy={busy} onSave={(edit) => onEditPacing(edit, () => setEditingPacing(false))} onClose={() => setEditingPacing(false)} />
+      ) : null}
     </>
+  )
+}
+
+/** A session's new pacing, as `smm/update-group` takes it (0.30.0). */
+type PacingChange = { concurrency: number; gapMinSec: number; gapMaxSec: number }
+
+/**
+ * "At once" and the gap range of a session that already exists (0.30.0). The owner (2026-09-15): the pacing chosen when a
+ * session was made could not be changed afterwards. Saves only a valid change; says what each half affects.
+ */
+function PacingForm({ group, busy, onSave, onClose }: { group: Group; busy: boolean; onSave: (edit: PacingChange) => void; onClose: () => void }): ReactElement {
+  const ids = useId()
+  const lo0 = Math.min(group.pacing.gapSec[0], group.pacing.gapSec[1])
+  const hi0 = Math.max(group.pacing.gapSec[0], group.pacing.gapSec[1])
+  const [concurrency, setConcurrency] = useState(String(group.pacing.concurrency))
+  const [gapMin, setGapMin] = useState(String(lo0))
+  const [gapMax, setGapMax] = useState(String(hi0))
+  const read = (s: string): number => (/^\d+$/.test(s.trim()) ? Number.parseInt(s, 10) : Number.NaN)
+  const c = read(concurrency)
+  const a = read(gapMin)
+  const b = read(gapMax)
+  const valid = c >= 1 && c <= 500 && a >= 0 && a <= 86_400 && b >= 0 && b <= 86_400
+  const edit: PacingChange = { concurrency: c, gapMinSec: Math.min(a, b), gapMaxSec: Math.max(a, b) }
+  const dirty = valid && (edit.concurrency !== group.pacing.concurrency || edit.gapMinSec !== lo0 || edit.gapMaxSec !== hi0)
+  const field = (id: string, label: string, value: string, set: (v: string) => void, min: number, max: number): ReactElement => (
+    <div className="space-y-1">
+      <label htmlFor={`${ids}-${id}`} className="block text-[11.5px] font-medium text-text-2">
+        {label}
+      </label>
+      <Input id={`${ids}-${id}`} type="number" min={min} max={max} value={value} onChange={(e) => set(e.target.value)} disabled={busy} className="h-8 w-28" />
+    </div>
+  )
+  return (
+    <form
+      className="mt-2 space-y-2 rounded-inner border border-line bg-panel px-3 py-2.5"
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (dirty && !busy) onSave(edit)
+      }}
+    >
+      <div className="flex flex-wrap items-end gap-3">
+        {field('at-once', 'At once', concurrency, setConcurrency, 1, 500)}
+        {field('gap-from', 'Gap from (s)', gapMin, setGapMin, 0, 86_400)}
+        {field('gap-to', 'Gap to (s)', gapMax, setGapMax, 0, 86_400)}
+      </div>
+      <p className="max-w-prose text-[11px] leading-relaxed text-dim">
+        “At once” applies from the next video the farm sends. A new gap spaces again the videos whose turn has not come yet; a video already sent or
+        posted is left as it is.
+      </p>
+      {!valid ? <p className="text-[11px] text-danger">“At once” is a whole number from 1 to 500, and each gap from 0 to 86400 seconds.</p> : null}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Button type="submit" size="sm" disabled={!dirty || busy}>
+          Save
+        </Button>
+        <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={onClose}>
+          Cancel
+        </Button>
+        {valid && !dirty ? <span className="text-[11px] text-faint">Nothing changed yet.</span> : null}
+      </div>
+    </form>
   )
 }
 

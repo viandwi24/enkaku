@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { GroupSchema, drawGap, withProgress, groupProgress, groupSummary, isRowDue, maxDevicesFor, newGroupId, planSchedule, roomInFlight, shuffled, type Pacing, type RowState } from './groups'
+import { GroupSchema, drawGap, editPacing, withProgress, groupProgress, groupSummary, isRowDue, maxDevicesFor, newGroupId, planSchedule, retimeTurns, roomInFlight, shuffled, type Pacing, type RowState } from './groups'
 
 /** A deterministic `random` — the same draws every run, so a schedule can be asserted exactly. */
 function seeded(values: readonly number[]): () => number {
@@ -61,6 +61,31 @@ describe('planSchedule — forty phones must not start in the same second', () =
 
   test('one video is one turn, immediately', () => {
     expect(planSchedule({ videoArtifactIds: ['only'], pacing: PACING, startAt: 42, random: seeded([0.5]) })).toEqual([{ videoArtifactId: 'only', notBeforeAt: 42 }])
+  })
+})
+
+describe('editing a started session\'s pacing (0.30.0)', () => {
+  test('only the fields given change, a reversed gap is read as written, and the change is named', () => {
+    expect(editPacing(PACING, { concurrency: 2 })).toEqual({ pacing: { ...PACING, concurrency: 2 }, changed: ['concurrency'] })
+    expect(editPacing(PACING, { gapMinSec: 120, gapMaxSec: 60 })).toEqual({ pacing: { ...PACING, gapSec: [60, 120] }, changed: ['gap'] })
+    expect(editPacing(PACING, { concurrency: 4, gapMinSec: 30, gapMaxSec: 90 }).changed).toEqual([])
+  })
+
+  test('the turns still to come keep their order; the first keeps its time and the rest follow by the new gap', () => {
+    const rows = [
+      { videoArtifactId: 'v3', notBeforeAt: 1_300 },
+      { videoArtifactId: 'v2', notBeforeAt: 1_150 },
+      { videoArtifactId: 'v4', notBeforeAt: 1_400 },
+    ]
+    // random() = 0 draws the range's low end: every gap is exactly 10 s.
+    expect(retimeTurns(rows, [10, 20], 1_000, () => 0)).toEqual([
+      { videoArtifactId: 'v2', notBeforeAt: 1_150 },
+      { videoArtifactId: 'v3', notBeforeAt: 1_160 },
+      { videoArtifactId: 'v4', notBeforeAt: 1_170 },
+    ])
+    // A first turn already past is never scheduled in the past.
+    expect(retimeTurns([{ videoArtifactId: 'v1', notBeforeAt: 900 }], [10, 20], 1_000, () => 0)).toEqual([{ videoArtifactId: 'v1', notBeforeAt: 1_000 }])
+    expect(retimeTurns([], [10, 20], 1_000)).toEqual([])
   })
 })
 
