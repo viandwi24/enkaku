@@ -1305,7 +1305,9 @@ const script: PluginMemberScript<typeof params, typeof result> = {
 
     const details = await waitForTree(ctx, (t) => hiddenWindow(t) === 'details', { budgetMs: 30_000 })
     if (!details.ok) {
-      await ctx.artifact.screenshot('yt-08-details')
+      // The tree too, not only a screenshot (0.35.0): production phone #2 (2026-09-15) showed the details screen
+      // plainly on its screenshot while this wait failed, and with no dump the cause could not be read.
+      await capture(ctx, 'yt-08-details', details.tree)
       fail('E_ANCHOR_NOT_FOUND', 'the details screen did not open after the editor — see artifact yt-08-details.')
     }
     // It opens as a header over a spinner; aim nothing until it has finished drawing.
