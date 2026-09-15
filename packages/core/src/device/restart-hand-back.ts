@@ -37,7 +37,10 @@ export async function handBackAfterRestart(exec: Exec): Promise<{ stopped: strin
     }
   }
 
-  const processes = await run('dumpsys activity processes')
+  // Filtered ON THE DEVICE to the lines `parseForegroundPackages` reads: the whole `dumpsys activity processes` is
+  // over the transport's 256 KB output cap on a phone with many processes (measured on the moto g06, 2026-09-15),
+  // and a refused read left every app open. `grep` exits 1 when nothing matches, which is not an error here.
+  const processes = await run('dumpsys activity processes | grep top-activity')
   const launcher = packageOf(await run('cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME'))
   const ime = packageOf(await run('settings get secure default_input_method'))
   const skip = new Set([launcher, ime].filter((p): p is string => p !== null))

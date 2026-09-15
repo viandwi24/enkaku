@@ -5,7 +5,7 @@ function fakePhone(foreground: string[], opts: { failStop?: string } = {}) {
   const calls: string[] = []
   const exec = async (cmd: string) => {
     calls.push(cmd)
-    if (cmd === 'dumpsys activity processes') {
+    if (cmd === 'dumpsys activity processes | grep top-activity') {
       const lines = foreground.map((pkg, i) => `    Proc # ${i}: fg     T/A/TOP  LCMNFUA  t: 0 ${1000 + i}:${pkg}/u0a${100 + i} (top-activity)`)
       return { stdout: ['ACTIVITY MANAGER RUNNING PROCESSES (dumpsys activity processes)', ...lines].join('\n') }
     }
