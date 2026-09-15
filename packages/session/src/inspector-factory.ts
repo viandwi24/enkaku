@@ -99,10 +99,10 @@ export const UI_TREE_PROBE_BUDGET_MS = 3_000
 export async function uiTreeUnavailableReason(deps: InspectorFactoryDeps, deviceId: string): Promise<string | null> {
   if (!deps.uiTree) return 'this host has no guest-agent session (the cloud node path)'
   const uiTree = deps.uiTree
-  const timedOutAt = uiTreeTimedOut.get(deviceId)
-  if (timedOutAt !== undefined) {
-    if (Date.now() - timedOutAt < UI_TREE_REPROBE_AFTER_MS) {
-      return `the ui-tree probe did not answer within ${UI_TREE_PROBE_BUDGET_MS}ms earlier this run — not asking again for ${Math.round(UI_TREE_REPROBE_AFTER_MS / 60_000)} min`
+  const timedOut = uiTreeTimedOut.get(deviceId)
+  if (timedOut !== undefined && timedOut.count >= UI_TREE_TIMEOUTS_BEFORE_SKIP) {
+    if (Date.now() - timedOut.at < UI_TREE_REPROBE_AFTER_MS) {
+      return `the ui-tree probe did not answer within ${UI_TREE_PROBE_BUDGET_MS}ms ${timedOut.count} times in a row earlier this run — not asking again for ${Math.round(UI_TREE_REPROBE_AFTER_MS / 60_000)} min`
     }
     uiTreeTimedOut.delete(deviceId)
   }
@@ -124,15 +124,24 @@ export async function uiTreeUnavailableReason(deps: InspectorFactoryDeps, device
       if (!status.connected) return 'the accessibility service is enabled but not bound yet (it usually binds within seconds of a reboot)'
       return null
     }
-    return await withTimeout(probe(), UI_TREE_PROBE_BUDGET_MS, UI_TREE_TIMEOUT_MESSAGE)
+    const answer = await withTimeout(probe(), UI_TREE_PROBE_BUDGET_MS, UI_TREE_TIMEOUT_MESSAGE)
+    uiTreeTimedOut.delete(deviceId)
+    return answer
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     // Only the silent case is remembered. A fast answer ("not enabled", "not
     // bound yet") costs nothing to ask again and may change within seconds.
-    if (message === UI_TREE_TIMEOUT_MESSAGE) uiTreeTimedOut.set(deviceId, Date.now())
+    if (message === UI_TREE_TIMEOUT_MESSAGE) uiTreeTimedOut.set(deviceId, { count: (uiTreeTimedOut.get(deviceId)?.count ?? 0) + 1, at: Date.now() })
     return message
   }
 }
+
+/**
+ * How many unanswered probes in a row before a device skips ui-tree for `UI_TREE_REPROBE_AFTER_MS` (2026-09-15). It was
+ * one: during a farm-wide retry of ~20 jobs a busy agent missed ONE 3 s probe, and the phone then went straight to the
+ * lower rungs for ten minutes — every session, every job — ending on `uiautomator dump`, which failed on those phones.
+ */
+export const UI_TREE_TIMEOUTS_BEFORE_SKIP = 2
 
 const UI_TREE_TIMEOUT_MESSAGE = `the ui-tree probe did not answer within ${UI_TREE_PROBE_BUDGET_MS}ms`
 
@@ -149,8 +158,8 @@ const UI_TREE_TIMEOUT_MESSAGE = `the ui-tree probe did not answer within ${UI_TR
  */
 export const UI_TREE_REPROBE_AFTER_MS = 600_000
 
-/** deviceId → `Date.now()` of the last unanswered ui-tree probe. In memory, like `uiServerRefused`. */
-const uiTreeTimedOut = new Map<string, number>()
+/** deviceId → unanswered ui-tree probes in a row, and `Date.now()` of the last. In memory, like `uiServerRefused`. */
+const uiTreeTimedOut = new Map<string, { count: number; at: number }>()
 
 /** Test seam, like `forgetUiServerRefusals`. */
 export function forgetUiTreeTimeouts(): void {
@@ -262,6 +271,8 @@ export async function createInspectorForSession(
     return dumpHandle()
   }
   let port: number | null = null
+  // Held outside the try so a start that fails can still be stopped (2026-09-15, below).
+  let started: UiServerInspector | null = null
   try {
     const apkPaths = async () => ({
       app: await deps.toolchain.resolveToolPath('ui-server'),
@@ -322,6 +333,7 @@ export async function createInspectorForSession(
       ...(deps.onStatus ? { onStatus: (s) => deps.onStatus?.(opts.deviceId, s) } : {}),
       onLog: (level, msg) => deps.log[level](msg),
     })
+    started = inspector
     await inspector.start()
     if (inspector.isDead()) throw new Error('the watchdog gave up during start')
     deps.log.debug(`ui-server ready on ${opts.deviceId} in ${inspector.startedInMs()} ms`)
@@ -337,6 +349,15 @@ export async function createInspectorForSession(
       },
     }
   } catch (err) {
+    /*
+      A ui-server that failed its start is STOPPED before this session falls back (2026-09-15). It used to be left
+      running: its `am instrument` stream has no idle or absolute timeout, so the instrumentation kept holding
+      UiAutomation on the phone for as long as the device stayed connected — and every `uiautomator dump` this session
+      then took exited with no output and no file ("uiautomator dump produced no hierarchy — the tool said (nothing)"),
+      on production TikTok, YouTube and Instagram runs during a farm-wide retry. `stop()` kills the stream and
+      force-stops both ui-server packages; it swallows its own errors.
+    */
+    await started?.stop().catch(() => undefined)
     if (port !== null) deps.ports.release(port)
     const reason = err instanceof Error ? err.message : String(err)
     deps.log.warn(`ui-server cannot be used on ${opts.deviceId} (${reason}) — falling back to uiautomator-dump`)

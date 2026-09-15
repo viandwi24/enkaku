@@ -1,5 +1,9 @@
 import { countMatches, matchSelector, type FindOutcome, type Inspector, type Selector, type Transport, type UiNode } from '@enkaku/protocol'
+import { UI_SERVER_PACKAGE, UI_SERVER_TEST_PACKAGE } from './ui-server/launcher'
 import { parseUiDump } from './xml-parser'
+
+/** How often an empty dump may stop a leftover ui-server instrumentation (2026-09-15, see `dump()`). */
+const UIAUTOMATION_CLEAR_EVERY_MS = 60_000
 
 /** A device's reply, bounded for a log line: a real dump is a whole view tree. */
 function short(raw: string): string {
@@ -29,6 +33,8 @@ export class UiautomatorDumpInspector implements Inspector {
   private useTty: boolean | null = null
   /** The last tree a successful `dump()` produced and when (plan 208 §4.6, "the cheap cache"). */
   private last: { root: UiNode; at: number } | null = null
+  /** When a leftover ui-server instrumentation was last stopped for an empty dump (see `dump()`). */
+  private clearedUiAutomationAt = 0
 
   constructor(
     private transport: Transport,
@@ -92,9 +98,11 @@ export class UiautomatorDumpInspector implements Inspector {
     const xml = new TextDecoder().decode(await this.transport.execOut(`cat ${path}`, { profile: 'inspectorDump' }))
     await this.transport.exec(`rm -f ${path}`, { profile: 'inspectorDump' })
     if (!xml.includes('<?xml')) {
+      // The exit code too (2026-09-15): "(nothing)" alone cannot tell a process the low-memory killer took (137) from
+      // one refused UiAutomation by another holder.
       throw new InspectorError(
         'INSPECTOR_DUMP_FAILED',
-        `uiautomator dump produced no hierarchy — the tool said ${short(toolOutput)}, reading ${path} gave ${short(xml)}`,
+        `uiautomator dump produced no hierarchy — the tool said ${short(toolOutput)} (exit ${said.exitCode ?? 'unknown'}), reading ${path} gave ${short(xml)}`,
       )
     }
     return xml
@@ -112,6 +120,18 @@ export class UiautomatorDumpInspector implements Inspector {
       } catch (err) {
         lastError = String(err)
         if (lastError.includes('could not get idle state')) this.onLog?.('debug', `uiautomator: could not get idle state — retry ${attempt + 1}/4`)
+        if (lastError.includes('the tool said (nothing)') && Date.now() - this.clearedUiAutomationAt > UIAUTOMATION_CLEAR_EVERY_MS) {
+          /*
+            A silent dump with no file is another holder of UiAutomation (2026-09-15): a ui-server instrumentation left
+            running on the phone makes `uiautomator dump` exit with nothing. This engine is only in use once the session
+            has fallen back from ui-server, so its leftover instrumentation is stopped — at most once a minute — and the
+            dump is tried again.
+          */
+          this.clearedUiAutomationAt = Date.now()
+          this.onLog?.('warn', 'uiautomator dump came back empty with no file — stopping a leftover ui-server instrumentation that may hold UiAutomation, then dumping again')
+          await this.transport.exec(`am force-stop ${UI_SERVER_TEST_PACKAGE}`, { profile: 'appLifecycle' }).catch(() => undefined)
+          await this.transport.exec(`am force-stop ${UI_SERVER_PACKAGE}`, { profile: 'appLifecycle' }).catch(() => undefined)
+        }
         continue
       }
       if (raw.includes('could not get idle state')) {

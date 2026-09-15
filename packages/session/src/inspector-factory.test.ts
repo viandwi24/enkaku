@@ -311,7 +311,7 @@ describe('createInspectorForSession — the engine ladder: ui-tree, then ui-serv
     expect(fallbacks[0]!.reason).toContain('did not answer within')
   }, 10_000)
 
-  test('an unanswered ui-tree probe is not paid again on the next session for the same device', async () => {
+  test('two unanswered ui-tree probes in a row are not paid again on the next session for the same device; one is (2026-09-15)', async () => {
     let probes = 0
     const { deps, transport, fallbacks } = failingUiServerDeps({
       uiTree: {
@@ -325,16 +325,19 @@ describe('createInspectorForSession — the engine ladder: ui-tree, then ui-serv
     })
     await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'ui-tree' })
     expect(probes).toBe(1)
+    // One miss under load is not enough to skip ui-tree: the next session asks again.
+    await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'ui-tree' })
+    expect(probes).toBe(2)
     const start = Date.now()
     const handle = await createInspectorForSession(deps, { deviceId: 'device-1', transport, requested: 'ui-tree' })
     expect(Date.now() - start).toBeLessThan(1_000)
-    expect(probes).toBe(1)
+    expect(probes).toBe(2)
     expect(handle.engineId).toBe('uiautomator-dump')
     expect(fallbacks.filter((f) => f.from === 'ui-tree').at(-1)!.reason).toContain('earlier this run')
     // A different device is still asked.
     await createInspectorForSession(deps, { deviceId: 'device-2', transport, requested: 'ui-tree' })
-    expect(probes).toBe(2)
-  }, 15_000)
+    expect(probes).toBe(3)
+  }, 25_000)
 })
 
 describe('uiTreeUnavailableReason (plan 222 §4.5)', () => {

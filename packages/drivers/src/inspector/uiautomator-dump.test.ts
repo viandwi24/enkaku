@@ -88,6 +88,38 @@ describe('UiautomatorDumpInspector.lastDump (plan 208 §4.6, "the cheap cache")'
  * "the XML dump has no <hierarchy> element": the symptom named, the phone's
  * own sentence lost (owner, 2026-09-05).
  */
+test('an empty dump with no file stops a leftover ui-server instrumentation, then dumps again (2026-09-15)', async () => {
+  const calls: string[] = []
+  let cleared = false
+  const transport = {
+    exec: async (cmd: string) => {
+      calls.push(cmd)
+      if (cmd.startsWith('am force-stop com.github.uiautomator')) cleared = true
+      // Until the instrumentation is stopped, `uiautomator dump` exits with nothing, as on production.
+      if (cmd.includes('uiautomator dump')) return cleared ? { stdout: 'UI hierarchy dumped to: /sdcard/x.xml', stderr: '', exitCode: 0 } : { stdout: '', stderr: '', exitCode: 1 }
+      return { stdout: '', stderr: '', exitCode: 0 }
+    },
+    execOut: async (cmd: string) => {
+      calls.push(cmd)
+      if (cmd.includes('/dev/tty')) return new Uint8Array()
+      return new TextEncoder().encode(cleared ? XML_ONE_MATCH : 'cat: /sdcard/x.xml: No such file or directory')
+    },
+  } as never
+
+  const root = await new UiautomatorDumpInspector(transport).dump()
+  expect(root.children.length).toBeGreaterThan(0)
+  expect(calls).toContain('am force-stop com.github.uiautomator.test')
+  expect(calls).toContain('am force-stop com.github.uiautomator')
+})
+
+test('a dump that stays empty names the exit code', async () => {
+  const transport = {
+    exec: async (cmd: string) => (cmd.includes('uiautomator dump') ? { stdout: '', stderr: '', exitCode: 137 } : { stdout: '', stderr: '', exitCode: 0 }),
+    execOut: async () => new TextEncoder().encode('cat: /sdcard/x.xml: No such file or directory'),
+  } as never
+  await expect(new UiautomatorDumpInspector(transport).dump()).rejects.toThrow('(exit 137)')
+})
+
 test('a device whose /dev/tty dump stops returning XML falls back to the file path instead of returning junk', async () => {
   const calls: string[] = []
   let ttyCall = 0

@@ -232,6 +232,10 @@ export function createWatchdog(opts: WatchdogOptions): Watchdog {
         dead = true
         healthy = false
         setStatus({ state: 'dead', reason: ready.reason })
+        // The instrumentation `launcher.start` opened is torn down here, not left holding UiAutomation (2026-09-15):
+        // a start that never became ready used to leave `am instrument` running, and every `uiautomator dump` the
+        // fallback took on that phone then came back empty. `stop` swallows its own errors.
+        await opts.launcher.stop(opts.localPort).catch(() => undefined)
         throw new Error(`ui-server did not start: ${ready.reason}`)
       }
       await opts.onReady?.().catch(() => undefined)
