@@ -73,6 +73,15 @@ import {
  *
  * ## Changelog
  *
+ * - **0.25.0 — one Social job per phone at a time.** The owner (2026-09-15):
+ *   one phone showed TikTok, YouTube and Instagram all "Running" together.
+ *   The router sent every platform of a row in the same tick, so the farm
+ *   queued two of them behind the first while the table called them running.
+ *   A phone that takes a platform is now busy for the rest of that row, and a
+ *   phone with a Social job still queued or running from an earlier tick is
+ *   busy too; the next platform goes once the phone is free. A row waiting on
+ *   such a phone says it is busy, not that it is disconnected.
+ *
  * - **0.24.0 — a phone someone is using is never handed a post.** The owner
  *   (2026-09-15): a run reached phones that were open in Device Control. The
  *   router counted a phone free when it was online with no activity, but a
@@ -718,6 +727,20 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
    * cannot see a job this same tick just created.
    */
   const claimed = new Set<string>()
+  /*
+    And phones with a Social job from an EARLIER tick still in the air (0.25.0): `activities` is empty
+    while such a job waits in the farm's queue, so without this the phone looked free and took a
+    second platform to queue behind the first.
+  */
+  for (const entry of listed.items) {
+    const parsed = PostSchema.safeParse(entry.value)
+    if (!parsed.success) continue
+    for (const id of parsed.data.platforms) {
+      for (const attempt of parsed.data.dispatch[id]?.attempts ?? []) {
+        if (attempt.state === 'queued') claimed.add(attempt.deviceId)
+      }
+    }
+  }
 
   /*
     The groups this tick may have to pace, and what their rows are doing.
@@ -911,8 +934,8 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
       if (left <= 0) continue
     }
 
-    const devices: RouterDevice[] = fleet.items.filter((d) => !claimed.has(d.id))
-    const plan = planDispatch({ post, devices, now: nowSec, maxDevicesPerPlatform: settings.maxDevicesPerPlatform })
+    const devices: RouterDevice[] = fleet.items
+    const plan = planDispatch({ post, devices, busy: claimed, now: nowSec, maxDevicesPerPlatform: settings.maxDevicesPerPlatform })
     if (plan.dispatches.length === 0 && Object.keys(plan.states).length === 0 && plan.note === post.lastNote) continue
 
     /*
@@ -1048,7 +1071,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.24.0',
+  version: '0.25.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

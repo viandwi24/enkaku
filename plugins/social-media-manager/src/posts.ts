@@ -1058,8 +1058,15 @@ export function planDispatch(input: {
   devices: readonly RouterDevice[]
   now: number
   maxDevicesPerPlatform: number
+  /**
+   * Phones that already have a Social job this tick or one still queued or running from an earlier
+   * tick (0.25.0). Kept apart from `devices` rather than filtered out of it, so a row waiting for its
+   * own phone reads "busy", never "not connected any more".
+   */
+  busy?: ReadonlySet<string>
 }): DispatchPlan {
   const { post, devices, now, maxDevicesPerPlatform } = input
+  const busy = input.busy ?? new Set<string>()
   const plan: DispatchPlan = { dispatches: [], states: {}, note: null }
   // The first explanation any platform produces this tick wins the post-level
   // note. First rather than last, and rather than a joined list of all of
@@ -1069,6 +1076,13 @@ export function planDispatch(input: {
   const noteOnce = (text: string): void => {
     if (plan.note === null) plan.note = text
   }
+  /*
+    One job per phone at a time (0.25.0). A row whose phone posts to TikTok, YouTube and Instagram
+    used to send all three in the same tick; the farm ran them one after another, but the table said
+    "Running" for all three and the later ones sat queued on the phone. Now a phone that takes a
+    platform here is busy for the rest of this row, and the next platform goes once it is free.
+  */
+  const taken = new Set<string>()
 
   for (const platformId of post.platforms) {
     const current = stateFor(post, platformId)
@@ -1135,7 +1149,7 @@ export function planDispatch(input: {
     const assigned = post.assignedDeviceId
     const explicit = assigned !== null || post.deviceIds.length > 0
     const allowed = assigned !== null ? devices.filter((d) => d.id === assigned) : explicit ? devices.filter((d) => post.deviceIds.includes(d.id)) : devices
-    const eligible = allowed.filter((d) => isDeviceFree(d) && (explicit || deviceCarriesPlatform(d.labels, platform)))
+    const eligible = allowed.filter((d) => isDeviceFree(d) && !busy.has(d.id) && !taken.has(d.id) && (explicit || deviceCarriesPlatform(d.labels, platform)))
     if (eligible.length === 0) {
       const note = assigned !== null
         ? allowed.length === 0
@@ -1167,6 +1181,7 @@ export function planDispatch(input: {
     const cap = post.maxDevices ?? maxDevicesPerPlatform
     const chosen = eligible.slice(0, Math.max(1, cap))
     for (const device of chosen) {
+      taken.add(device.id)
       plan.dispatches.push({ platform: platformId, script: platform.script, deviceId: device.id, stableId: device.stableId })
     }
     const capped = chosen.length < eligible.length ? `Sent to ${chosen.length} of ${eligible.length} eligible phones (per-tick cap).` : null

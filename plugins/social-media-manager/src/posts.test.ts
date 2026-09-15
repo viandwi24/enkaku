@@ -829,6 +829,33 @@ describe('planDispatch — who may post is decided by who chose', () => {
  * three videos on #21 and sent a retried video to a phone that had posted another: the phone was
  * whoever was free at each turn. These pin the rule that replaced it.
  */
+describe('one Social job per phone at a time (0.25.0)', () => {
+  const threePlatforms = () => ({ ...newPost({ videoArtifactId: 'vid-1', caption: 'hello', platforms: ['tiktok', 'youtube', 'instagram'], now: NOW }), assignedDeviceId: 'd9' })
+
+  test('a row whose phone posts to three platforms sends ONE of them this tick, and the others wait', () => {
+    const plan = planDispatch({ post: threePlatforms(), devices: [device({ id: 'd9' })], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.dispatches).toHaveLength(1)
+    expect(plan.dispatches[0]?.deviceId).toBe('d9')
+    const waiting = Object.values(plan.states).filter((s) => s.state === 'pending')
+    expect(waiting).toHaveLength(2)
+    for (const s of waiting) expect(s.note).toContain('which is offline or busy')
+  })
+
+  test('a phone with a Social job still in the air is busy, and the row says busy rather than disconnected', () => {
+    const plan = planDispatch({ post: threePlatforms(), devices: [device({ id: 'd9' })], busy: new Set(['d9']), now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.dispatches).toEqual([])
+    expect(plan.note).toContain('which is offline or busy')
+    expect(plan.note).not.toContain('not connected')
+  })
+
+  test('two free phones on a label-routed row take different platforms, never the same phone twice', () => {
+    const p = newPost({ videoArtifactId: 'vid-1', caption: 'hello', platforms: ['tiktok', 'youtube'], now: NOW })
+    const labels = [{ name: 'tiktok' }, { name: 'youtube' }]
+    const plan = planDispatch({ post: { ...p, deviceIds: ['d1', 'd2'], maxDevices: 1 }, devices: [device({ id: 'd1', labels }), device({ id: 'd2', labels })], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(new Set(plan.dispatches.map((d) => d.deviceId)).size).toBe(plan.dispatches.length)
+  })
+})
+
 describe('one video, one phone', () => {
   const att = (deviceId: string, state: Attempt['state'], at: number): Attempt => ({ jobId: `j-${deviceId}-${at}`, deviceId, deviceName: null, state, error: null, at, settledAt: at, round: 1 })
 
