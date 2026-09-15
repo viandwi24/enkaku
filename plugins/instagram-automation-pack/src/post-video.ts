@@ -549,6 +549,20 @@ export function asciiCaption(s: string): string {
 // Device steps.
 // ---------------------------------------------------------------------------
 
+/** A person's typing (0.10.0): the SDK's `human` mode, a little slower than its defaults, typos rare. */
+export const HUMAN_TYPING = {
+  perCharMs: [85, 240] as [number, number],
+  extraPerWordMs: [120, 420] as [number, number],
+  thinkingPause: { probability: 0.25, everyWords: 4, ms: [600, 2_000] as [number, number] },
+  typo: { probability: 0.04, noticeAfterChars: [0, 2] as [number, number] },
+  maxTotalMs: 150_000,
+}
+
+/** The beat at a space: mostly short, now and then a longer look at what was written. */
+export function pauseAtSpace(rng: () => number = Math.random): number {
+  return rng() < 0.15 ? 900 + Math.round(rng() * 1_500) : 180 + Math.round(rng() * 620)
+}
+
 function fail(code: string, message: string): never {
   throw Object.assign(new Error(message), { code })
 }
@@ -1020,7 +1034,12 @@ const script: PluginMemberScript<typeof params, typeof result> = {
           if (i > 0) await ctx.device.key('ENTER')
           if (line === '') continue
           if (!/[#@]/.test(line)) {
-            await ctx.device.type(line, { via: 'adb', instant: true })
+            // A person's pace (0.10.0, the owner: "like a robot, or like copy and paste"): word by word, each through the
+            // SDK's `human` typing, with a varied beat at every space.
+            for (const [j, word] of line.split(' ').entries()) {
+              if (j > 0) await sleep(pauseAtSpace())
+              await ctx.device.type(j === 0 ? word : ` ${word}`, { via: 'adb', human: HUMAN_TYPING })
+            }
             continue
           }
           /*
@@ -1031,8 +1050,19 @@ const script: PluginMemberScript<typeof params, typeof result> = {
           */
           const words = line.split(' ')
           for (const [j, word] of words.entries()) {
-            if (j > 0) await sleep(250 + Math.round(Math.random() * 450))
-            await ctx.device.type(j === 0 ? word : ` ${word}`, { via: 'adb', instant: true })
+            if (j > 0) await sleep(pauseAtSpace())
+            const piece = j === 0 ? word : ` ${word}`
+            if (/^\s?[#@]/.test(piece)) {
+              // The space, the `#` and the tag's first letter go as ONE command, as before, so a `#` is never lost under the
+              // suggestion list; the rest of the tag follows at a person's pace with no typos (a backspace there can land in
+              // the list).
+              const head = piece.slice(0, piece.startsWith(' ') ? 3 : 2)
+              await ctx.device.type(head, { via: 'adb', instant: true })
+              const rest = piece.slice(head.length)
+              if (rest !== '') await ctx.device.type(rest, { via: 'adb', human: { ...HUMAN_TYPING, typo: { probability: 0 } } })
+            } else {
+              await ctx.device.type(piece, { via: 'adb', human: HUMAN_TYPING })
+            }
           }
           /*
             A line ending in a hashtag or mention leaves Instagram's suggestion list open over the share screen

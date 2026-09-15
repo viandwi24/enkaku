@@ -52,7 +52,7 @@ import clearDrafts from './clear-drafts'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.10.0',
+  version: '0.10.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -61,6 +61,14 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.10.1 — the caption is typed at a person's pace.** The owner
+   * (2026-09-16): captions went in "like a robot, or like copy and paste".
+   * Word by word through the SDK's `human` typing — a slower cadence, a longer
+   * beat at each word's end, a thinking pause every few words, rare corrected
+   * typos — with a varied beat at every space; a hashtag's space, `#` and first
+   * letter still go as one command, so the suggestion list never swallows the
+   * `#`, and the rest of the tag has no typos.
    *
    * **0.10.0 — `clear-drafts`: every draft on the account, deleted on its
    * own.** The owner asked (2026-09-16) for draft cleaning as a script of its
