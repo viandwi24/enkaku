@@ -439,6 +439,16 @@ export function keyboardDismissPoint(tree: UiNode): { x: number; y: number; labe
       n.bounds.top > ACTION_BAR_BOTTOM &&
       n.bounds.bottom < keyboardTop - 8,
   )
+    /*
+      Never a sentence that may carry a link (0.9.1). A text node can hold an inline link that is not a node of its own, so
+      "not clickable" does not make it safe: on production (2026-09-15, job 032494ca, English build) the tap meant to put the
+      keyboard away opened Instagram's Help Center in its in-app browser. Only short labels are used, and none that names a
+      link.
+    */
+    .filter(({ text, desc }) => {
+      const label = (text.trim() || desc.trim())
+      return label.length <= 40 && !/learn more|pelajari|selengkapnya|help|bantuan|manage settings|kelola|privacy|privasi/i.test(label)
+    })
     .map((n) => ({ n, x: Math.round((n.bounds.left + n.bounds.right) / 2), y: Math.round((n.bounds.top + n.bounds.bottom) / 2) }))
     .filter(({ x, y }) => {
       const around = clickables.filter((c) => c.bounds.left <= x && x <= c.bounds.right && c.bounds.top <= y && y <= c.bounds.bottom)

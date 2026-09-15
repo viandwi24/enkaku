@@ -51,7 +51,7 @@ import postVideo from './post-video'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.9.0',
+  version: '0.9.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -60,6 +60,15 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.9.1 — the keyboard is never put away with a tap on a sentence that may
+   * hold a link.** Production job 032494ca (2026-09-15, English build): the tap
+   * meant to close the keyboard over Share landed on a text whose inline link
+   * is not a node of its own, and opened Instagram's Help Center in its in-app
+   * browser; the run then failed "the share screen is not showing". The spot is
+   * now chosen only among short labels (40 characters at most) that name no
+   * link ("Learn more", "Pelajari selengkapnya", "Manage settings", …); with
+   * none, the run closes the keyboard with BACK as before.
    *
    * **0.9.0 — "+" is tapped again when it did not take, and the Reel
    * gallery has a second way in.** This pack's 0.8.0 on the owner's Samsung

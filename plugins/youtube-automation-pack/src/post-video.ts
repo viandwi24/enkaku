@@ -1385,7 +1385,9 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     // It opens as a header over a spinner; aim nothing until it has finished drawing.
     const still = await waitForStillScreen(ctx, 45_000)
     await ctx.artifact.screenshot('yt-08-details')
-    if (!still.still) fail('E_DETAILS_NOT_READY', 'the details screen never stopped loading within 45s, so no tap was aimed at it — nothing was uploaded. See artifact yt-08-details.')
+    // A READABLE details screen with its Upload button drawn has finished loading (0.38.1): on production (2026-09-15, 3 runs)
+    // its thumbnail preview kept playing, so the screen was never pixel-still and the run failed with the screen ready.
+    if (!still.still && !readableDetails(await ctx.device.dump())?.upload) fail('E_DETAILS_NOT_READY', 'the details screen never stopped loading within 45s, so no tap was aimed at it — nothing was uploaded. See artifact yt-08-details.')
     const settled = await ctx.device.dump()
     if (!onDetailsScreen(settled)) fail('E_ANCHOR_NOT_FOUND', 'the details screen closed while it loaded — nothing was uploaded. See artifact yt-08-details.')
     /*
@@ -1411,8 +1413,14 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     // --- the blind part (see the header) ---------------------------------------
     // On a readable details screen the title area and Upload are aimed at by their own bounds (0.37.0); hidden, by the measure.
     const readable = readableDetails(settled)
-    const titlePoint = readable?.title ? middleOf(readable.title) : geometry.title
-    if (readable) ctx.log.info('the details screen is readable — aiming at its own title area and Upload button', { title: readable.title !== null, upload: readable.upload !== null })
+    /*
+      The title keeps its MEASURED point even on a readable screen (0.38.1). 0.37.0 tapped the middle of the "Caption your
+      Short" / "Tambahkan teks pada video Shorts" node, and on production (2026-09-15, 2 runs) the typed title then opened the
+      thumbnail editor twice — that point was not the field. The measured offset is the one every earlier post on both the
+      moto and the Samsung typed into; only Upload is aimed at by its own bounds.
+    */
+    const titlePoint = geometry.title
+    if (readable) ctx.log.info('the details screen is readable — aiming at its Upload button by its own bounds', { title: readable.title !== null, upload: readable.upload !== null })
     /*
       Focus cannot be PROVEN on this screen, so it is not claimed.
 

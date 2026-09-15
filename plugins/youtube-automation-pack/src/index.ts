@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.38.0',
+  version: '0.38.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,16 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.38.1 — two corrections to 0.37.0's readable details screen.**
+   * Production session g-1789475048-2bac (2026-09-15, 0.38.0): 2 runs typed the
+   * title into YouTube's thumbnail editor — 0.37.0 aimed the title tap at the
+   * middle of the "Caption your Short" node, which is not where the field
+   * takes it — so the title is aimed at the measured offset again, as every
+   * earlier post on both phones was; only Upload is aimed at by its own bounds.
+   * And 3 runs failed "the details screen never stopped loading within 45s"
+   * on a screen that was ready: its thumbnail preview kept playing. A readable
+   * details screen with its Upload button drawn now counts as loaded.
    *
    * **0.38.0 — a YouTube that must be updated says so.** Production job
    * 75895645 (2026-09-15) failed "YouTube's bottom bar has no Create button —
