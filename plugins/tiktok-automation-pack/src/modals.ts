@@ -3,7 +3,7 @@ import type { Selector, UiNode } from '@enkaku/protocol'
 import { sleep } from './human'
 import { centerOf, flatten } from './tree'
 import { ACK_SELECTORS, DENY_SELECTORS } from './dialogs'
-import { TIKTOK_INTERRUPTIONS, closeNear } from './interruptions'
+import { TIKTOK_INTERRUPTIONS, closeNear, keyboardWindowShowing } from './interruptions'
 
 /**
  * The modal REGISTER (plan 113 §3.4, §4.2) — what replaces `dialogs.ts`'s two closed allow-lists
@@ -571,6 +571,43 @@ export function assertNeverList(register: ModalEntry[]): void {
   }
 }
 
+type SheetAnswer = 'close' | 'back'
+
+/**
+ * A `closeNearIdentity` sheet still on screen after it was answered (1.45.0). Production job bf283f3d (English build,
+ * 2026-09-15) logged `sweepModals: deny "tt.phone-prompt"` four rounds running and then "modal sweep did not settle
+ * within 4 round(s)": a close was resolved and tapped every round — an unreadable one would have been
+ * `E_MODAL_UNHANDLED` on the first — and the "Add phone" sheet stayed, its phone field focused and the farm keyboard
+ * up. Which of two things swallowed the taps is not in the evidence: the focused field and keyboard, or a "Close"
+ * behind the sheet that `closeNear` read as nearer than an unlabelled X. Tapping the same close again answers neither.
+ *
+ * So: with a keyboard showing (`keyboardWindowShowing` — the farm IME included), BACK first, which only puts the
+ * keyboard away; then, if the sheet is still read, its own close when readable, else BACK. With no keyboard, a close
+ * that did not take is answered with BACK; after a BACK, the close is tried again when readable. BACK is pressed only
+ * while this sheet is read on screen. "Continue"/"Lanjutkan" is never a target, and nothing is typed into the field.
+ */
+async function answerSheetStillUp(ctx: ScriptContext<unknown>, entry: ModalEntry, previous: SheetAnswer, tree: UiNode, round: number): Promise<SheetAnswer> {
+  let current = tree
+  let keyboardPutAway = false
+  if (keyboardWindowShowing(current)) {
+    await ctx.device.key('BACK')
+    ctx.log.warn(`sweepModals: "${entry.id}" still up with a keyboard showing — BACK to put the keyboard away first`, { round })
+    keyboardPutAway = true
+    await sleep(800)
+    current = await ctx.device.dump()
+    if (!matchModals(current, [entry]).some((e) => e.id === entry.id)) return 'back'
+  }
+  const close = keyboardPutAway || previous === 'back' ? resolveActionTarget(flatten(current), entry, 'deny') : null
+  if (close) {
+    await ctx.device.tap({ point: centerOf(close.bounds) })
+    ctx.log.info(`sweepModals: deny "${entry.id}" with its own close`, { round })
+    return 'close'
+  }
+  await ctx.device.key('BACK')
+  ctx.log.warn(`sweepModals: deny "${entry.id}" with BACK — ${previous === 'close' && !keyboardPutAway ? 'its close did not take' : 'its close is not readable'}`, { round })
+  return 'back'
+}
+
 /**
  * Clears blocking modals in a loop, bounded by `maxRounds` (default 4) — permission dialogs arrive
  * QUEUED (E5: denying camera returned straight into the microphone prompt), so a one-shot sweep
@@ -595,7 +632,9 @@ export function assertNeverList(register: ModalEntry[]): void {
  *
  * **No BACK fallback** (§4.2's last paragraph, and `dialogs.ts`'s own reasoning for
  * `switch-account`): the post-video walk is forward, multi-screen; BACK would undo the very step
- * this member just took rather than recover anything.
+ * this member just took rather than recover anything. The one exception (1.45.0) is a `closeNearIdentity` sheet
+ * that is STILL on screen after its close was tapped — see `answerSheetStillUp`: BACK there is pressed only while
+ * that sheet is read on screen, and a bottom sheet closes on BACK without choosing anything in it.
  */
 export async function sweepModals(
   ctx: ScriptContext<unknown>,
@@ -607,6 +646,8 @@ export async function sweepModals(
   const record = (id: string) => {
     if (!cleared.includes(id)) cleared.push(id)
   }
+  // How each `closeNearIdentity` sheet was last answered, so one still up is not given the answer that did not take.
+  const sheetAnswers = new Map<string, SheetAnswer>()
 
   for (let round = 0; round < maxRounds; round++) {
     const tree = await ctx.device.dump()
@@ -646,6 +687,13 @@ export async function sweepModals(
     if (actionable.length === 0) return { cleared } // only ignorable entries matched — nothing left to clear
 
     const { entry, policy } = actionable[0] as { entry: ModalEntry; policy: 'allow' | 'deny' | 'ack' }
+    const previous = entry.closeNearIdentity && policy === 'deny' ? sheetAnswers.get(entry.id) : undefined
+    if (previous !== undefined) {
+      sheetAnswers.set(entry.id, await answerSheetStillUp(ctx, entry, previous, tree, round))
+      record(entry.id)
+      await sleep(800)
+      continue
+    }
     const target = resolveActionTarget(nodes, entry, policy)
     if (!target) {
       await ctx.artifact.screenshot(`modal-unhandled-${entry.id}`)
@@ -655,6 +703,7 @@ export async function sweepModals(
       )
     }
     await ctx.device.tap({ point: centerOf(target.bounds) })
+    if (entry.closeNearIdentity && policy === 'deny') sheetAnswers.set(entry.id, 'close')
     record(entry.id)
     ctx.log.info(`sweepModals: ${policy} "${entry.id}"`, { round })
     await sleep(800)

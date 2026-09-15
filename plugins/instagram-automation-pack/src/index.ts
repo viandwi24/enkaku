@@ -51,7 +51,7 @@ import postVideo from './post-video'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.8.0',
+  version: '0.9.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -60,6 +60,24 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.9.0 — "+" is tapped again when it did not take, and the Reel
+   * gallery has a second way in.** This pack's 0.8.0 on the owner's Samsung
+   * SM-A075F (id-ID and en builds, 2026-09-15): 2 runs (e.g. job 8a3321b4)
+   * failed "the create gallery did not open after +", and the tree saved as
+   * `ig-03-gallery` was still the home feed — reels tray, "Your story",
+   * "Suggested for you", Follow and Dismiss — so "+" had never been taken.
+   * While nothing it opens is showing and "+" is still on screen with nothing
+   * over it, it is tapped again after a short pause, twice at most, and only
+   * from a reading taken after that pause (a gallery that opens late puts its
+   * own close button where "+" was). And job 0d376657 still failed "the
+   * new-post gallery has no REEL destination tab" after 0.8.0's wait and
+   * drag: `tab_bar` at zero width at x=720, no `cam_dest_clips` at all. The
+   * run now closes that gallery with its own "Batal" (never "Selanjutnya"),
+   * opens the profile, taps its "Buat Baru" and takes the "Buat" sheet's Reel
+   * row — anchors already measured in `screen-profile-empty.json` and
+   * `screen-create-menu-sheet.json` — and fails as before, naming both
+   * artifacts, if that route does not reach the Reel gallery either.
    *
    * **0.8.0 — Share is tapped again when it did not take, and a hidden REEL
    * tab is brought back.** Two production sessions (2026-09-15): 5 runs failed

@@ -5,7 +5,12 @@ import {
   captionDoneButton,
   captionLines,
   coveredByAnotherWindow,
+  createFlowShowing,
   createMenuSheet,
+  createTapNotTaken,
+  newPostCloseButton,
+  profileCreateButton,
+  reelGalleryReached,
   keyboardDismissPoint,
   keyboardShowing,
   draftSheet,
@@ -154,6 +159,55 @@ describe('post-video — the walk, screen by screen', () => {
     expect(createMenuSheet(await fixture('screen-home.json'))).toBeNull()
     // Behind this sheet is the PROFILE: the home feed is only kept in the tree off screen, so it has no "+" to tap.
     expect(homeCreateButton(sheet)).toBeNull()
+  })
+
+  test('a "+" that was not taken: the home feed with "+" in view is tapped again, anything "+" opens is not (0.9.0)', async () => {
+    // Job 8a3321b4 (2026-09-15): `ig-03-gallery` was still the home feed.
+    const home = await fixture('screen-home.json')
+    expect(createFlowShowing(home)).toBe(false)
+    expect(createTapNotTaken(home, homeCreateButton)?.bounds).toEqual({ left: 0, top: 70, right: 84, bottom: 168 })
+    for (const name of ['screen-new-post.json', 'screen-reel-gallery.json', 'screen-create-menu-sheet.json', 'screen-resume-draft-dialog.json', 'screen-reel-gallery-resume-draft.json']) {
+      const tree = await fixture(name)
+      expect(createFlowShowing(tree)).toBe(true)
+      expect(createTapNotTaken(tree, homeCreateButton)).toBeNull()
+    }
+    // Synthetic: the farm keyboard's window over "+" — the tap would land on it, so it is not repeated.
+    const keyboard: UiNode = { resourceId: '', text: '', desc: 'Switch keyboard', className: 'android.widget.Button', packageName: 'dev.enkaku.guestagent', bounds: { left: 0, top: 60, right: 200, bottom: 180 }, clickable: true, enabled: true, focused: false, index: 0, children: [] }
+    expect(createTapNotTaken({ ...home, children: [...home.children, keyboard] }, homeCreateButton)).toBeNull()
+  })
+
+  test('no REEL tab: the new-post gallery closes with its own "Batal", and the profile\'s "Buat Baru" is the other way in (0.9.0)', async () => {
+    const post = await fixture('screen-new-post.json')
+    expect(newPostCloseButton(post)?.desc).toBe('Batal')
+    expect(newPostCloseButton(post)?.bounds).toEqual({ left: 0, top: 70, right: 98, bottom: 168 })
+    // Synthetic, from the walk's own dump: job 0d376657's gallery had no `cam_dest_*` node at all.
+    const strip = (n: UiNode): UiNode => ({ ...n, children: n.children.filter((c) => !/:id\/cam_dest_/.test(c.resourceId)).map(strip) })
+    const noReel = strip(post)
+    expect(gallerySurface(noReel)).toBe('post')
+    expect(reelDestinationTab(noReel)).toBeNull()
+    expect(newPostCloseButton(noReel)?.desc).toBe('Batal')
+    expect(reelGalleryReached(noReel)).toBe(false)
+    // The close is never offered off the new-post gallery.
+    expect(newPostCloseButton(await fixture('screen-reel-gallery.json'))).toBeNull()
+    expect(newPostCloseButton(await fixture('screen-home.json'))).toBeNull()
+
+    const profile = await fixture('screen-profile-empty.json')
+    expect(profileCreateButton(profile)?.desc).toBe('Buat Baru')
+    expect(profileCreateButton(profile)?.bounds).toEqual({ left: 0, top: 70, right: 84, bottom: 168 })
+    expect(createTapNotTaken(profile, profileCreateButton)?.desc).toBe('Buat Baru')
+    // Behind the "Buat" sheet it opens, the button is not tapped again — the sheet is answered.
+    const sheet = await fixture('screen-create-menu-sheet.json')
+    expect(rowsById(sheet, 'profile_header_create_button').length).toBeGreaterThan(0)
+    expect(profileCreateButton(sheet)).toBeNull()
+    expect(createMenuSheet(sheet)?.reel?.desc).toBe('Buat reel baru')
+    // The Reels tab keeps the profile off to the side; its "Buat Baru" is not on screen.
+    expect(profileCreateButton(await fixture('screen-reels-tab-stale-profile.json'))).toBeNull()
+    expect(profileCreateButton(await fixture('screen-home.json'))).toBeNull()
+
+    expect(reelGalleryReached(await fixture('screen-reel-gallery.json'))).toBe(true)
+    expect(reelGalleryReached(await fixture('screen-reel-gallery-resume-draft.json'))).toBe(true)
+    expect(reelGalleryReached(post)).toBe(false)
+    expect(reelGalleryReached(profile)).toBe(false)
   })
 
   test('the share screen with the keyboard still up: the keyboard is seen, and a mangled caption is not "landed"', async () => {

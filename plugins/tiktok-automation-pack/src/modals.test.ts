@@ -271,8 +271,9 @@ describe('sweepModals — the looping sweep over a fake ctx (plan 113 §4.2)', (
     },
   )
 
-  function fakeCtx(dumps: UiNode[]): { ctx: ScriptContext<unknown>; taps: unknown[]; screenshots: string[] } {
+  function fakeCtx(dumps: UiNode[]): { ctx: ScriptContext<unknown>; taps: unknown[]; keys: string[]; screenshots: string[] } {
     const taps: unknown[] = []
+    const keys: string[] = []
     const screenshots: string[] = []
     let call = 0
     const device = {
@@ -283,6 +284,9 @@ describe('sweepModals — the looping sweep over a fake ctx (plan 113 §4.2)', (
       },
       tap: async (target: unknown) => {
         taps.push(target)
+      },
+      key: async (key: string) => {
+        keys.push(key)
       },
     } as unknown as DeviceApi
     const ctx: ScriptContext<unknown> = {
@@ -300,7 +304,7 @@ describe('sweepModals — the looping sweep over a fake ctx (plan 113 §4.2)', (
       jobs: unused as JobsApi,
       progress: () => {},
     }
-    return { ctx, taps, screenshots }
+    return { ctx, taps, keys, screenshots }
   }
 
   test('a screen with no matching modal returns immediately with an empty cleared list, and taps nothing', async () => {
@@ -431,6 +435,69 @@ describe('sweepModals — the looping sweep over a fake ctx (plan 113 §4.2)', (
     const offScreen = fakeCtx([screen(-1440)])
     expect((await sweepModals(offScreen.ctx, UPLOAD_MODAL_POLICIES)).cleared).toEqual([])
     expect(offScreen.taps).toEqual([])
+  })
+
+  /*
+    1.45.0, production job bf283f3d (English build, 2026-09-15): the "Add phone" sheet stayed up through four close taps,
+    its phone field focused and the farm keyboard (`dev.enkaku.guestagent`) up. The sheet below is shaped like the
+    Samsung dump of it; the English texts are the screenshot's.
+  */
+  describe('the add-phone sheet still up after its close was tapped (1.45.0)', () => {
+    const close = { left: 630, top: 802, right: 706, bottom: 886 }
+    const sheet = (keyboard: boolean): UiNode =>
+      mkNode({
+        bounds: { left: 0, top: 0, right: 720, bottom: 1600 },
+        children: [
+          mkNode({
+            packageName: 'com.ss.android.ugc.trill',
+            desc: 'Bottom sheet',
+            bounds: { left: 0, top: 795, right: 720, bottom: 1485 },
+            children: [
+              mkNode({ packageName: 'com.ss.android.ugc.trill', className: 'android.widget.Button', desc: 'Close', clickable: true, bounds: close }),
+              mkNode({ packageName: 'com.ss.android.ugc.trill', text: 'Add phone', bounds: { left: 60, top: 893, right: 660, bottom: 953 } }),
+              mkNode({ packageName: 'com.ss.android.ugc.trill', text: 'Add your phone number for extra security', bounds: { left: 60, top: 983, right: 660, bottom: 1091 } }),
+              mkNode({ packageName: 'com.ss.android.ugc.trill', className: 'android.widget.EditText', text: 'Phone number', clickable: true, focused: keyboard, bounds: { left: 276, top: 1165, right: 618, bottom: 1205 } }),
+              mkNode({ packageName: 'com.ss.android.ugc.trill', className: 'android.widget.Button', text: 'Continue', clickable: true, bounds: { left: 60, top: 1365, right: 660, bottom: 1455 } }),
+            ],
+          }),
+          ...(keyboard
+            ? [
+                mkNode({
+                  packageName: 'dev.enkaku.guestagent',
+                  resourceId: 'android:id/inputArea',
+                  bounds: { left: 0, top: 1485, right: 720, bottom: 1600 },
+                  children: [
+                    mkNode({ packageName: 'dev.enkaku.guestagent', resourceId: 'dev.enkaku.guestagent:id/ime_switch_keyboard_button', text: 'Switch keyboard', clickable: true, bounds: { left: 419, top: 1508, right: 697, bottom: 1577 } }),
+                  ],
+                }),
+              ]
+            : []),
+        ],
+      })
+    const empty = mkNode({ bounds: { left: 0, top: 0, right: 720, bottom: 1600 } })
+    const closeTap = { point: { x: 668, y: 844 } }
+
+    test('with the keyboard up, BACK puts the keyboard away first, then the sheet is closed by its own close — never Continue', async () => {
+      const run = fakeCtx([sheet(true), sheet(true), sheet(false), empty])
+      expect((await sweepModals(run.ctx, UPLOAD_MODAL_POLICIES)).cleared).toEqual(['tt.phone-prompt'])
+      expect(run.taps).toEqual([closeTap, closeTap])
+      expect(run.keys).toEqual(['BACK'])
+    })
+
+    test('with no keyboard, a close that did not take is not tapped again — BACK instead', async () => {
+      const run = fakeCtx([sheet(false), sheet(false), empty])
+      expect((await sweepModals(run.ctx, UPLOAD_MODAL_POLICIES)).cleared).toEqual(['tt.phone-prompt'])
+      expect(run.taps).toEqual([closeTap])
+      expect(run.keys).toEqual(['BACK'])
+    })
+
+    test('a sheet that never closes still ends in E_MODAL_STUCK, with no tap on anything but its close', async () => {
+      // Two rounds, so the sweep's real pauses stay inside the test timeout.
+      const run = fakeCtx([sheet(true)])
+      await expect(sweepModals(run.ctx, UPLOAD_MODAL_POLICIES, { maxRounds: 2 })).rejects.toMatchObject({ code: 'E_MODAL_STUCK' })
+      for (const tap of run.taps) expect(tap).toEqual(closeTap)
+      expect(run.keys.every((k) => k === 'BACK')).toBe(true)
+    })
   })
 })
 

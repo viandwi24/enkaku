@@ -864,6 +864,16 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.45.0 — a Profil tap that was not taken is tapped again, and the "Add phone" sheet is closed with its keyboard up.
+  //   Two production failures on English TikTok builds (2026-09-15, pack 1.44.0, Samsung). Job 64d97391 stopped 5 times
+  //   with "the own profile could not be opened to look for drafts": it found and tapped "Profile", and both captures
+  //   after the wait still showed the For You feed with nothing over it. Opening the own profile now taps the tab again,
+  //   at most twice, after a short pause, while the menu is missing, the tab is still on screen and no known dialog is
+  //   up. Job bf283f3d logged `sweepModals: deny "tt.phone-prompt"` four rounds running and stopped "did not settle":
+  //   the sheet's phone field was focused, the farm keyboard up, and the same close was tapped four times. A sheet still
+  //   up after its close was tapped is now answered with BACK first while a keyboard shows (the farm IME,
+  //   `dev.enkaku.guestagent`, is now recognised as one), then its own close when readable, else BACK — in the modal
+  //   sweep and in `dismissInterruptions` alike. "Continue" is never tapped and nothing is typed into the field.
   // 1.44.0 — dialogs over the feed are refused before the Profil tab is looked for. Two production sessions
   //   (2026-09-15) stopped 19 times with "the own profile could not be opened to look for drafts". Their dumps: 6 under
   //   the viewer-history sheet (known, but only closed after Profil was tapped), 4 under "Simpan info login untuk lain
@@ -1126,7 +1136,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.44.0',
+  version: '1.45.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

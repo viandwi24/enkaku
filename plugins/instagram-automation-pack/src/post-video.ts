@@ -24,7 +24,8 @@ import { INSTAGRAM_PACKAGE, backToNav, capture, centre, isReady, openTab, readab
  * | ------------------ | ----------------------------------------------------------- | ---------------------------------- |
  * | home               | the clickable inside `action_bar_buttons_container_left`    | screen-home.json                   |
  * | profile            | `profile_header_familiar_post_count_value`                  | screen-profile-empty.json          |
- * | new post gallery   | `new_post_title`, destination tab `cam_dest_clips` ("REEL") | screen-new-post.json               |
+ * | new post gallery   | `new_post_title`, destination tab `cam_dest_clips` ("REEL"), close `action_bar_cancel` ("Batal") | screen-new-post.json |
+ * | profile create     | `profile_header_create_button` ("Buat Baru") → the "Buat" sheet | screen-profile-empty.json, screen-create-menu-sheet.json |
  * | reel gallery       | `gallery_title_text` "Reel baru", `gallery_grid_item_thumbnail` + its `gallery_grid_item_label` duration | screen-reel-gallery.json |
  * | reel editor        | `clips_right_action_button` ("Berikutnya")                  | screen-reel-editor.json            |
  * | share              | `share_button` ("Selanjutnya"), `save_draft_button`         | screen-share.json                  |
@@ -173,6 +174,56 @@ export function gallerySurface(tree: UiNode): 'reel' | 'post' | null {
 /** The "REEL" destination tab at the bottom of the create gallery. */
 export function reelDestinationTab(tree: UiNode): UiNode | null {
   return rowsById(tree, 'cam_dest_clips').find((n) => n.clickable) ?? null
+}
+
+/**
+ * Something the create button opens is on screen: a create gallery, the "Buat" sheet, or one of the two draft prompts.
+ * What every wait after a create tap stops on.
+ */
+export function createFlowShowing(tree: UiNode): boolean {
+  return gallerySurface(tree) !== null || createMenuSheet(tree) !== null || draftSheet(tree) !== null || resumeDraftDialog(tree) !== null
+}
+
+/**
+ * The create button a tap did not take (0.9.0): nothing the button opens is showing, the button `find` names is still on
+ * screen, and no other window sits over it. Production job 8a3321b4 and one more (Samsung SM-A075F, 2026-09-15): the tree
+ * saved as `ig-03-gallery` was still the home feed — reels tray, "Suggested for you", Follow and Dismiss — so "+" had
+ * never been taken, and the run failed "the create gallery did not open". Null means "do not tap again".
+ */
+export function createTapNotTaken(tree: UiNode, find: (tree: UiNode) => UiNode | null): UiNode | null {
+  if (createFlowShowing(tree)) return null
+  const button = find(tree)
+  if (!button || coveredByAnotherWindow(tree, button)) return null
+  return button
+}
+
+/**
+ * The profile's own create button, `profile_header_create_button` ("Buat Baru") at the left of the profile's action bar
+ * (`screen-profile-empty.json`). It opens the "Buat" sheet: that is what the off-screen home "+" tap of the 0.4.0 retry
+ * actually hit, and `screen-create-menu-sheet.json` is that sheet drawn over this button. Only an on-screen button
+ * counts (the Reels tab keeps the profile off to the side, `screen-reels-tab-stale-profile.json`), and none while the
+ * "Buat" sheet is already up over it — that sheet is answered, not tapped under.
+ */
+export function profileCreateButton(tree: UiNode): UiNode | null {
+  if (createMenuSheet(tree) !== null) return null
+  return rowsById(tree, 'profile_header_create_button').find((n) => n.clickable && fromInstagram(n) && onScreen(n)) ?? null
+}
+
+/**
+ * The new-post gallery's own close button, `action_bar_cancel` ("Batal", top left, `screen-new-post.json`) — the way
+ * out of that gallery, never its "Selanjutnya". Null on any other screen.
+ */
+export function newPostCloseButton(tree: UiNode): UiNode | null {
+  if (gallerySurface(tree) !== 'post') return null
+  return rowsById(tree, 'action_bar_cancel').find((n) => n.clickable && onScreen(n)) ?? null
+}
+
+/**
+ * The Reel gallery is reached: its own title is up, or a draft prompt landed over it — which hides the gallery from
+ * the reader (`screen-reel-gallery-resume-draft.json`) and is answered by the gallery wait that follows.
+ */
+export function reelGalleryReached(tree: UiNode): boolean {
+  return gallerySurface(tree) === 'reel' || resumeDraftDialog(tree) !== null || draftSheet(tree) !== null
 }
 
 /** `0:10` → 10, `1:02:03` → 3723. Null when it is not a duration. */
@@ -569,6 +620,129 @@ async function discardEdit(ctx: ScriptContext<unknown>): Promise<boolean> {
 const PERMISSION_HELP =
   'the farm grants media access before Instagram opens, so this is most likely the camera or microphone. Android hides these dialogs from the farm\'s reader, so a run cannot answer them: answer it once on the phone and re-run.'
 
+type Waited = { tree: UiNode; ok: boolean; waitedMs: number }
+
+/** How many times a create button is tapped again when the first tap was not taken (0.9.0). */
+const CREATE_RETAPS = 2
+
+/**
+ * Tap a create button and wait for what it opens (0.9.0). While the wait runs out with nothing opened and the same
+ * button still on screen with nothing over it (`createTapNotTaken`), it is tapped again — at most CREATE_RETAPS times,
+ * after a short pause, and only on a FRESH reading taken after that pause: a gallery that opens late puts its own close
+ * button exactly where "+" was ("Batal" at 0,70–98,168 in `screen-new-post.json`, "Kembali ke Beranda" in
+ * `screen-reel-gallery.json`), and a re-tap from a stale reading would close it.
+ */
+async function tapCreate(ctx: ScriptContext<unknown>, button: UiNode, find: (tree: UiNode) => UiNode | null, where: string): Promise<Waited> {
+  await tapCentre(ctx, button)
+  let opened = await waitForTree(ctx, createFlowShowing, { budgetMs: 15_000 })
+  for (let retap = 0; retap < CREATE_RETAPS && !opened.ok; retap++) {
+    if (!createTapNotTaken(opened.tree, find)) break
+    await sleep(700 + Math.round(Math.random() * 700))
+    const fresh = await ctx.device.dump()
+    const again = createTapNotTaken(fresh, find)
+    if (!again) {
+      opened = await waitForTree(ctx, createFlowShowing, { budgetMs: 4_000 })
+      break
+    }
+    ctx.log.warn(`still on ${where} after its create button — tapping it again`, { retap: retap + 1 })
+    await tapCentre(ctx, again)
+    opened = await waitForTree(ctx, createFlowShowing, { budgetMs: 12_000 })
+  }
+  return opened
+}
+
+/**
+ * Answer what a create tap can raise before the gallery — the "Buat" sheet (its Reel row), "Terus edit draf Anda?"
+ * ("Mulai video baru"), a draft sheet ("Mulai dari awal") — and stop on a dialog the reader still cannot see when the
+ * wait runs out. `tag` prefixes the artifacts, `origin` names the button in messages.
+ */
+async function answerCreatePrompts(ctx: ScriptContext<unknown>, first: Waited, where: { tag: string; origin: string }): Promise<Waited> {
+  let opened = first
+  const menu = createMenuSheet(opened.tree)
+  if (menu) {
+    await capture(ctx, `${where.tag}-create-menu`, opened.tree)
+    if (!menu.reel) fail('E_ANCHOR_NOT_FOUND', `${where.origin} opened the "Buat" sheet but it has no Reel row this pack recognises — see artifact ${where.tag}-create-menu.`)
+    ctx.log.info(`${where.origin} opened the "Buat" sheet — choosing Reel`)
+    await tapCentre(ctx, menu.reel)
+    opened = await waitForTree(
+      ctx,
+      (t) => (gallerySurface(t) !== null || draftSheet(t) !== null || resumeDraftDialog(t) !== null) && createMenuSheet(t) === null,
+      { budgetMs: 15_000 },
+    )
+  }
+  const resume = resumeDraftDialog(opened.tree)
+  if (resume) {
+    await capture(ctx, `${where.tag}-resume-draft`, opened.tree)
+    if (!resume.startNew) fail('E_UNFINISHED_DRAFT', `Instagram asked to continue an unfinished Reel and offered no "Mulai video baru" — see artifact ${where.tag}-resume-draft.`)
+    ctx.log.warn('Instagram offered to continue an unfinished Reel — starting a new video (the old edit stays in Drafts)')
+    await tapCentre(ctx, resume.startNew)
+    opened = await waitForTree(ctx, (t) => gallerySurface(t) !== null && resumeDraftDialog(t) === null, { budgetMs: 12_000 })
+  }
+  const leftover = draftSheet(opened.tree)
+  if (leftover) {
+    await capture(ctx, `${where.tag}-draft-prompt`, opened.tree)
+    if (!leftover.discard) fail('E_UNFINISHED_DRAFT', `Instagram asked about an unfinished draft and offered no way to start over — see artifact ${where.tag}-draft-prompt.`)
+    ctx.log.warn('Instagram had an unfinished edit — starting over, which discards it')
+    await tapCentre(ctx, leftover.discard)
+    opened = await waitForTree(ctx, (t) => gallerySurface(t) !== null, { budgetMs: 12_000 })
+  }
+  /*
+    Only a dialog that is STILL hidden when the wait runs out (0.5.0). The waits above used to stop
+    on the first tree with no Instagram node in it — and a screen change shows exactly that for a
+    moment: a production screenshot of `ig-03-hidden-dialog` (Samsung, 2026-09-15) was Instagram's
+    own "Terus edit draf Anda?" dialog fading in over the Reel gallery, readable a second later.
+  */
+  if (hiddenDialog(opened.tree)) {
+    await ctx.artifact.screenshot(`${where.tag}-hidden-dialog`)
+    fail('E_PERMISSION_DIALOG_HIDDEN', `Instagram is showing a dialog the farm cannot read after ${where.origin} — ${PERMISSION_HELP}`)
+  }
+  return opened
+}
+
+/**
+ * Close the new-post gallery the way it offers (0.9.0): its own "Batal" (`newPostCloseButton`), a draft sheet answered
+ * "Mulai dari awal" should one come up, BACK only when neither is readable — never "Selanjutnya". Done when the bottom
+ * navigation is back with no gallery drawn. Three rounds at most.
+ */
+async function leaveNewPostGallery(ctx: ScriptContext<unknown>): Promise<{ ok: boolean; tree: UiNode }> {
+  const left = (t: UiNode): boolean => isReady(t) && gallerySurface(t) === null
+  let tree = await ctx.device.dump()
+  for (let round = 0; round < 3 && !left(tree); round++) {
+    const sheet = draftSheet(tree)
+    const close = newPostCloseButton(tree)
+    if (sheet?.discard) {
+      ctx.log.info('leaving the new-post gallery raised a draft sheet — "Mulai dari awal"')
+      await tapCentre(ctx, sheet.discard)
+    } else if (close) {
+      await sleep(500 + Math.round(Math.random() * 500))
+      await tapCentre(ctx, close)
+    } else {
+      await ctx.device.key('BACK')
+    }
+    tree = (await waitForTree(ctx, (t) => left(t) || draftSheet(t) !== null, { budgetMs: 8_000 })).tree
+  }
+  return { ok: left(tree), tree }
+}
+
+/**
+ * The second way to the Reel gallery (0.9.0): the profile tab, its "Buat Baru" (`profileCreateButton`), the "Buat"
+ * sheet's Reel row. Every step is one this pack has already read — the sheet over this very button is
+ * `screen-create-menu-sheet.json`, and its Reel row reaching the Reel gallery is the 0.4.0/0.4.1 routed runs
+ * (`screen-reel-gallery-resume-draft.json`). Returns what it reached; the caller decides.
+ */
+async function openReelGalleryFromProfile(ctx: ScriptContext<unknown>): Promise<Waited> {
+  await backToNav(ctx)
+  const profile = await openTab(ctx, 'profile_tab', (t) => profileCreateButton(t) !== null || createMenuSheet(t) !== null, 15_000)
+  let opened: Waited = { tree: profile.tree, ok: createMenuSheet(profile.tree) !== null, waitedMs: 0 }
+  if (!opened.ok) {
+    const button = profileCreateButton(profile.tree)
+    if (!button) return opened
+    await sleep(600 + Math.round(Math.random() * 700))
+    opened = await tapCreate(ctx, button, profileCreateButton, 'the profile')
+  }
+  return answerCreatePrompts(ctx, opened, { tag: 'ig-04-profile', origin: 'the profile\'s "Buat Baru"' })
+}
+
 const script: PluginMemberScript<typeof params, typeof result> = {
   id: 'post-video',
   icon: 'upload',
@@ -615,49 +789,12 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       await capture(ctx, 'ig-03-feed', feed.tree)
       fail('E_ANCHOR_NOT_FOUND', 'the home feed has no create ("+") button in its top bar — see artifact ig-03-feed.')
     }
-    await tapCentre(ctx, plus)
-
-    const galleryReady = (t: UiNode): boolean =>
-      gallerySurface(t) !== null || createMenuSheet(t) !== null || draftSheet(t) !== null || resumeDraftDialog(t) !== null
-    let opened = await waitForTree(ctx, galleryReady, { budgetMs: 15_000 })
-    const menu = createMenuSheet(opened.tree)
-    if (menu) {
-      await capture(ctx, 'ig-03-create-menu', opened.tree)
-      if (!menu.reel) fail('E_ANCHOR_NOT_FOUND', '"+" opened the "Buat" sheet but it has no Reel row this pack recognises — see artifact ig-03-create-menu.')
-      ctx.log.info('"+" opened the "Buat" sheet — choosing Reel')
-      await tapCentre(ctx, menu.reel)
-      opened = await waitForTree(
-        ctx,
-        (t) => (gallerySurface(t) !== null || draftSheet(t) !== null || resumeDraftDialog(t) !== null) && createMenuSheet(t) === null,
-        { budgetMs: 15_000 },
-      )
-    }
-    const resume = resumeDraftDialog(opened.tree)
-    if (resume) {
-      await capture(ctx, 'ig-03-resume-draft', opened.tree)
-      if (!resume.startNew) fail('E_UNFINISHED_DRAFT', 'Instagram asked to continue an unfinished Reel and offered no "Mulai video baru" — see artifact ig-03-resume-draft.')
-      ctx.log.warn('Instagram offered to continue an unfinished Reel — starting a new video (the old edit stays in Drafts)')
-      await tapCentre(ctx, resume.startNew)
-      opened = await waitForTree(ctx, (t) => gallerySurface(t) !== null && resumeDraftDialog(t) === null, { budgetMs: 12_000 })
-    }
-    const leftover = draftSheet(opened.tree)
-    if (leftover) {
-      await capture(ctx, 'ig-03-draft-prompt', opened.tree)
-      if (!leftover.discard) fail('E_UNFINISHED_DRAFT', 'Instagram asked about an unfinished draft and offered no way to start over — see artifact ig-03-draft-prompt.')
-      ctx.log.warn('Instagram had an unfinished edit — starting over, which discards it')
-      await tapCentre(ctx, leftover.discard)
-      opened = await waitForTree(ctx, (t) => gallerySurface(t) !== null, { budgetMs: 12_000 })
-    }
     /*
-      Only a dialog that is STILL hidden when the wait runs out (0.5.0). The waits above used to stop
-      on the first tree with no Instagram node in it — and a screen change shows exactly that for a
-      moment: a production screenshot of `ig-03-hidden-dialog` (Samsung, 2026-09-15) was Instagram's
-      own "Terus edit draf Anda?" dialog fading in over the Reel gallery, readable a second later.
+      A "+" Instagram did not act on is tapped again (0.9.0, `tapCreate`): job 8a3321b4 and one more (Samsung SM-A075F,
+      2026-09-15) saved `ig-03-gallery` as the home feed itself, "+" in view with nothing over it.
     */
-    if (hiddenDialog(opened.tree)) {
-      await ctx.artifact.screenshot('ig-03-hidden-dialog')
-      fail('E_PERMISSION_DIALOG_HIDDEN', `Instagram is showing a dialog the farm cannot read after "+" — ${PERMISSION_HELP}`)
-    }
+    let opened = await tapCreate(ctx, plus, homeCreateButton, 'the home feed')
+    opened = await answerCreatePrompts(ctx, opened, { tag: 'ig-03', origin: '"+"' })
     if (!opened.ok) {
       await capture(ctx, 'ig-03-gallery', opened.tree)
       fail('E_ANCHOR_NOT_FOUND', 'the create gallery did not open after "+" — see artifact ig-03-gallery.')
@@ -686,11 +823,30 @@ const script: PluginMemberScript<typeof params, typeof result> = {
           opened = nudged
         }
       }
-      if (!reelTab) {
+      if (reelTab) {
+        await tapCentre(ctx, reelTab)
+      } else {
+        /*
+          The other way in (0.9.0). Job 0d376657 (Samsung SM-A075F, 2026-09-15) ran 0.8.0's wait and drag and the REEL tab
+          still never appeared: "Postingan baru" with `tab_bar` at zero width at x=720 and no `cam_dest_clips` node at all.
+          So the new-post gallery is closed with its own "Batal" (never "Selanjutnya") and the Reel gallery is opened from
+          the profile's "Buat Baru" and the "Buat" sheet's Reel row, whose anchors this pack has already measured. A route
+          that does not reach the Reel gallery fails as before, naming both artifacts.
+        */
         await capture(ctx, 'ig-04-new-post', opened.tree)
-        fail('E_ANCHOR_NOT_FOUND', 'the new-post gallery has no REEL destination tab — see artifact ig-04-new-post.')
+        ctx.log.warn('the new-post gallery still shows no REEL tab — closing it with "Batal" and opening the Reel gallery from the profile\'s "Buat Baru"')
+        const leave = await leaveNewPostGallery(ctx)
+        if (!leave.ok) {
+          await capture(ctx, 'ig-04-new-post-leave', leave.tree)
+          fail('E_ANCHOR_NOT_FOUND', 'the new-post gallery has no REEL destination tab, and it did not close with its own "Batal" to try the profile\'s "Buat Baru" — see artifacts ig-04-new-post and ig-04-new-post-leave.')
+        }
+        const viaProfile = await openReelGalleryFromProfile(ctx)
+        if (!reelGalleryReached(viaProfile.tree)) {
+          await capture(ctx, 'ig-04-profile-create', viaProfile.tree)
+          fail('E_ANCHOR_NOT_FOUND', 'the new-post gallery has no REEL destination tab, and the profile\'s "Buat Baru" did not reach the Reel gallery either — see artifacts ig-04-new-post and ig-04-profile-create.')
+        }
+        ctx.log.info('reached the Reel gallery from the profile\'s "Buat Baru"')
       }
-      await tapCentre(ctx, reelTab)
     }
     /*
       The resume-draft dialog (or the draft sheet) can land AFTER the Reel gallery

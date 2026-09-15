@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import { UiNodeSchema, type UiNode } from '@enkaku/protocol'
-import { CLOSE_LABELS, closeNear, findInterruption, refusalButton, withheldBySystemDialog } from './interruptions'
+import { CLOSE_LABELS, closeNear, findInterruption, keyboardWindowShowing, refusalButton, withheldBySystemDialog } from './interruptions'
 
 /**
  * The "add phone number" sheet, as the owner's Inspector showed it on a production SM-A075F (2026-09-14), in both the
@@ -179,6 +179,25 @@ describe('the add-phone-number sheet', () => {
       const tree = UiNodeSchema.parse(raw.node ?? raw)
       expect({ name, found: findInterruption(tree)?.interruption.id ?? null }).toEqual({ name, found: expected[name] ?? null })
     }
+  })
+
+  test('a keyboard window is seen: the farm IME in the Samsung dump, a phone keyboard by its package — and nothing else (1.45.0)', () => {
+    const raw = JSON.parse(readFileSync(join(import.meta.dir, '__fixtures__', 'screen-feed-samsung-phone-sheet.json'), 'utf8')) as { node: unknown }
+    expect(keyboardWindowShowing(UiNodeSchema.parse(raw.node))).toBe(true)
+    expect(keyboardWindowShowing(phoneSheet('en', 'desc'))).toBe(false)
+
+    const withNode = (extra: Partial<UiNode>): UiNode => {
+      const tree = phoneSheet('en', 'desc')
+      tree.children.push(node({ bounds: { left: 0, top: 1100, right: 720, bottom: 1600 }, ...extra }))
+      return tree
+    }
+    expect(keyboardWindowShowing(withNode({ packageName: 'com.samsung.android.honeyboard' }))).toBe(true)
+    expect(keyboardWindowShowing(withNode({ packageName: 'com.google.android.inputmethod.latin' }))).toBe(true)
+    expect(keyboardWindowShowing(withNode({ packageName: 'dev.enkaku.guestagent', resourceId: 'android:id/inputArea' }))).toBe(true)
+    expect(keyboardWindowShowing(withNode({ packageName: 'dev.enkaku.guestagent', resourceId: 'dev.enkaku.guestagent:id/ime_notice' }))).toBe(true)
+    // Anything else the guest agent draws is not a keyboard, and neither is a keyboard window with no size.
+    expect(keyboardWindowShowing(withNode({ packageName: 'dev.enkaku.guestagent', resourceId: 'dev.enkaku.guestagent:id/status' }))).toBe(false)
+    expect(keyboardWindowShowing(withNode({ packageName: 'com.samsung.android.honeyboard', bounds: { left: 0, top: 0, right: 0, bottom: 0 } }))).toBe(false)
   })
 
   test('a close label never continues, agrees or submits', () => {

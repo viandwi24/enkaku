@@ -10,7 +10,7 @@ import { tiktokQueue, type TikTokQueueClaim } from './queue'
 import { readCaptionsFile, pickCaption } from './captions'
 import { resolveVideoFromFolder, recordVideoPosted } from './folder'
 import { TIKTOK_PACKAGE, PROFIL_TAB, MENU_PROFIL } from './sheet'
-import { dismissInterruptions, withheldBySystemDialog } from './interruptions'
+import { dismissInterruptions, findInterruption, withheldBySystemDialog } from './interruptions'
 
 /**
  * Posts a video to TikTok — the member plan 113 exists to build (§1, §4.3). Pushes an uploaded
@@ -837,6 +837,9 @@ export function gridEmptyState(tree: UiNode, belowY: number, frameWidth: number)
 /** The bottom nav's Home tab, in both languages (the same pair `gesture.ts`'s readiness wait uses). */
 const HOME_TAB_DESCS = ['Beranda', 'Home']
 
+/** How many times `openOwnProfile` taps the Profil tab again when the first tap was not taken (1.45.0). */
+const PROFILE_TAB_RETAPS = 2
+
 /** How long the own-profile grid gets to draw its first labelled cell before the reading is given up. */
 const GRID_LOAD_MS = 12_000
 
@@ -891,6 +894,19 @@ export function createButtonOnScreen(tree: UiNode, frame: { width: number; heigh
   if (!hit) return null
   const c = centreOf(hit)
   return c.y >= frame.height * 0.8 && Math.abs(c.x - frame.width / 2) <= frame.width * 0.15 ? hit : null
+}
+
+/**
+ * The Profil tab to tap again, or null (1.45.0): the own profile's menu is not on screen, the bottom nav's Profil/Profile
+ * tab still is, and no known interruption is over it — the shape of a tab tap that was not taken. Production job 64d97391
+ * (English build, 720x1600, 2026-09-15) tapped "Profile" [576,1422][720,1520] and both captures after it still showed the
+ * For You feed with nothing over it. With an interruption up, null: that is `dismissInterruptions`' to close, not a retap.
+ * "Profile menu" is the English build's menu desc as this file already guessed it — UNMEASURED.
+ */
+export function profileTabToRetap(tree: UiNode, frameWidth: number): UiNode | null {
+  if (descNodeOnScreen(tree, [descOf(MENU_PROFIL), 'Profile menu'], frameWidth) !== null) return null
+  if (findInterruption(tree) !== null) return null
+  return descNodeOnScreen(tree, [descOf(PROFIL_TAB), 'Profile'], frameWidth)
 }
 
 /** The feed's (or profile's) own bottom nav is on screen: its Home tab AND its Profil tab (1.34.1). */
@@ -1075,6 +1091,22 @@ async function openOwnProfile(ctx: ScriptContext<unknown>, frameWidth: number): 
   }
   await ctx.device.tap({ point: centreOf(profilNode) })
   let menuNode = await waitForOnScreen(ctx, frameWidth, [descOf(MENU_PROFIL), 'Profile menu'], 10_000)
+  /*
+    A Profil tap that was not taken (1.45.0): production job 64d97391 (English build, 2026-09-15) found and tapped
+    "Profile", waited for the menu twice, and both captures still showed the For You feed with nothing over it. So while
+    the menu is missing, the tab is still on screen and no known interruption is up (`profileTabToRetap`), the tab is
+    tapped again after a person's pause — at most PROFILE_TAB_RETAPS times. If the English menu desc is not the guessed
+    "Profile menu", a retap lands on a profile already open, which only re-selects the tab.
+  */
+  for (let retap = 1; retap <= PROFILE_TAB_RETAPS && !menuNode; retap++) {
+    const tree = await ctx.device.dump().catch(() => null)
+    const tab = tree ? profileTabToRetap(tree, frameWidth) : null
+    if (!tab) break
+    await sleep(600 + Math.round(Math.random() * 600))
+    ctx.log.warn('still on the feed with the Profil tab on screen — re-tapping it, because the tap that should have opened the own profile did not take', { retap })
+    await ctx.device.tap({ point: centreOf(tab) })
+    menuNode = await waitForOnScreen(ctx, frameWidth, [descOf(MENU_PROFIL), 'Profile menu'], 10_000)
+  }
   if (!menuNode) {
     // A sheet TikTok raises as the profile opens can hide "Menu profil" (1.42.0, production #9's "Riwayat penonton
     // diaktifkan"): close a known one and look again.

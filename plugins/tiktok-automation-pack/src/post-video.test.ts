@@ -29,6 +29,7 @@ import {
   postButtonOnScreen,
   postCoveredByKeyboard,
   postScreenStillShowing,
+  profileTabToRetap,
   readGrid,
   readNewestCell,
 } from './post-video'
@@ -289,6 +290,55 @@ describe('createButtonOnScreen and feedNavOnScreen (1.34.1)', () => {
     expect(feedNavOnScreen(screen([tab(0, 'Home'), tab(576, 'Profile')]), W)).toBe(true)
     expect(feedNavOnScreen(screen([tab(0, 'Beranda')]), W)).toBe(false)
     expect(feedNavOnScreen(screen([tab(-1440, 'Beranda'), tab(576, 'Profil')]), W)).toBe(false)
+  })
+})
+
+/*
+  A Profil tap that was not taken (1.45.0). Production job 64d97391 (English build, 720x1600, 2026-09-15): the nav row
+  "Home" [0,1422][144,1520] … "Profile" [576,1422][720,1520], the top bar "Friends"/"Following"/"For You", and the
+  For You feed behind — as the capture after the tap showed. The feed's own nodes are placeholders in their region.
+*/
+describe('profileTabToRetap — the For You feed still up after "Profile" was tapped (1.45.0)', () => {
+  const box = (left: number, top: number, right: number, bottom: number): UiNode['bounds'] => ({ left, top, right, bottom })
+  const tab = (left: number, desc: string): UiNode => node({ desc, clickable: true, bounds: box(left, 1422, left + 144, 1520) })
+  const feed = (extra: UiNode[] = []): UiNode =>
+    node({
+      bounds: box(0, 0, W, 1600),
+      children: [
+        node({ desc: 'Friends', clickable: true, bounds: box(40, 70, 200, 130) }),
+        node({ desc: 'Following', clickable: true, bounds: box(220, 70, 400, 130) }),
+        node({ desc: 'For You', clickable: true, bounds: box(420, 70, 580, 130) }),
+        node({ text: 'Lucky Putra', bounds: box(28, 1250, 300, 1290) }),
+        tab(0, 'Home'),
+        tab(144, 'Shop'),
+        tab(288, 'Create'),
+        tab(432, 'Inbox'),
+        tab(576, 'Profile'),
+        ...extra,
+      ],
+    })
+
+  test('the feed with the Profile tab and nothing over it: the tab is tapped again', () => {
+    expect(profileTabToRetap(feed(), W)?.bounds).toEqual(box(576, 1422, 720, 1520))
+    expect(profileTabToRetap(node({ bounds: box(0, 0, W, 1600), children: [tab(0, 'Beranda'), tab(576, 'Profil')] }), W)?.desc).toBe('Profil')
+  })
+
+  test('the profile menu on screen means the tap was taken — no retap', () => {
+    expect(profileTabToRetap(feed([node({ desc: 'Menu profil', clickable: true, bounds: box(640, 70, 706, 140) })]), W)).toBeNull()
+    expect(profileTabToRetap(feed([node({ desc: 'Profile menu', clickable: true, bounds: box(640, 70, 706, 140) })]), W)).toBeNull()
+  })
+
+  test('a known dialog over the feed is not a retap — it is closed instead', () => {
+    const sheet = node({ text: 'Add your phone number for extra security, easier account recovery, and quicker logins.', bounds: box(60, 983, 660, 1091) })
+    expect(profileTabToRetap(feed([sheet]), W)).toBeNull()
+  })
+
+  test('no Profil tab on screen, or only one kept off to the side: nothing to tap', () => {
+    const noTab = feed()
+    noTab.children = noTab.children.filter((n) => n.desc !== 'Profile')
+    expect(profileTabToRetap(noTab, W)).toBeNull()
+    noTab.children.push(tab(-1440, 'Profile'))
+    expect(profileTabToRetap(noTab, W)).toBeNull()
   })
 })
 

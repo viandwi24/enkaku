@@ -100,6 +100,27 @@ export function withheldBySystemDialog(tree: UiNode): boolean {
 /** The labels a sheet's close control carries. Nothing that continues, agrees or submits. */
 export const CLOSE_LABELS = ['Tutup', 'Close'] as const
 
+/** The farm's own keyboard, the guest agent's IME ("Enkaku input — driven by the farm host", "Switch keyboard"). */
+export const FARM_IME_PACKAGE = 'dev.enkaku.guestagent'
+
+/** The phones' own soft keyboards: Gboard, Samsung's honeyboard, SwiftKey, anything else that says "keyboard" (`post-video.ts`'s rule). */
+const KEYBOARD_PACKAGES = /inputmethod|honeyboard|swiftkey|keyboard/i
+
+/**
+ * A keyboard window is drawn on screen (1.45.0). The farm's IME is the guest agent's package, which the phones' keyboard
+ * rule never matched: `screen-feed-samsung-phone-sheet.json` carries it as `android:id/inputArea` with `ime_notice` and
+ * `ime_switch_keyboard_button` under `dev.enkaku.guestagent`. Only those input-area nodes count for that package, so
+ * nothing else the guest agent might draw reads as a keyboard.
+ */
+export function keyboardWindowShowing(tree: UiNode): boolean {
+  return flatten(tree).some(
+    (n) =>
+      visible(n) &&
+      (KEYBOARD_PACKAGES.test(n.packageName) ||
+        (n.packageName === FARM_IME_PACKAGE && (n.resourceId === 'android:id/inputArea' || n.resourceId.includes(':id/ime_')))),
+  )
+}
+
 function words(node: UiNode): string[] {
   return [node.text.trim(), node.desc.trim()].filter((w) => w !== '')
 }
@@ -142,23 +163,51 @@ export function closeNear(tree: UiNode, anchor: UiNode): UiNode | null {
  */
 export async function dismissInterruptions(ctx: ScriptContext<unknown>, tree?: UiNode, opts?: { maxRounds?: number }): Promise<{ tree: UiNode; dismissed: string[] }> {
   const dismissed: string[] = []
+  // What each interruption was last answered with, so one still up is not given the same answer that did not take.
+  const answered = new Map<string, 'refuse' | 'close' | 'back'>()
   let current = tree ?? (await ctx.device.dump())
   for (let round = 0; round < (opts?.maxRounds ?? 3); round++) {
-    const found = findInterruption(current)
+    let found = findInterruption(current)
     if (!found) return { tree: current, dismissed }
+    const previous = answered.get(found.interruption.id)
+    /*
+      Still up after an answer, with a keyboard showing (1.45.0): the "Add phone" sheet on a production English build
+      (job bf283f3d, 2026-09-15) sat with its phone field focused and the farm keyboard up, and four close taps in a row
+      left it there. BACK first puts the keyboard away — it goes to the keyboard, not the sheet — and the sheet is then
+      answered as usual. Nothing is ever typed into the field.
+    */
+    let keyboardPutAway = false
+    if (previous !== undefined && keyboardWindowShowing(current)) {
+      await ctx.device.key('BACK')
+      ctx.log.warn(`${found.interruption.what} was still up with a keyboard showing — BACK to put the keyboard away first`, { interruption: found.interruption.id })
+      keyboardPutAway = true
+      await sleep(1_000)
+      current = await ctx.device.dump()
+      const again = findInterruption(current)
+      if (!again || again.interruption.id !== found.interruption.id) {
+        if (!dismissed.includes(found.interruption.id)) dismissed.push(found.interruption.id)
+        continue
+      }
+      found = again
+    }
     const refusal = refusalButton(current, found.interruption)
-    const close = refusal ? null : closeNear(current, found.anchor)
+    // A close tap that left the sheet up is not repeated (1.45.0) unless the keyboard was just put away: BACK instead.
+    const close = refusal || (previous === 'close' && !keyboardPutAway) ? null : closeNear(current, found.anchor)
     if (refusal) {
       await ctx.device.tap({ point: centerOf(refusal.bounds) })
       ctx.log.info(`refused ${found.interruption.what} with "${(refusal.text || refusal.desc).trim()}"`, { interruption: found.interruption.id })
+      answered.set(found.interruption.id, 'refuse')
     } else if (close) {
       await ctx.device.tap({ point: centerOf(close.bounds) })
       ctx.log.info(`closed ${found.interruption.what} with its close button`, { interruption: found.interruption.id })
+      answered.set(found.interruption.id, 'close')
     } else {
       await ctx.device.key('BACK')
-      ctx.log.warn(`closed ${found.interruption.what} with BACK — its close button was not readable`, { interruption: found.interruption.id })
+      const why = previous === 'close' && !keyboardPutAway ? 'its close button did not take' : 'its close button was not readable'
+      ctx.log.warn(`closed ${found.interruption.what} with BACK — ${why}`, { interruption: found.interruption.id })
+      answered.set(found.interruption.id, 'back')
     }
-    dismissed.push(found.interruption.id)
+    if (!dismissed.includes(found.interruption.id)) dismissed.push(found.interruption.id)
     await sleep(1_200)
     current = await ctx.device.dump()
   }
