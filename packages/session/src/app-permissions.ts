@@ -1,4 +1,4 @@
-import type { AppPermissionDenial, AppPermissionGrant, DeniableAppPermission, GrantableAppPermission } from '@enkaku/protocol'
+import type { AppPermissionDenial, AppPermissionGrant, AppPictureInPictureDenial, DeniableAppPermission, GrantableAppPermission } from '@enkaku/protocol'
 
 /**
  * `app.grantPermissions` / `app.denyPermissions` — answering an app's runtime permission dialogs
@@ -83,6 +83,32 @@ async function readPackage(exec: Exec, pkg: string): Promise<Map<string, Runtime
     throw Object.assign(new Error(`${pkg} is not installed on this device`), { code: 'E_APP_NOT_INSTALLED' })
   }
   return parseRuntimePermissions(r.stdout)
+}
+
+/** The mode `appops get <pkg> PICTURE_IN_PICTURE` prints (`PICTURE_IN_PICTURE: ignore; time=…`), or null when it prints none ("No operations."). */
+export function parsePictureInPictureMode(text: string): string | null {
+  const m = /PICTURE_IN_PICTURE:\s*([a-z_]+)/i.exec(text)
+  return m ? (m[1] as string).toLowerCase() : null
+}
+
+/**
+ * `app.denyPictureInPicture` — the app may not open as a picture-in-picture window. Read, write, read back, like the
+ * permissions above: production phone #10 (2026-09-15) had YouTube come up as a small Shorts player over the launcher
+ * even after a force-stop and a second launch, and a run cannot tap its way out of a window the app keeps reopening.
+ */
+export async function denyPictureInPicture(exec: Exec, pkg: string): Promise<AppPictureInPictureDenial> {
+  const safe = async (cmd: string) => exec(cmd).catch((err: unknown) => ({ stdout: '', stderr: String(err), exitCode: 1 }))
+  const read = async (): Promise<{ mode: string | null; text: string }> => {
+    const r = await safe(`appops get ${quote(pkg)} PICTURE_IN_PICTURE`)
+    const text = `${r.stdout}\n${r.stderr}`.trim()
+    return { mode: parsePictureInPictureMode(text), text }
+  }
+  const before = await read()
+  if (before.mode === 'ignore') return { outcome: 'already', mode: 'ignore' }
+  const wrote = await safe(`appops set ${quote(pkg)} PICTURE_IN_PICTURE ignore`)
+  const after = await read()
+  if (after.mode === 'ignore') return { outcome: 'denied', mode: 'ignore' }
+  return { outcome: 'failed', mode: after.mode ?? 'unreadable', detail: `${wrote.stdout}\n${wrote.stderr}\n${after.text}`.trim().slice(0, 300) }
 }
 
 async function run(exec: Exec, cmd: string): Promise<string> {

@@ -22,6 +22,7 @@ import {
   keyboardDismissPoint,
   keyboardShowing,
   onThumbnailEditor,
+  thumbnailEditorExit,
   premiumPage,
   processingOverlay,
   readChannelCells,
@@ -193,6 +194,17 @@ describe('the screens the farm can read', () => {
   test('trim and editor carry their own next buttons', async () => {
     expect(rowsById(await fixture('screen-trim.json'), 'creation_next_button')[0]?.text).toBe('Selesai')
     expect(rowsById(await fixture('screen-shorts-editor.json'), 'shorts_post_bottom_button')[0]?.text).toBe('Berikutnya')
+  })
+})
+
+describe('thumbnailEditorExit — leaving the editor a missed title tap opened (0.36.0)', () => {
+  test('the editor\'s own back button, read by its id or its words', () => {
+    const node = (resourceId: string, desc: string, children: UiNode[] = []): UiNode => ({ resourceId, text: '', desc, className: 'android.widget.ImageButton', packageName: 'com.google.android.youtube', bounds: { left: 20, top: 40, right: 110, bottom: 130 }, clickable: true, enabled: true, focused: false, index: 0, children })
+    // Production #13's thumbnail editor: `edit_thumbnail_back`, "Keluar dari editor thumbnail", beside "Teks" and "Filter".
+    const editor = node('', '', [node('com.google.android.youtube:id/edit_thumbnail_back', 'Keluar dari editor thumbnail'), node('com.google.android.youtube:id/shorts_edit_text_button', 'Teks')])
+    expect(onThumbnailEditor(editor)).toBe(true)
+    expect(thumbnailEditorExit(editor)?.desc).toBe('Keluar dari editor thumbnail')
+    expect(thumbnailEditorExit(node('', '', [node('com.google.android.youtube:id/shorts_edit_text_button', 'Teks')]))).toBeNull()
   })
 })
 

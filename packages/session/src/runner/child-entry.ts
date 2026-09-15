@@ -247,6 +247,8 @@ function makeDeviceApi(request: DeviceRequest) {
         method: 'app.denyPermissions',
         args: { pkg, permissions: [...permissions] },
       } as never),
+    denyPictureInPicture: (pkg: string) =>
+      request<import('@enkaku/protocol').AppPictureInPictureDenial>({ method: 'app.denyPictureInPicture', args: { pkg } } as never),
   },
   clipboard: {
     get: () => request<string>({ method: 'clipboard.get', args: {} } as never),

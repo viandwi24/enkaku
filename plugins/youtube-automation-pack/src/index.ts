@@ -83,7 +83,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.35.0',
+  version: '0.36.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -92,6 +92,20 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.36.0 — three production failures after 0.35.0 (2026-09-15).** Phone
+   * #10: YouTube kept coming up as a small Shorts player over the launcher, even
+   * after 0.35.0's second launch and force-stop, and the run failed "no Create
+   * button". Picture-in-picture is now turned off for YouTube before every
+   * launch (`app.denyPictureInPicture`, `appops … PICTURE_IN_PICTURE ignore`,
+   * read back; a core without it logs a warning and the run goes on). Phone #5:
+   * the camera screen's "Tambahkan dari Galeri" was tapped and nothing happened,
+   * so while that screen is still up six seconds later its button is tapped
+   * again, twice at most. Phone #13: the title tap did not focus the field and
+   * the title opened the thumbnail editor; with nothing uploaded and nothing in
+   * the field, the run now leaves the editor by "Keluar dari editor thumbnail",
+   * taps the title again and types it once more, and fails as before only if
+   * that misses too.
    *
    * **Also in 0.35.0 — YouTube opened as a picture-in-picture window is brought
    * back full screen.** The owner's production phone #8 (2026-09-15): right

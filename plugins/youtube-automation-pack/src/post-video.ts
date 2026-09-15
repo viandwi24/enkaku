@@ -905,6 +905,11 @@ export function onThumbnailEditor(tree: UiNode): boolean {
   return all(tree, (n) => fromYouTube(n) && /editor thumbnail|thumbnail editor/i.test(n.desc)).length > 0
 }
 
+/** The thumbnail editor's own way out, "Keluar dari editor thumbnail" (`edit_thumbnail_back`), as production phone #13 read it (0.36.0). */
+export function thumbnailEditorExit(tree: UiNode): UiNode | null {
+  return all(tree, (n) => fromYouTube(n) && (/(?:^|\/)edit_thumbnail_back$/.test(n.resourceId) || /keluar dari editor thumbnail|exit thumbnail editor/i.test(n.desc)))[0] ?? null
+}
+
 /** Poll screenshots until the Upload band matches `reference`, or the budget runs out. Returns the last comparison. */
 async function waitForUploadBandClear(ctx: ScriptContext<unknown>, reference: Uint8Array, region: Region, budgetMs: number): Promise<'same' | 'different' | 'unreadable'> {
   const deadline = Date.now() + budgetMs
@@ -1222,10 +1227,23 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     }
 
     const galleryDialog = hiddenDialogWatch()
-    const gallery = await waitPastDraft((t) => {
+    const galleryReady = (t: UiNode): boolean => {
       const dialog = galleryDialog.observe(t)
       return galleryOpen(t) || dialog
-    }, 12_000)
+    }
+    let gallery = await waitPastDraft(galleryReady, fromGallery ? 6_000 : 12_000)
+    for (let retap = 0; retap < 2 && fromGallery && !gallery.ok && !galleryDialog.confirmed; retap++) {
+      /*
+        A "Tambahkan dari Galeri" tap YouTube did not act on (0.36.0). Production phone #5 (2026-09-15): the camera screen
+        with the button was still on screen twelve seconds after the tap, exactly as before it, and the run failed "the
+        gallery did not open". While that screen is still up, its button is tapped again, as a person would.
+      */
+      const again = rowsById(gallery.tree, 'unified_permissions_primary_button')[0]
+      if (!again) break
+      ctx.log.warn('the camera screen is still up after "Tambahkan dari Galeri" — tapping it again', { retap: retap + 1 })
+      await tapCentre(ctx, again)
+      gallery = await waitPastDraft(galleryReady, 10_000)
+    }
     if (galleryDialog.confirmed) {
       await capture(ctx, 'yt-04-gallery', gallery.tree)
       fail('E_PERMISSION_DIALOG_HIDDEN', `YouTube is asking for access to photos and videos — ${PERMISSION_HELP}`)
@@ -1377,7 +1395,29 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     await ctx.artifact.screenshot('yt-09-titled')
     // A tap that missed the field left focus on the thumbnail; the space in the title then opened
     // the thumbnail editor. That is what this catches — and it means nothing was uploaded.
-    const afterTyping = await ctx.device.dump()
+    let afterTyping = await ctx.device.dump()
+    const exitEditor = hiddenWindow(afterTyping) !== 'details' && onThumbnailEditor(afterTyping) ? thumbnailEditorExit(afterTyping) : null
+    if (exitEditor) {
+      /*
+        Once more, from the details screen (0.36.0). Production phone #13 (2026-09-15) met this after YouTube's
+        "Memproses" wait: the title tap did not focus the field and the title opened the thumbnail editor. Nothing is
+        uploaded at this point and the title field was never focused, so nothing is in it: leave the editor by its own
+        "Keluar dari editor thumbnail", tap the title again and type it again. A second miss is the failure below.
+      */
+      await capture(ctx, 'yt-09-thumbnail-editor', afterTyping)
+      ctx.log.warn('the title opened the thumbnail editor instead of reaching the field — leaving the editor and typing the title once more')
+      await tapCentre(ctx, exitEditor)
+      const back = await waitForTree(ctx, (t) => hiddenWindow(t) === 'details', { budgetMs: 8_000 })
+      if (back.ok) {
+        await sleep(1_000)
+        await ctx.device.tap({ point: titlePoint }, { via: 'adb' })
+        await sleep(FOCUS_SETTLE_MS)
+        await ctx.device.type(title, { via: 'adb', instant: true })
+        ctx.log.info('typed the title again')
+        await sleep(1_500)
+        afterTyping = await ctx.device.dump()
+      }
+    }
     if (hiddenWindow(afterTyping) !== 'details') {
       await capture(ctx, 'yt-09-not-details', afterTyping)
       fail(

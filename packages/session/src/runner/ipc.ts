@@ -46,6 +46,7 @@ export const DeviceCallSchema = z.discriminatedUnion('method', [
   // well as at the executor: the enum is what stops a script granting itself contacts or location.
   z.object({ method: z.literal('app.grantPermissions'), args: DEVICE_CALL_ARGS['app.grantPermissions'] }),
   z.object({ method: z.literal('app.denyPermissions'), args: DEVICE_CALL_ARGS['app.denyPermissions'] }),
+  z.object({ method: z.literal('app.denyPictureInPicture'), args: DEVICE_CALL_ARGS['app.denyPictureInPicture'] }),
   z.object({ method: z.literal('clipboard.get'), args: DEVICE_CALL_ARGS['clipboard.get'] }),
   z.object({ method: z.literal('clipboard.set'), args: DEVICE_CALL_ARGS['clipboard.set'] }),
   // File transfer and APK install (plan 39 §4.6) — the child never touches

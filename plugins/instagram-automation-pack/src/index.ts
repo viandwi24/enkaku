@@ -70,7 +70,12 @@ export default definePlugin({
    * scrolled the page instead. The field is now tapped only once two readings
    * place it the same, and after the tap the run reads the screen: with no
    * focus and no keyboard it taps once more, and then stops with
-   * E_CAPTION_NOT_FOCUSED without typing anything.
+   * E_CAPTION_NOT_FOCUSED without typing anything. Also phone #3: Instagram
+   * raised Android's camera dialog at launch, and the microphone's right after
+   * it, although both had been refused before launch; hidden from the reader,
+   * the run saw only System UI and failed "bottom navigation is not on
+   * screen". A launch that reads as System UI alone now presses BACK — which
+   * refuses such a dialog — and waits again, up to three times.
    *
    * **Also in 0.7.0 — three production failures (2026-09-15).** Phone #3:
    * Android's hidden "Izinkan Instagram mengambil gambar dan merekam video?"

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { AppDenyPermissionsArgsSchema, AppGrantPermissionsArgsSchema } from '@enkaku/protocol'
-import { denyAppPermissions, grantAppPermissions, parseRuntimePermissions, readPackageCommand } from './app-permissions'
+import { AppDenyPermissionsArgsSchema, AppDenyPictureInPictureArgsSchema, AppGrantPermissionsArgsSchema } from '@enkaku/protocol'
+import { denyAppPermissions, denyPictureInPicture, grantAppPermissions, parsePictureInPictureMode, parseRuntimePermissions, readPackageCommand } from './app-permissions'
 
 /**
  * `app.grantPermissions` / `app.denyPermissions` against a fake package manager that STORES what
@@ -8,6 +8,50 @@ import { denyAppPermissions, grantAppPermissions, parseRuntimePermissions, readP
  * applies to settings. The dumpsys text is the real line shape, copied from the owner's moto
  * (Android 15, 2026-09-14): `android.permission.CAMERA: granted=false, flags=[ USER_SET|USER_FIXED|… ]`.
  */
+
+describe('app.denyPictureInPicture — appops, read back', () => {
+  const PKG = 'com.google.android.youtube'
+  function fakeAppops(opts: { mode?: string | null; ignoreWrite?: boolean } = {}) {
+    let mode = opts.mode ?? null
+    const calls: string[] = []
+    const exec = async (cmd: string) => {
+      calls.push(cmd)
+      if (cmd.startsWith('appops get')) return { stdout: mode === null ? 'No operations.\n' : `PICTURE_IN_PICTURE: ${mode}; time=+2d1h ago\n`, stderr: '', exitCode: 0 }
+      if (cmd === `appops set '${PKG}' PICTURE_IN_PICTURE ignore`) {
+        if (!opts.ignoreWrite) mode = 'ignore'
+        return { stdout: '', stderr: '', exitCode: 0 }
+      }
+      return { stdout: '', stderr: 'unexpected command', exitCode: 1 }
+    }
+    return { exec, calls }
+  }
+
+  test('reads the mode appops prints, and none from "No operations."', () => {
+    expect(parsePictureInPictureMode('PICTURE_IN_PICTURE: ignore; time=+1m ago')).toBe('ignore')
+    expect(parsePictureInPictureMode('Uid mode: PICTURE_IN_PICTURE: allow')).toBe('allow')
+    expect(parsePictureInPictureMode('No operations.')).toBeNull()
+  })
+
+  test('writes ignore when the app may still open a small window, and reports it from the read-back', async () => {
+    const fake = fakeAppops()
+    expect(await denyPictureInPicture(fake.exec, PKG)).toEqual({ outcome: 'denied', mode: 'ignore' })
+    expect(fake.calls).toContain(`appops set '${PKG}' PICTURE_IN_PICTURE ignore`)
+  })
+
+  test('already ignored writes nothing; a write that did not take is failed, never denied', async () => {
+    const done = fakeAppops({ mode: 'ignore' })
+    expect(await denyPictureInPicture(done.exec, PKG)).toEqual({ outcome: 'already', mode: 'ignore' })
+    expect(done.calls.some((c) => c.startsWith('appops set'))).toBe(false)
+    const stuck = await denyPictureInPicture(fakeAppops({ mode: 'allow', ignoreWrite: true }).exec, PKG)
+    expect(stuck.outcome).toBe('failed')
+    expect(stuck.mode).toBe('allow')
+  })
+
+  test('the call takes a package name and nothing a shell could run', () => {
+    expect(AppDenyPictureInPictureArgsSchema.safeParse({ pkg: PKG }).success).toBe(true)
+    expect(AppDenyPictureInPictureArgsSchema.safeParse({ pkg: "x'; reboot" }).success).toBe(false)
+  })
+})
 
 type Perm = { granted: boolean; flags: string[] }
 

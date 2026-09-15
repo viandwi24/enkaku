@@ -82,6 +82,17 @@ export function isReady(tree: UiNode): boolean {
   return navTab(tree, 'feed_tab') !== null && navTab(tree, 'profile_tab') !== null
 }
 
+/**
+ * A system permission dialog is over the screen (0.7.1): Android withholds every app window from the reader while one is
+ * up, so the reading holds System UI and nothing else — no Instagram, not even the launcher. Production phone #3
+ * (2026-09-15) sat on "Izinkan Instagram mengambil gambar dan merekam video?" at launch, then on the microphone's own
+ * dialog once the owner answered the first, both after the camera and microphone had been refused before launch.
+ */
+export function withheldByDialog(tree: UiNode): boolean {
+  const systemUi = all(tree, (n) => n.packageName === 'com.android.systemui').length
+  return systemUi > 0 && all(tree, (n) => n.packageName !== '' && n.packageName !== 'com.android.systemui').length === 0
+}
+
 /** Nodes that belong to Instagram and carry anything a person could read or press. */
 export function readableInstagramNodes(tree: UiNode): UiNode[] {
   return all(tree, (n) => n.packageName === INSTAGRAM_PACKAGE && (n.text.trim() !== '' || n.desc.trim() !== '' || n.clickable))
@@ -198,7 +209,15 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
   await ctx.device.app.forceStop(INSTAGRAM_PACKAGE, { clearRecents: opts?.clearRecents ?? true })
   await ctx.device.app.launch(INSTAGRAM_PACKAGE)
   await sleep(2_500)
-  const nav = await waitForTree(ctx, (t) => isReady(t) || isSignedOut(t), { budgetMs: READY_TIMEOUT_MS })
+  let nav = await waitForTree(ctx, (t) => isReady(t) || isSignedOut(t), { budgetMs: READY_TIMEOUT_MS })
+  // A hidden permission dialog over the launch (0.7.1, `withheldByDialog`): BACK refuses it. Instagram asked for the camera
+  // and then the microphone on phone #3, one dialog after the other, so up to three are refused.
+  for (let round = 0; round < 3 && !nav.ok && withheldByDialog(nav.tree); round++) {
+    ctx.log.warn('a system permission dialog is over Instagram at launch (the reader sees only System UI) — refusing it with BACK', { round: round + 1 })
+    await ctx.device.key('BACK')
+    await sleep(1_500)
+    nav = await waitForTree(ctx, (t) => isReady(t) || isSignedOut(t), { budgetMs: 12_000 })
+  }
   if (isSignedOut(nav.tree)) {
     await capture(ctx, 'ig-signed-out', nav.tree)
     throw Object.assign(new Error('Instagram on this phone is signed out. Sign in to the account this phone should use, then re-run.'), { code: 'E_NOT_SIGNED_IN' })

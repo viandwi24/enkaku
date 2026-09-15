@@ -307,6 +307,12 @@ export interface DeviceApi {
       pkg: string,
       permissions: readonly import('@enkaku/protocol').DeniableAppPermission[],
     ): Promise<import('@enkaku/protocol').AppPermissionDenial[]>
+    /**
+     * Stop the app opening as a picture-in-picture window (`appops … PICTURE_IN_PICTURE ignore`), read back from the
+     * device — for a flow whose app came up as a small floating player over the launcher instead of full screen
+     * (YouTube on production, 2026-09-15). Check `outcome` for `failed`.
+     */
+    denyPictureInPicture(pkg: string): Promise<import('@enkaku/protocol').AppPictureInPictureDenial>
   }
   /** Device clipboard get/set over the scrcpy control socket (plan 38 §4.6). */
   clipboard: {

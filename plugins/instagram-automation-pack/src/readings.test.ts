@@ -32,7 +32,7 @@ import {
 import { MAX_REFRESHES_IN_A_ROW, PROFILE_PULL_BAND, makeRng, planConfirmStep, pullToRefreshPath } from './behavior'
 import type { ConfirmMove, ConfirmStep } from './behavior'
 import { rowsById, treeFrame } from './tree'
-import { isReady, isSignedOut, promoDismissButton, waitForTree } from './instagram'
+import { isReady, isSignedOut, promoDismissButton, waitForTree, withheldByDialog } from './instagram'
 import { inboxItems, inboxStrings, onInbox } from './check-inbox'
 import { feedLikeState, feedPosts, onHomeFeed } from './scroll-feed'
 import { inStoryViewer, trayStories } from './watch-stories'
@@ -279,6 +279,16 @@ describe('post-video — the walk, screen by screen', () => {
     expect(settledCaptionField(field(30), field(30))?.bounds.left).toBe(30)
     expect(captionFocused(field(30))).toBe(false)
     expect(captionFocused(field(30, true))).toBe(true)
+  })
+
+  test('a launch the reader sees only System UI of is a hidden system dialog — refused with BACK (0.7.1)', () => {
+    const node = (packageName: string, children: UiNode[] = []): UiNode => ({ resourceId: '', text: '', desc: '', className: 'android.widget.FrameLayout', packageName, bounds: { left: 0, top: 0, right: 720, bottom: 1600 }, clickable: false, enabled: true, focused: false, index: 0, children })
+    // Production #3: "Izinkan Instagram mengambil gambar dan merekam video?" over the launcher read as System UI alone.
+    expect(withheldByDialog(node('', [node('com.android.systemui'), node('com.android.systemui')]))).toBe(true)
+    expect(withheldByDialog(node('', [node('com.android.systemui'), node('com.sec.android.app.launcher')]))).toBe(false)
+    expect(withheldByDialog(node('', [node('com.instagram.android')]))).toBe(false)
+    // A reading with nothing at all is a failed dump, not a dialog: no BACK for it.
+    expect(withheldByDialog(node('', []))).toBe(false)
   })
 
   test('MediaStore\'s path spelling is the same file as the pushed one', () => {

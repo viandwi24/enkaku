@@ -235,6 +235,18 @@ async function answerPermissionsBeforeLaunch(ctx: ScriptContext<unknown>): Promi
   } catch (err) {
     ctx.log.warn('could not set YouTube permissions before launch — continuing; a hidden permission dialog may stop the run', { error: String(err) })
   }
+  /*
+    No picture-in-picture (0.36.0). Production phone #10 (2026-09-15): YouTube came up as a small Shorts player over the
+    launcher, and a second launch and a force-stop both brought the small window back. With PiP off the app always opens
+    full screen. Never fatal: a core without `app.denyPictureInPicture` says so and the relaunch's own PiP recovery runs.
+  */
+  try {
+    const pip = await ctx.device.app.denyPictureInPicture(YOUTUBE_PACKAGE)
+    if (pip.outcome === 'denied') ctx.log.info('turned off picture-in-picture for YouTube, so it cannot open as a small window over the home screen')
+    if (pip.outcome === 'failed') ctx.log.warn('could not turn off picture-in-picture for YouTube — it may still open as a small window', { mode: pip.mode, detail: pip.detail ?? '' })
+  } catch (err) {
+    ctx.log.warn('could not turn off picture-in-picture for YouTube (a core older than this pack?) — continuing', { error: String(err) })
+  }
 }
 
 /**

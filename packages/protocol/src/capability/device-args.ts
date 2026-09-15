@@ -306,6 +306,22 @@ export interface AppPermissionDenial {
   detail?: string
 }
 
+/**
+ * Stop an app opening as a picture-in-picture window: `appops set <pkg> PICTURE_IN_PICTURE ignore`, read back.
+ * Production phone #10 (2026-09-15): YouTube came up as a Shorts player in a small window over the launcher after a
+ * clean launch, and launching it again, even after a force-stop, brought the small window back. With the op ignored,
+ * Android never gives the app that window.
+ */
+export const AppDenyPictureInPictureArgsSchema = z.object({ pkg: PackageNameSchema })
+
+/** `denied` — now reads `ignore`; `already` — it did before; `failed` — it still does not, with what `appops` said. */
+export interface AppPictureInPictureDenial {
+  outcome: 'denied' | 'already' | 'failed'
+  /** The mode read back last, e.g. `ignore`, `allow`, `default`; `unreadable` when appops printed none. */
+  mode: string
+  detail?: string
+}
+
 export const ClipboardGetArgsSchema = z.object({})
 
 export const ClipboardSetArgsSchema = z.object({ text: z.string(), paste: z.boolean().default(false) })
@@ -355,6 +371,7 @@ export const DEVICE_CALL_ARGS = {
   'app.forceStop': AppForceStopArgsSchema,
   'app.grantPermissions': AppGrantPermissionsArgsSchema,
   'app.denyPermissions': AppDenyPermissionsArgsSchema,
+  'app.denyPictureInPicture': AppDenyPictureInPictureArgsSchema,
   'clipboard.get': ClipboardGetArgsSchema,
   'clipboard.set': ClipboardSetArgsSchema,
   install: InstallArgsSchema,

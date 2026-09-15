@@ -26,7 +26,7 @@ import type { DeviceCall } from './runner/ipc'
 import type { DeviceSession } from './session'
 import { resolveTextRoute } from './text-input'
 import type { TransferPort } from './types'
-import { denyAppPermissions, grantAppPermissions } from './app-permissions'
+import { denyAppPermissions, denyPictureInPicture, grantAppPermissions } from './app-permissions'
 
 /**
  * Plan 91 §3.3, §4.1 — every executor whose caller has not yet been given a
@@ -912,6 +912,9 @@ export function createDeviceExecutor(deps: {
       }
       case 'app.denyPermissions': {
         return denyAppPermissions((cmd) => deps.session.transport.exec(cmd, { profile: 'appLifecycle' }), call.args.pkg, call.args.permissions)
+      }
+      case 'app.denyPictureInPicture': {
+        return denyPictureInPicture((cmd) => deps.session.transport.exec(cmd, { profile: 'appLifecycle' }), call.args.pkg)
       }
       case 'clipboard.get': {
         if (!deps.session.clipboard) {
