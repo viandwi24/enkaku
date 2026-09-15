@@ -182,11 +182,25 @@ export const TIKTOK_MODALS: ModalEntry[] = [
     // and without `notWith` this entry's identity fallback could tap the clickable widget preview on it
     // — which ADDS the widget.
     match: {
-      textIncludes: ['Sentuh lama widget', 'Kamera TikTok', 'Touch and hold the widget', 'TikTok Camera'],
+      textIncludes: ['Sentuh lama widget', 'Kamera TikTok'],
       notWith: ['Tambah ke Layar depan', 'Add to Home screen'],
     },
     actions: { deny: { text: 'Tidak, terima kasih' } },
     seen: SEEN_POST,
+  },
+  {
+    id: 'tt.widget-prompt-en',
+    // The same widget offer on English TikTok builds (1.45.3). Production, 2026-09-15, pack 1.45.1: five phones of one
+    // session failed after Post with `"tt.widget-prompt" matched with policy "deny" but no on-screen node satisfied its
+    // "deny" action` — the English text matched the shared entry, whose only answer was "Tidak, terima kasih". The
+    // English text is MEASURED (it matched); "No thanks" is UNVERIFIED — no dump of this prompt in English exists. If it
+    // is not the label, `post-video.ts`'s after-Post sweep closes the sheet with BACK instead (`closeUnansweredSheets`).
+    match: {
+      textIncludes: ['Touch and hold the widget', 'TikTok Camera'],
+      notWith: ['Tambah ke Layar depan', 'Add to Home screen'],
+    },
+    actions: { deny: { text: 'No thanks' } },
+    seen: { device: 'Samsung SM-A075F (production; prompt text only, answer unverified)', app: 'com.ss.android.ugc.trill', locale: 'en', at: '2026-09-15' },
   },
   {
     id: 'tt.widget-pin',
@@ -365,6 +379,7 @@ export const UPLOAD_MODAL_POLICIES: Record<string, ModalPolicy> = {
   // 2026-08-17 walk never met them, and why an unattended run that only knew the pre-post modals
   // would have stalled on the very first screen it reached after succeeding.
   'tt.widget-prompt': 'deny',
+  'tt.widget-prompt-en': 'deny',
   'tt.widget-pin': 'deny',
   'tt.contacts': 'deny',
   'tt.phone-prompt': 'deny',

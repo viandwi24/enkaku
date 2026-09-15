@@ -371,6 +371,53 @@ export function captionLanded(field: Pick<UiNode, 'text'>, intended: string): bo
   return normaliseCaption(captionTextToClear(field)) === normaliseCaption(intended)
 }
 
+/**
+ * BACK while a register entry the policies would answer is still on screen — at most twice (1.45.3). Only for AFTER Post,
+ * where nothing forward is left to undo: an entry whose answer was not found (an English build's label), or a sweep that
+ * did not settle. Never for an `abort` or `ignore` entry, never for one the operator must handle (`abortCode`), and
+ * never when nothing matches — BACK on the bare feed would leave TikTok. Returns the ids it pressed BACK for.
+ */
+export async function closeUnansweredSheets(ctx: ScriptContext<unknown>, policies: Record<string, ModalPolicy>): Promise<string[]> {
+  const closed: string[] = []
+  for (let round = 0; round < 2; round++) {
+    const up = matchModals(await ctx.device.dump()).filter((e) => e.abortCode === undefined && policies[e.id] !== undefined && policies[e.id] !== 'abort' && policies[e.id] !== 'ignore')
+    if (up.length === 0) break
+    await ctx.device.key('BACK')
+    for (const e of up) if (!closed.includes(e.id)) closed.push(e.id)
+    await sleep(1_200)
+  }
+  return closed
+}
+
+/** The lower capture-mode label the gallery button sits beside, in both builds' own capitals (1.45.3). */
+const CAMERA_LOWER_MODE_LABELS = ['POST', 'POSTING']
+
+/**
+ * The camera's gallery button by where it sits, for a build whose ids are obfuscated (1.45.3): the clickable to the LEFT
+ * of the capture-mode strip's "POST"/"POSTING" label, its middle inside that label's row. Measured on the owner's moto
+ * g06 with TikTok 46.6.3 in English (2026-09-15, `screen-camera-en-moto.json`): `upload_hot_area` [0,1407][140,1512]
+ * beside "POST" [302,1429][419,1508], with nothing else clickable in that row left of the strip. The English production
+ * camera (Samsung, 2026-09-15) carried no `upload_hot_area` but the same "POST"/"CREATE" strip. Null when there is no
+ * strip, or nothing clickable left of it.
+ */
+export function galleryButtonBesideModes(tree: UiNode, frameWidth: number): UiNode | null {
+  const mode = all(tree, (n) => CAMERA_LOWER_MODE_LABELS.includes(n.text.trim()) && insideFrame(n, frameWidth)).sort((a, b) => b.bounds.bottom - a.bounds.bottom)[0]
+  if (!mode) return null
+  const middle = (n: UiNode): number => (n.bounds.top + n.bounds.bottom) / 2
+  return (
+    all(
+      tree,
+      (n) =>
+        n.clickable &&
+        insideFrame(n, frameWidth) &&
+        n.bounds.right <= mode.bounds.left &&
+        middle(n) >= mode.bounds.top &&
+        middle(n) <= mode.bounds.bottom &&
+        n.bounds.right - n.bounds.left < frameWidth / 2,
+    ).sort((a, b) => a.bounds.left - b.bounds.left)[0] ?? null
+  )
+}
+
 /** The post screen's caption field, only when it is on screen. */
 export function onScreenCaptionField(tree: UiNode, frameWidth: number): UiNode | null {
   return all(tree, (n) => n.className === 'android.widget.EditText' && insideFrame(n, frameWidth))[0] ?? null
@@ -2415,15 +2462,19 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     // (1.45.2). Since 1.45.2 that camera is recognised by its labels (`screens.ts`'s `cameraLabelsShowing`), so such
     // a build now stops HERE, by name, instead of on "unknown screen". No label is guessed for it: a dump of the
     // English camera showing that button's own text or desc is what a label anchor needs.
-    const uploadButton = findNode(requireTree(camera, 'camera'), (n) => hasShortId(n, 'upload_hot_area'))
+    const cameraTree = requireTree(camera, 'camera')
+    const uploadButton = findNode(cameraTree, (n) => hasShortId(n, 'upload_hot_area')) ?? galleryButtonBesideModes(cameraTree, frame.width)
     if (!uploadButton) {
       await capture(ctx, 'missing-upload-hot-area', camera.tree)
       throw Object.assign(
         new Error(
-          `the camera screen's gallery button was not found in the dump — it is read only by its id "upload_hot_area", which this TikTok build does not carry (its ids are obfuscated), and the button has no known label yet`,
+          `the camera screen's gallery button was not found in the dump — not by its id "upload_hot_area" (this TikTok build's ids are obfuscated), and no clickable sits left of the capture-mode strip's "POST" in its row`,
         ),
         { code: 'E_ANCHOR_NOT_FOUND' },
       )
+    }
+    if (!hasShortId(uploadButton, 'upload_hot_area')) {
+      ctx.log.info('found the gallery button left of the capture-mode strip — this build carries no upload_hot_area id', { bounds: uploadButton.bounds })
     }
     await ctx.device.tap({ point: centreOf(uploadButton) })
     attempt.screens.push('camera')
@@ -2603,8 +2654,27 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
       recordCleared(postedSweep.cleared)
     } catch (err) {
       afterPostError = err instanceof Error ? err.message : String(err)
-      if ((err as { code?: string }).code === 'E_SECURITY_CHECK') attempt.leaveOnScreen = true
+      const code = (err as { code?: string }).code
+      if (code === 'E_SECURITY_CHECK') attempt.leaveOnScreen = true
       ctx.log.warn('a modal after Post could not be answered — confirming on the grid anyway, never reporting failed', { error: afterPostError })
+      /*
+        A sheet left up covers the feed, so the confirmation that follows cannot open the profile and waits out its whole
+        budget (1.45.3). Production, 2026-09-15, pack 1.45.1: five phones spent ~300 s behind an unanswered English
+        `tt.widget-prompt` and ended "unverified". BACK closes a bottom sheet without choosing anything in it, and is
+        pressed only while an answerable entry is still read on screen.
+      */
+      if (code === 'E_MODAL_UNHANDLED' || code === 'E_MODAL_STUCK') {
+        const closed = await closeUnansweredSheets(ctx, UPLOAD_MODAL_POLICIES)
+        if (closed.length > 0) {
+          ctx.log.info('closed what the after-Post sweep could not answer with BACK', { closed: closed.join(', ') })
+          try {
+            recordCleared((await sweepModals(ctx, UPLOAD_MODAL_POLICIES)).cleared)
+            afterPostError = null
+          } catch (again) {
+            ctx.log.warn('the after-Post sweep still could not settle after BACK', { error: again instanceof Error ? again.message : String(again) })
+          }
+        }
+      }
     }
 
     let confirmation: { confirmed: boolean; detail: string; securityCheck: boolean }

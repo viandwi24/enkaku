@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import { UiNodeSchema, type UiNode } from '@enkaku/protocol'
+import { closeUnansweredSheets, galleryButtonBesideModes } from './post-video'
+import { UPLOAD_MODAL_POLICIES } from './modals'
 import {
   captionLanded,
   captionPieces,
@@ -742,5 +744,74 @@ describe('clearing drafts — the profile entry, the Drafts folder, select mode,
     for (const buttons of [[measuredHapus, measuredKeep], [measuredKeep, measuredHapus]]) {
       expect(confirmDeleteButton(samsungAsked(buttons), FRAME_SAMSUNG, exclude)?.text).not.toBe('Pertahankan')
     }
+  })
+})
+
+describe('the camera\'s gallery button beside the capture-mode strip (1.45.3)', () => {
+  const node = (over: Partial<UiNode>): UiNode => ({ resourceId: '', text: '', desc: '', className: 'android.view.View', packageName: 'com.ss.android.ugc.trill', bounds: { left: 0, top: 0, right: 0, bottom: 0 }, clickable: false, enabled: true, focused: false, index: 0, children: [], ...over })
+
+  test('the English moto camera (TikTok 46.6.3) reads it as upload_hot_area, the button left of "POST"', () => {
+    const found = galleryButtonBesideModes(loadFixture('screen-camera-en-moto.json'), 720)
+    expect(found?.resourceId.endsWith('upload_hot_area')).toBe(true)
+    expect(found?.bounds).toEqual({ left: 0, top: 1407, right: 140, bottom: 1512 })
+  })
+
+  test('a camera whose ids are obfuscated still yields the button left of the strip, and nothing else in that row', () => {
+    const tree = node({
+      className: 'hierarchy',
+      bounds: { left: 0, top: 0, right: 720, bottom: 1600 },
+      children: [
+        node({ resourceId: 'com.ss.android.ugc.trill:id/u_', clickable: true, bounds: { left: 0, top: 1407, right: 140, bottom: 1512 } }),
+        node({ className: 'android.widget.TextView', text: 'POST', bounds: { left: 302, top: 1429, right: 419, bottom: 1508 } }),
+        node({ className: 'android.widget.TextView', text: 'CREATE', bounds: { left: 419, top: 1429, right: 565, bottom: 1508 } }),
+        // The record button sits above the strip; the side toolbar is right of it.
+        node({ desc: 'Record video', clickable: true, bounds: { left: 263, top: 1186, right: 456, bottom: 1379 } }),
+        node({ desc: 'Flip', clickable: true, bounds: { left: 622, top: 148, right: 720, bottom: 239 } }),
+      ],
+    })
+    expect(galleryButtonBesideModes(tree, 720)?.resourceId).toBe('com.ss.android.ugc.trill:id/u_')
+  })
+
+  test('no strip, or nothing clickable left of it, is null — never a guess', () => {
+    const noStrip = node({ className: 'hierarchy', bounds: { left: 0, top: 0, right: 720, bottom: 1600 }, children: [node({ clickable: true, bounds: { left: 0, top: 1407, right: 140, bottom: 1512 } })] })
+    expect(galleryButtonBesideModes(noStrip, 720)).toBeNull()
+    const nothingLeft = node({ className: 'hierarchy', bounds: { left: 0, top: 0, right: 720, bottom: 1600 }, children: [node({ text: 'POST', bounds: { left: 302, top: 1429, right: 419, bottom: 1508 } })] })
+    expect(galleryButtonBesideModes(nothingLeft, 720)).toBeNull()
+  })
+
+  test('on the Indonesian camera fixtures it agrees with upload_hot_area wherever it finds anything', () => {
+    for (const name of ['screen-camera-2026-09.json', 'screen-camera-wall.json']) {
+      const found = galleryButtonBesideModes(loadFixture(name), 720)
+      if (found) expect(found.resourceId.endsWith('upload_hot_area')).toBe(true)
+    }
+  })
+})
+
+describe('closeUnansweredSheets — BACK after Post, only while an answerable sheet is up (1.45.3)', () => {
+  const blank = (children: UiNode[] = []): UiNode => ({ resourceId: '', text: '', desc: '', className: '', packageName: '', bounds: { left: 0, top: 0, right: 720, bottom: 1600 }, clickable: false, enabled: true, focused: false, index: 0, children })
+  const text = (t: string): UiNode => ({ ...blank(), text: t, bounds: { left: 40, top: 1000, right: 680, bottom: 1080 } })
+  const run = async (trees: UiNode[]) => {
+    const keys: string[] = []
+    let i = 0
+    const ctx = {
+      device: { dump: async () => trees[Math.min(i++, trees.length - 1)], key: async (k: string) => void keys.push(k) },
+      log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    } as unknown as Parameters<typeof closeUnansweredSheets>[0]
+    return { closed: await closeUnansweredSheets(ctx, UPLOAD_MODAL_POLICIES), keys }
+  }
+
+  test('an English widget offer whose answer was not found is closed with one BACK', async () => {
+    const { closed, keys } = await run([blank([text('Touch and hold the widget to add it'), text('Maybe later')]), blank()])
+    expect(closed).toEqual(['tt.widget-prompt-en'])
+    expect(keys).toEqual(['BACK'])
+  })
+
+  test('nothing on screen: no BACK, so the feed is never left', async () => {
+    expect(await run([blank()])).toEqual({ closed: [], keys: [] })
+  })
+
+  test('the security check (abort) is never backed out of', async () => {
+    const { keys } = await run([blank([text('Mari kita lakukan pemeriksaan keamanan dengan cepat')])])
+    expect(keys).toEqual([])
   })
 })

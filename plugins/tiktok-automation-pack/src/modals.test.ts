@@ -678,3 +678,32 @@ describe('guard — the ambiguous "Berikutnya" label is resolved in exactly one 
     expect(SELECTOR_TEXT_PATTERN.test('throw new Error(`the preview screen\'s "Berikutnya" button was not found`)')).toBe(false)
   })
 })
+
+describe('tt.widget-prompt-en — the English widget offer after Post (1.45.3)', () => {
+  const prompt = (label: string) =>
+    mkNode({
+      bounds: { left: 0, top: 0, right: 720, bottom: 1600 },
+      children: [
+        mkNode({ text: 'Touch and hold the widget to add it to your Home screen', bounds: { left: 40, top: 1000, right: 680, bottom: 1080 } }),
+        mkNode({ text: 'TikTok Camera', bounds: { left: 40, top: 1100, right: 680, bottom: 1150 } }),
+        mkNode({ text: label, clickable: true, bounds: { left: 40, top: 1360, right: 680, bottom: 1440 } }),
+      ],
+    })
+
+  test('an English prompt matches only the English entry, never the Indonesian one whose answer it does not show', () => {
+    expect(matchModals(prompt('No thanks')).map((e) => e.id)).toEqual(['tt.widget-prompt-en'])
+    expect(UPLOAD_MODAL_POLICIES['tt.widget-prompt-en']).toBe('deny')
+  })
+
+  test('the upload sweep answers it "No thanks"', async () => {
+    let dumps = 0
+    const taps: unknown[] = []
+    const ctx = {
+      device: { dump: async () => (dumps++ === 0 ? prompt('No thanks') : mkNode({})), tap: async (t: unknown) => void taps.push(t) },
+      artifact: { screenshot: async () => ({ artifactId: 'a' }) },
+      log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    } as unknown as ScriptContext<unknown>
+    expect((await sweepModals(ctx, UPLOAD_MODAL_POLICIES)).cleared).toEqual(['tt.widget-prompt-en'])
+    expect(taps).toEqual([{ point: { x: 360, y: 1400 } }])
+  })
+})

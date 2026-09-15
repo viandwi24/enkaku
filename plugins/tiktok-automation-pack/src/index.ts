@@ -864,6 +864,17 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.45.3 — the camera's gallery button is found beside the capture-mode strip when its id is gone. The English
+  //   production camera (Samsung, 2026-09-15) carried no `upload_hot_area`; 1.45.2 recognised the camera but stopped at
+  //   its gallery button. Measured on the owner's moto g06 with TikTok 46.6.3 switched to English
+  //   (`screen-camera-en-moto.json`): the gallery button is the clickable left of the "POST" mode label, in its row
+  //   (`upload_hot_area` [0,1407][140,1512] beside "POST" [302,1429][419,1508]). `galleryButtonBesideModes` reads it
+  //   that way when the id is missing; the id stays the first choice.
+  //   And an after-Post sheet the sweep cannot answer no longer hides the grid for five minutes. Five phones of one
+  //   production session (1.45.1) ended "unverified" behind an English `tt.widget-prompt` whose only answer was "Tidak,
+  //   terima kasih": the English text is now its own entry, `tt.widget-prompt-en` ("No thanks", UNVERIFIED), and when an
+  //   answer is still not found after Post, `closeUnansweredSheets` presses BACK — only while an answerable entry is read on
+  //   screen, never for the security check, never on the bare feed — before the confirmation opens the profile.
   // 1.45.2 — the English camera is recognised, and the English resume-edit banner has its own answer. Production,
   //   2026-09-15, pack 1.45.1, English TikTok builds on Samsung SM-A075F. A post-video run failed "expected the camera
   //   screen but the dump reads unknown after 5 settle rounds (no modal matched)" (artifact
@@ -1154,7 +1165,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.45.2',
+  version: '1.45.3',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
