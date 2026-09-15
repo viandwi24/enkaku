@@ -3,7 +3,7 @@ import type { ActionSpec, PluginSurface, Selector } from '@enkaku/protocol'
 import { PluginSurfaceSchema, validatePluginSurface } from '@enkaku/protocol'
 import type { z } from 'zod'
 import { toJSONSchema } from 'zod'
-import plugin, { autoScrollScript, matches, scoreContent } from './index'
+import plugin, { AutoPostSettingsSchema, autoScrollScript, isAutoPostEligible, matches, scoreContent } from './index'
 import { makeRng, pickWatchMs, pngSize } from './human'
 import { ACK_SELECTORS, DENY_SELECTORS, nextDialogAction } from './dialogs'
 import { ACCOUNTS_KEY } from './accounts'
@@ -22,8 +22,41 @@ import notificationActivity from './notification-activity'
 describe('tiktok-automation-pack manifest', () => {
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('1.36.1')
+    expect(plugin.version).toBe('1.37.0')
     expect(plugin.version).toBe(pkg.version)
+  })
+})
+
+/**
+ * 1.37.0 — auto-post picks only phones carrying the label, and never one
+ * someone is using (owner field report, 2026-09-15).
+ */
+describe('auto-post eligibility', () => {
+  const base = { id: 'd1', stableId: 's1', status: 'online', activities: [], labels: [{ name: 'tiktok' }], inUse: { control: false, viewers: 0 }, lastControl: null }
+
+  test('an online, idle, labelled phone nobody is using is eligible', () => {
+    expect(isAutoPostEligible(base, 'tiktok')).toBe(true)
+  })
+
+  test('the label is required, matched case- and space-insensitively like the SMM platform label', () => {
+    expect(isAutoPostEligible({ ...base, labels: [] }, 'tiktok')).toBe(false)
+    expect(isAutoPostEligible({ ...base, labels: [{ name: 'instagram' }] }, 'tiktok')).toBe(false)
+    expect(isAutoPostEligible({ ...base, labels: [{ name: 'Tik Tok' }] }, 'tiktok')).toBe(true)
+  })
+
+  test('a phone being controlled, watched in Device Control, or just released is skipped', () => {
+    expect(isAutoPostEligible({ ...base, inUse: { control: true, viewers: 0 } }, 'tiktok')).toBe(false)
+    expect(isAutoPostEligible({ ...base, inUse: { control: false, viewers: 2 } }, 'tiktok')).toBe(false)
+    expect(isAutoPostEligible({ ...base, lastControl: { endedAt: 1 } }, 'tiktok')).toBe(false)
+  })
+
+  test('offline or busy phones are skipped, as before', () => {
+    expect(isAutoPostEligible({ ...base, status: 'offline' }, 'tiktok')).toBe(false)
+    expect(isAutoPostEligible({ ...base, activities: [{ kind: 'job' }] }, 'tiktok')).toBe(false)
+  })
+
+  test('settings saved before 1.37.0 still parse, and default to the tiktok label', () => {
+    expect(AutoPostSettingsSchema.parse({ version: 1, enabled: true, intervalMinutes: 60 })).toEqual({ version: 1, enabled: true, intervalMinutes: 60, label: 'tiktok' })
   })
 })
 

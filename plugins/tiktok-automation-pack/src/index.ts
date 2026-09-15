@@ -660,16 +660,25 @@ const AUTO_POST_SETTINGS_KEY = 'settings:auto-post'
 /** When the auto-post timer last actually dispatched jobs, unix seconds — what `intervalMinutes` is measured against. */
 const AUTO_POST_LAST_RUN_KEY = 'state:auto-post-last-run'
 
-const AutoPostSettingsSchema = z
+/** 1.37.0 — the label a phone must carry to be auto-posted to; the same `tiktok` label the SMM router routes on. */
+const DEFAULT_AUTO_POST_LABEL = 'tiktok'
+
+export const AutoPostSettingsSchema = z
   .object({
     version: z.literal(1),
     enabled: z.boolean(),
     intervalMinutes: z.number().int().positive().max(24 * 60),
+    /**
+     * 1.37.0. Defaulted, so a settings row saved before it still parses — and reads as `tiktok`, which
+     * NARROWS an existing farm's auto-post to labelled phones. That is the safe direction: posting to every
+     * online phone is how an unlabelled phone with some other account on it got a TikTok upload.
+     */
+    label: z.string().trim().min(1).max(64).default(DEFAULT_AUTO_POST_LABEL),
   })
   .strict()
 type AutoPostSettings = z.infer<typeof AutoPostSettingsSchema>
 
-const DEFAULT_AUTO_POST_SETTINGS: AutoPostSettings = { version: 1, enabled: false, intervalMinutes: 60 }
+const DEFAULT_AUTO_POST_SETTINGS: AutoPostSettings = { version: 1, enabled: false, intervalMinutes: 60, label: DEFAULT_AUTO_POST_LABEL }
 
 /**
  * How often the timer WAKES UP to check the clock — not how often it posts. Deliberately much finer
@@ -691,9 +700,35 @@ const DeviceListOutput = z.object({
       status: z.string(),
       /** Any live entry (a `job`, a `control` marker, …) means something is already happening on this device. An empty list means nothing is. */
       activities: z.array(z.object({ kind: z.string() })),
+      labels: z.array(z.object({ name: z.string() })).default([]),
+      /** 1.37.0 — someone controlling or watching the phone in Device Control. Defaulted for a farm older than the field. */
+      inUse: z.object({ control: z.boolean(), viewers: z.number().int().min(0) }).default({ control: false, viewers: 0 }),
+      /** Present during the quiet period after a control marker ends. */
+      lastControl: z.object({ endedAt: z.number() }).nullable().default(null),
     }),
   ),
 })
+
+type AutoPostDevice = z.infer<typeof DeviceListOutput>['items'][number]
+
+/**
+ * May auto-post queue a post job on this phone? (1.37.0, owner field report 2026-09-15.)
+ *
+ * Online and idle, as before — plus two rules the old check lacked. The phone must carry `label` (compared the
+ * way the SMM router compares its platform label: case-insensitive, spaces ignored), because "every online
+ * phone" included phones signed in to nothing on TikTok. And nobody may be using it: a `control` activity
+ * exists only while input flows, so a phone someone is watching in Device Control looked idle; `inUse` says
+ * so, and a `lastControl` tail is a short quiet period after they stop.
+ */
+export function isAutoPostEligible(
+  device: Pick<AutoPostDevice, 'status' | 'activities' | 'labels' | 'inUse' | 'lastControl'>,
+  label: string,
+): boolean {
+  if (device.status !== 'online' || device.activities.length > 0) return false
+  if (device.inUse.control || device.inUse.viewers > 0 || device.lastControl !== null) return false
+  const want = label.toLowerCase().replace(/\s+/g, '')
+  return want.length > 0 && device.labels.some((l) => l.name.toLowerCase().replace(/\s+/g, '') === want)
+}
 
 const JobRunOutput = z.object({ jobId: z.string() })
 
@@ -709,7 +744,7 @@ function messageOf(err: unknown): string {
  * mid-job, mid-control, offline or quarantined is skipped rather than queued behind whatever it is
  * already doing.
  */
-async function runAutoPostTick(ctx: PluginServiceContext): Promise<void> {
+async function runAutoPostTick(ctx: PluginServiceContext, label: string): Promise<void> {
   let devices: z.infer<typeof DeviceListOutput>
   try {
     devices = await ctx.farm.call('device.list', {}, DeviceListOutput)
@@ -718,9 +753,9 @@ async function runAutoPostTick(ctx: PluginServiceContext): Promise<void> {
     return
   }
 
-  const eligible = devices.items.filter((device) => device.status === 'online' && device.activities.length === 0)
+  const eligible = devices.items.filter((device) => isAutoPostEligible(device, label))
   if (eligible.length === 0) {
-    ctx.log.info('auto-post tick found no eligible (online, idle) device')
+    ctx.log.info('auto-post tick found no eligible device (online, idle, not in use, labelled)', { label })
     return
   }
 
@@ -760,7 +795,7 @@ async function maybeRunAutoPostTick(ctx: PluginServiceContext): Promise<void> {
   // Stamped BEFORE dispatching: a tick slow enough to still be running (many eligible devices) must
   // not be re-entered by the next 60s poll before it has even finished.
   await ctx.storage.global.set(AUTO_POST_LAST_RUN_KEY, nowSec)
-  await runAutoPostTick(ctx)
+  await runAutoPostTick(ctx, settings.label)
 }
 
 export default definePlugin({
@@ -829,6 +864,14 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.37.0 — auto-post leaves alone the phones people are using, and only posts to labelled phones. The owner
+  //   (2026-09-15): runs reached phones that were open in Device Control. Auto-post counted a phone idle when it
+  //   was online with no activity, but a `control` activity exists only while input is being sent, so a
+  //   watched phone looked free — and it queued on EVERY such phone, labelled or not. It now skips a phone
+  //   `device.list` reports `inUse` (controlled, or open in Device Control) or still inside its `lastControl`
+  //   quiet period, and requires the `label` setting (default `tiktok`, the SMM router's own platform label).
+  //   A settings row saved before this reads as `tiktok`, which narrows an existing farm's auto-post.
+  //
   // 1.36.1 — the clearDrafts description fits the farm's 300-character limit. 1.36.0's was 347 characters,
   // and the farm refused to install the pack (E_PARAMS_SCHEMA_INVALID) — so nothing of 1.36.0 ever ran. A
   // test now checks every member's param descriptions against that limit.
@@ -1031,7 +1074,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.36.1',
+  version: '1.37.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
@@ -1272,13 +1315,21 @@ export default definePlugin({
         label: 'Auto-post settings',
         schema: {
           type: 'object',
-          required: ['enabled', 'intervalMinutes'],
+          required: ['enabled', 'intervalMinutes', 'label'],
           properties: {
             enabled: {
               type: 'boolean',
               title: 'Auto-post from the queue',
               default: false,
               description: 'Off by default. Once on, the service posts one queued video per eligible device on its own clock.',
+            },
+            label: {
+              type: 'string',
+              title: 'Only phones labelled',
+              default: DEFAULT_AUTO_POST_LABEL,
+              minLength: 1,
+              maxLength: 64,
+              description: 'Posts only to online, idle phones carrying this label. A phone open in Device Control, or used in the last two minutes, is skipped.',
             },
             intervalMinutes: {
               type: 'number',
@@ -1296,7 +1347,7 @@ export default definePlugin({
           label: 'Save auto-post settings',
           scope: 'global',
           key: { $literal: AUTO_POST_SETTINGS_KEY },
-          value: { version: { $literal: 1 }, enabled: { $form: 'enabled' }, intervalMinutes: { $form: 'intervalMinutes' } },
+          value: { version: { $literal: 1 }, enabled: { $form: 'enabled' }, intervalMinutes: { $form: 'intervalMinutes' }, label: { $form: 'label' } },
         },
       },
 
