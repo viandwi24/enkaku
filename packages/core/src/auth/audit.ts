@@ -123,6 +123,7 @@ export type AuditAction =
   | 'group.create'
   | 'group.update'
   | 'group.delete'
+  | 'group.reorder'
   | 'group.assign'
   | 'group.unassign'
   // Plan 225 — labels. `label.assign` covers every op of the `set-labels`

@@ -88,7 +88,7 @@ Storage is SQLite through Drizzle (`packages/core/src/db/schema.ts`). Every JSON
 
 ### 4.2 Group
 
-A group is a named set of devices; a device belongs to at most one. Groups are managed from the Devices tab strip only (create, rename, delete by right-click); there is no page. Table `groups`; column `devices.groupId`; routes `/api/groups`; target shape `{ groupId }`. The prototype's table, routes, messages, settings, and Studio components for the same concept carry its old name (the word 200 §2.4 forbids) and are renamed by plan 207 (MVP 15 §0.1.3, MVP 13 A.6a).
+A group is a named set of devices; a device belongs to at most one. Groups are managed from the Devices tab strip only (create, rename, delete by right-click; reorder by dragging a tab, Alt+Left/Right, or Move left/right in its menu, with All fixed first); there is no page. The order is farm-wide: `groups.position`, set in full by `PUT /api/groups/order` (every group id, first tab first; a stale list is a 409), and the order every `GET /api/groups` returns. Table `groups`; column `devices.groupId`; routes `/api/groups`; target shape `{ groupId }`. The prototype's table, routes, messages, settings, and Studio components for the same concept carry its old name (the word 200 §2.4 forbids) and are renamed by plan 207 (MVP 15 §0.1.3, MVP 13 A.6a).
 
 ### 4.2a Label
 

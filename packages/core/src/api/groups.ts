@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
-import { desc, eq } from 'drizzle-orm'
+import { asc, eq, max } from 'drizzle-orm'
 import { z } from 'zod'
-import { GroupResponseSchema, type GroupInfo, type ConnectionMedium, type DeviceInfo } from '@enkaku/protocol'
+import { GroupOrderBodySchema, GroupOrderResponseSchema, GroupResponseSchema, type GroupInfo, type ConnectionMedium, type DeviceInfo } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import type { AuthEnv } from '../auth/middleware'
 import { requirePermission } from '../auth/middleware'
@@ -68,32 +68,36 @@ export function createGroupRoutes(deps: {
   const app = new Hono<AuthEnv>()
   const { db } = deps
 
+  const nextPosition = (): number => {
+    const top = db.select({ value: max(groups.position) }).from(groups).get()
+    return top?.value == null ? 0 : top.value + 1
+  }
+
   const mustGet = (id: string): GroupRow => {
     const row = db.select().from(groups).where(eq(groups.id, id)).get()
     if (!row) throw new EnkakuError('group_not_found', `no such group: ${id}`)
     return row
   }
 
+  // The farm's own order (`groups.position` ASC, id as the tiebreak), keyset
+  // paged on that same pair. It used to be `created_at` DESC; migration 0088
+  // backfilled `position` from exactly that order, so no strip moved when the
+  // column arrived.
   app.get('/', (c) => {
     const { cursor: cursorParam, limit } = parsePageQuery(c)
     const cursor = decodeCursor(cursorParam)
-    const keyset = keysetWhere(
-      cursor ? { value: new Date(cursor.sortValue * 1000), id: cursor.id } : null,
-      groups.createdAt,
-      groups.id,
-    )
+    const keyset = keysetWhere(cursor ? { value: cursor.sortValue, id: cursor.id } : null, groups.position, groups.id, 'asc')
     const page = db
       .select()
       .from(groups)
       .where(keyset)
-      .orderBy(desc(groups.createdAt), desc(groups.id))
+      .orderBy(asc(groups.position), asc(groups.id))
       .limit(limit + 1)
       .all()
     const hasMore = page.length > limit
     const rows = hasMore ? page.slice(0, limit) : page
     const last = rows[rows.length - 1]
-    const nextCursor =
-      hasMore && last ? encodeCursor(Math.floor((last.createdAt ?? new Date(0)).getTime() / 1000), last.id) : null
+    const nextCursor = hasMore && last ? encodeCursor(last.position, last.id) : null
     const total = db.select().from(groups).all().length
 
     const items = rows.map((r) => rowToGroupInfo(db, r))
@@ -112,10 +116,50 @@ export function createGroupRoutes(deps: {
       name: body.data.name,
       description: body.data.description ?? null,
       createdAt: new Date(),
+      // A new group joins the END of the strip, after every group an
+      // operator has already placed.
+      position: nextPosition(),
     }
     db.insert(groups).values(row).run()
     deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'group.create', target: row.id, meta: { name: row.name } })
     return typedJson(c, GroupResponseSchema, { group: rowToGroupInfo(db, row) }, 201)
+  })
+
+  /**
+   * Stores the farm's group order: `{ ids }` is EVERY group id, first tab
+   * first. Anything else — a missing id, an unknown one, a duplicate — is a
+   * 409 naming the difference, because it means the caller's list is stale
+   * (a group was created or deleted since it read), and guessing where the
+   * missing group belongs would move a tab nobody touched.
+   *
+   * Registered before `/:id` routes read nothing from this path, but it sits
+   * above them anyway so a later `PUT /:id` can never shadow it.
+   */
+  app.put('/order', requirePermission('device.settings'), async (c) => {
+    const body = GroupOrderBodySchema.safeParse(await c.req.json().catch(() => null))
+    if (!body.success) throw new EnkakuError('E_BAD_REQUEST', 'a body of { ids: string[] } is required')
+    const ids = body.data.ids
+    const known = db.select({ id: groups.id }).from(groups).all().map((r) => r.id)
+    const knownSet = new Set(known)
+    const given = new Set(ids)
+    const unknown = ids.filter((id) => !knownSet.has(id))
+    const missing = known.filter((id) => !given.has(id))
+    if (given.size !== ids.length || unknown.length > 0 || missing.length > 0) {
+      const detail = [
+        unknown.length > 0 ? `unknown: ${unknown.join(', ')}` : null,
+        missing.length > 0 ? `missing: ${missing.join(', ')}` : null,
+        given.size !== ids.length ? 'duplicate ids' : null,
+      ].filter((x): x is string => x !== null)
+      throw new EnkakuError('E_GROUP_ORDER_STALE', `ids must list every group exactly once (${detail.join('; ')})`)
+    }
+    db.transaction((tx) => {
+      ids.forEach((id, index) => {
+        tx.update(groups).set({ position: index }).where(eq(groups.id, id)).run()
+      })
+    })
+    deps.audit.record({ userId: c.get('user')?.id ?? null, action: 'group.reorder', meta: { ids } })
+    const rows = db.select().from(groups).orderBy(asc(groups.position), asc(groups.id)).all()
+    return typedJson(c, GroupOrderResponseSchema, { groups: rows.map((r) => rowToGroupInfo(db, r)) })
   })
 
   app.patch('/:id', requirePermission('device.settings'), async (c) => {
@@ -181,7 +225,7 @@ export function createGroupRoutes(deps: {
 
   app.onError((err, c) => {
     if (err instanceof EnkakuError) {
-      const status = err.code === 'group_not_found' ? 404 : err.code === 'device_not_found' ? 404 : err.code === 'E_BAD_REQUEST' ? 400 : 500
+      const status = err.code === 'group_not_found' ? 404 : err.code === 'device_not_found' ? 404 : err.code === 'E_BAD_REQUEST' ? 400 : err.code === 'E_GROUP_ORDER_STALE' ? 409 : 500
       return c.json(err.toJSON(), status as 400)
     }
     throw err

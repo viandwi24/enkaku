@@ -104,7 +104,7 @@ describe('resolveTarget — labels AND semantics (plan 225 §3.4, plan 20 §4.3)
 
 describe('resolveGroup — a membership lookup (plan 22.0 §3.5, §4.3)', () => {
   function seedGroup(db: Db, id: string, name: string): GroupRow {
-    const row: GroupRow = { id, name, description: null, createdAt: new Date() }
+    const row: GroupRow = { id, name, description: null, createdAt: new Date(), position: 0 }
     db.insert(groups).values(row).run()
     return row
   }

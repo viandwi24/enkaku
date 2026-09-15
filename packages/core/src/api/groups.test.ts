@@ -337,3 +337,61 @@ describe('requirePermission("device.settings") on every group mutation (plan 34 
     expect(res.status).toBe(200)
   })
 })
+
+describe('group order — GET /api/groups and PUT /api/groups/order', () => {
+  async function listIds(app: Hono<AuthEnv>): Promise<string[]> {
+    const res = await app.request('/')
+    const body = (await res.json()) as { items: Array<{ id: string }> }
+    return body.items.map((g) => g.id)
+  }
+
+  test('a created group joins the end of the order', async () => {
+    const db = setUp()
+    const app = makeApp(db)
+    const created: string[] = []
+    for (const name of ['A', 'B', 'C']) {
+      const res = await app.request('/', { method: 'POST', body: JSON.stringify({ name }), headers: { 'content-type': 'application/json' } })
+      expect(res.status).toBe(201)
+      created.push(((await res.json()) as { group: { id: string } }).group.id)
+    }
+    expect(await listIds(app)).toEqual(created)
+  })
+
+  test('PUT stores the full order, GET reads it back, and paging follows it', async () => {
+    const db = setUp()
+    const ids = seed(db, 4)
+    const app = makeApp(db)
+    const wanted = [ids[2], ids[0], ids[3], ids[1]] as string[]
+    const res = await app.request('/order', { method: 'PUT', body: JSON.stringify({ ids: wanted }), headers: { 'content-type': 'application/json' } })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { groups: Array<{ id: string }> }
+    expect(body.groups.map((g) => g.id)).toEqual(wanted)
+    expect(await listIds(app)).toEqual(wanted)
+
+    const first = (await (await app.request('/?limit=2')).json()) as { items: Array<{ id: string }>; nextCursor: string | null }
+    const second = (await (await app.request(`/?limit=2&cursor=${encodeURIComponent(first.nextCursor!)}`)).json()) as { items: Array<{ id: string }> }
+    expect([...first.items, ...second.items].map((g) => g.id)).toEqual(wanted)
+  })
+
+  test('a stale list — missing, unknown or duplicate ids — is a 409 and changes nothing', async () => {
+    const db = setUp()
+    const ids = seed(db, 3)
+    const app = makeApp(db)
+    const before = await listIds(app)
+    const put = (list: string[]) =>
+      app.request('/order', { method: 'PUT', body: JSON.stringify({ ids: list }), headers: { 'content-type': 'application/json' } })
+    expect((await put([ids[0], ids[1]] as string[])).status).toBe(409)
+    expect((await put([...ids, 'nope'])).status).toBe(409)
+    expect((await put([ids[0], ids[0], ids[1], ids[2]] as string[])).status).toBe(409)
+    expect(await listIds(app)).toEqual(before)
+  })
+
+  test('a malformed body is a 400, and reordering needs device.settings', async () => {
+    const db = setUp()
+    seed(db, 2)
+    const bad = await makeApp(db).request('/order', { method: 'PUT', body: JSON.stringify({ ids: 'x' }), headers: { 'content-type': 'application/json' } })
+    expect(bad.status).toBe(400)
+    const anon = await makeApp(db, null).request('/order', { method: 'PUT', body: JSON.stringify({ ids: [] }), headers: { 'content-type': 'application/json' } })
+    expect(anon.status).not.toBe(200)
+  })
+})

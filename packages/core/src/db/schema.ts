@@ -667,8 +667,17 @@ export const groups = sqliteTable(
     name: text('name').notNull(),
     description: text('description'),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    /**
+     * Where the group's tab sits on the Devices strip, ascending, and the
+     * order every `GET /api/groups` reader receives. Farm-wide on purpose: a
+     * rack layout is one fact about the farm, not one operator's view of it.
+     * Written only by `PUT /api/groups/order` (all of them at once) and by
+     * create (`max + 1`, so a new group joins at the end). The migration that
+     * added it backfilled the order the strip already showed (newest first).
+     */
+    position: integer('position').notNull().default(0),
   },
-  (t) => [index('idx_groups_created').on(t.createdAt, t.id)],
+  (t) => [index('idx_groups_created').on(t.createdAt, t.id), index('idx_groups_position').on(t.position, t.id)],
 )
 
 export type GroupRow = typeof groups.$inferSelect
