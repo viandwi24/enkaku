@@ -846,6 +846,14 @@ export function createDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistry {
     // pushing the deadline back, or a genuinely unplugged phone would never
     // go offline at all.
     if (pendingRemovals.has(serial)) return
+    // Nothing to hold: `knownSerials()` includes every stored row, so the
+    // reconciler calls this each tick for a phone that has been unplugged for
+    // days. Without this check each tick re-armed a grace for it and logged a
+    // fresh "dropped by adb" line per stale device forever.
+    if (!serialToStableId.has(serial)) {
+      const row = db.select({ status: devices.status }).from(devices).where(eq(devices.serial, serial)).get()
+      if (!row || row.status === 'offline') return
+    }
     const graceMs = deps.removalGraceMs?.() ?? DEVICE_OFFLINE_GRACE_SEC * 1000
     if (graceMs <= 0) {
       applyRemoval(serial)

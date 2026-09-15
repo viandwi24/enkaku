@@ -915,4 +915,18 @@ describe('registry — onDeviceReady says whether the device came back inside th
     expect(calls.at(-1)?.resumed).toBe(false)
     await registry.stop()
   })
+
+  test('a reconciler tick on a phone already offline arms no grace, so its replug is still a genuine online', async () => {
+    const { registry, emit, calls, kinds } = await readyCalls(100)
+    emit({ kind: 'remove', serial: 'TESTSERIAL' })
+    await new Promise((r) => setTimeout(r, 250))
+    // `knownSerials()` holds every stored row, so the safety net calls this for an offline phone every tick.
+    registry.onRemove('TESTSERIAL')
+    await new Promise((r) => setTimeout(r, 30))
+    emit({ kind: 'add', serial: 'TESTSERIAL', state: 'device' })
+    await new Promise((r) => setTimeout(r, 150))
+    expect(calls.at(-1)?.resumed).toBe(false)
+    expect(kinds.at(-1)).toBe('device.online')
+    await registry.stop()
+  })
 })
