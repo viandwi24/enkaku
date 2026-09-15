@@ -121,7 +121,7 @@ export const ScheduleInfoSchema = z.object({
   /** Plan 68 §3.5 — only meaningful for an agent target. */
   onApprovalRequired: OnApprovalRequiredSchema,
   lastFiredAt: z.number().nullable(),
-  /** The batch this schedule OWNS (plan 211 §3.2 decision 4); its member jobs are one per target device. */
+  /** The batch the most recent dispatched fire created. Every fire creates its own batch, so this always names the newest; earlier ones are listed through `GET /api/schedules/:id/jobs`. */
   batchId: z.string().nullable(),
   /** The last fire's decision (plan 211 §3.2 decision 5), replacing the deleted `schedule_runs` ledger. */
   lastFireOutcome: z.string().nullable().default(null),

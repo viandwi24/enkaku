@@ -16,5 +16,5 @@ export const ValidateResponseSchema = z.object({
   error: z.string().optional(),
 })
 
-/** `GET /api/schedules/:id/jobs` (keyset) — the schedule's member jobs (plan 211 §3.2 decision 4). */
+/** `GET /api/schedules/:id/jobs` (keyset) — every job any fire of this schedule created (`jobs.schedule_id`), across all its batches. */
 export const ScheduleJobsPageResponseSchema = pageSchema(JobInfoSchema)

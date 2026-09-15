@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm'
 import { createAuditLogger } from '../auth/audit'
 import { openDb, runMigrations, type Db } from '../db'
 import { batches, devices, jobRuns, jobs, schedules, scheduleWorkflowTargets, scripts, workflows, type ScheduleRow } from '../db/schema'
+import { createBatchPacer } from '../groups/pacer'
 import { createRunStore } from '../jobs/runs/store'
 import { createJobStore } from '../queue/job-store'
 import type { Scheduler } from '../queue/scheduler'
@@ -12,22 +13,21 @@ import { createWorkflowStore } from '../workflows/store'
 import { fireOnce, scheduleTarget, type ScheduleRunnerDeps } from './runner'
 
 /**
- * `schedules/runner.test.ts` (plan 211 §7.1, G10) — re-keyed from the
- * deleted `schedule_runs` ledger and `jobs.status`/`batches.last_batch_id`
- * to the job/run split (plan 211 §3.2 decision 4): a schedule owns ONE
- * batch across its whole life, one member job per target device, and each
- * fire adds a RUN to every member rather than creating new jobs or a new
- * batch. `schedules.batch_id` (not `last_batch_id`) is the schedule's own
- * batch; `schedules.last_fire_outcome`/`last_fire_detail` replace the
- * deleted per-fire ledger.
+ * `schedules/runner.test.ts` (plan 211 §7.1, G10). Every fire creates its OWN
+ * batch through `createBatch`/`createWorkflowBatch` — the same functions a
+ * manual run-script or run-workflow uses — so the batch is paced by
+ * `planFirst` like any other, earlier batches are never touched, and
+ * `schedules.batch_id` names the newest. (The reuse-one-batch model of plan
+ * 211 §3.2 decision 4 added unplanned runs to an old batch on every later
+ * fire, which started every phone at once.) `schedules.last_fire_outcome`/
+ * `last_fire_detail` replace the deleted per-fire ledger.
  *
  * This file is a deliberately SCOPED replacement for the pre-211 suite
  * (plan 200 §8.3 — a test whose fixtures assert a structurally impossible
  * shape is rewritten to what the plan's own goal checklist names, not
- * ported wholesale): it proves G10's two named tests plus the handful of
- * adjacent behaviors (first fire creates the batch/member jobs; a later
- * fire reuses them; a device joining after the first fire gets its own new
- * job) that the same `fireOnce` call path also governs. Every OTHER
+ * ported wholesale): it proves the per-fire batch, its pacing, the overlap
+ * policy against the previous fire's batch, and the label and workflow
+ * targets that the same `fireOnce` call path also governs. Every OTHER
  * pre-211 describe block in the deleted version (jitter, catch-up, agent
  * targets, cancel-previous, spend caps) is a real, separate testing gap
  * this pass leaves open — noted in §11, not silently dropped.
@@ -122,7 +122,28 @@ function runsByDevice(db: Db, batchId: string): Map<string, { trigger: string; s
   return out
 }
 
-describe('fireOnce — a schedule owns one job per device, one batch across its life (plan 211 §3.2 decision 4, G10)', () => {
+/** Marks every member's latest run of a batch `success`, so the next fire is not an overlap. */
+function settleBatch(db: Db, batchId: string) {
+  const runs = createRunStore(db)
+  for (const j of db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()) {
+    const run = runs.latestRun(j.id)
+    if (run) db.update(jobRuns).set({ status: 'success', finishedAt: new Date() }).where(eq(jobRuns.id, run.id)).run()
+  }
+}
+
+/** Everything a fire could have touched on one batch: its row, its member jobs, and every run on them. */
+function batchSnapshot(db: Db, batchId: string): string {
+  const batch = db.select().from(batches).where(eq(batches.id, batchId)).get()
+  const memberJobs = db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()
+  const runs = memberJobs.flatMap((j) => db.select().from(jobRuns).where(eq(jobRuns.jobId, j.id)).all())
+  return JSON.stringify({ batch, memberJobs, runs })
+}
+
+function scheduleRow(db: Db, id = 's1'): ScheduleRow {
+  return db.select().from(schedules).where(eq(schedules.id, id)).get()!
+}
+
+describe('fireOnce — every fire creates its own batch', () => {
   test('the first fire creates the batch and one member job per target device', async () => {
     const db = setUp()
     seedDevice(db, 'd1')
@@ -141,106 +162,170 @@ describe('fireOnce — a schedule owns one job per device, one batch across its 
     for (const j of memberJobs) expect(deps.runs.getJob(j.id)?.runCount).toBe(1)
   })
 
-  test('each fire adds one run with trigger schedule to every member job', async () => {
+  test('a second fire creates a NEW batch, leaves the first untouched, and points schedule.batchId at the newest', async () => {
     const db = setUp()
     seedDevice(db, 'd1')
     seedDevice(db, 'd2')
-    const schedule = seedSchedule(db, { id: 's1' })
+    seedSchedule(db, { id: 's1' })
     const deps = baseDeps(db)
 
-    await fireOnce(deps, schedule, new Date())
-    const afterFirst = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!
-    const batchId = afterFirst.batchId!
+    await fireOnce(deps, scheduleRow(db), new Date())
+    const firstBatchId = scheduleRow(db).batchId!
+    settleBatch(db, firstBatchId)
+    const firstBefore = batchSnapshot(db, firstBatchId)
 
-    // Settle every member's run so the second fire is not blocked by overlap.
-    for (const j of db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()) {
-      const run = deps.runs.latestRun(j.id)
-      if (run) db.update(jobRuns).set({ status: 'success', finishedAt: new Date() }).where(eq(jobRuns.id, run.id)).run()
+    await fireOnce(deps, scheduleRow(db), new Date())
+
+    const row = scheduleRow(db)
+    expect(row.lastFireOutcome).toBe('dispatched')
+    expect(row.batchId).toBeTruthy()
+    expect(row.batchId).not.toBe(firstBatchId)
+    expect(db.select().from(batches).all()).toHaveLength(2)
+    // The earlier batch, its member jobs and every run on them are byte-for-byte what they were.
+    expect(batchSnapshot(db, firstBatchId)).toBe(firstBefore)
+
+    const newMembers = db.select().from(jobs).where(eq(jobs.batchId, row.batchId!)).all()
+    expect(new Set(newMembers.map((j) => j.deviceId))).toEqual(new Set(['d1', 'd2']))
+    for (const j of newMembers) {
+      expect(j.scheduleId).toBe('s1')
+      expect(deps.runs.getJob(j.id)?.runCount).toBe(1)
     }
-
-    await fireOnce(deps, { ...schedule, batchId, lastFiredAt: afterFirst.lastFiredAt }, new Date())
-    // Settle between the two later fires so the third is not skipped for overlap.
-    for (const j of db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()) {
-      const run = deps.runs.latestRun(j.id)
-      if (run) db.update(jobRuns).set({ status: 'success', finishedAt: new Date() }).where(eq(jobRuns.id, run.id)).run()
-    }
-    await fireOnce(deps, { ...schedule, batchId, lastFiredAt: afterFirst.lastFiredAt }, new Date())
-
-    // 2 jobs, still — 2 devices, 3 fires (G10's own parameter: "2 devices,
-    // 3 fires: 2 jobs, 6 runs, every run trigger = 'schedule'").
-    const memberJobs = db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()
-    expect(memberJobs).toHaveLength(2)
-    const byDevice = runsByDevice(db, batchId)
-    for (const [, runsForDevice] of byDevice) {
-      expect(runsForDevice).toHaveLength(3)
-      for (const r of runsForDevice) expect(r.trigger).toBe('schedule')
+    for (const [, runsForDevice] of runsByDevice(db, row.batchId!)) {
+      expect(runsForDevice.map((r) => r.trigger)).toEqual(['schedule'])
     }
   })
 
-  test('a device joining the target after the first fire gets its own new job, not a run on someone else\'s', async () => {
+  test('a device joining the target after the first fire is in the next fire\'s batch', async () => {
     const db = setUp()
     seedDevice(db, 'd1')
     seedDevice(db, 'd2')
-    const schedule = seedSchedule(db, { id: 's1', deviceIds: ['d1'] })
+    seedSchedule(db, { id: 's1', deviceIds: ['d1'] })
     const deps = baseDeps(db)
 
-    await fireOnce(deps, schedule, new Date())
-    const afterFirst = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!
-    const batchId = afterFirst.batchId!
-    for (const j of db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()) {
-      const run = deps.runs.latestRun(j.id)
-      if (run) db.update(jobRuns).set({ status: 'success', finishedAt: new Date() }).where(eq(jobRuns.id, run.id)).run()
-    }
-    expect(db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()).toHaveLength(1)
+    await fireOnce(deps, scheduleRow(db), new Date())
+    const firstBatchId = scheduleRow(db).batchId!
+    settleBatch(db, firstBatchId)
 
-    await fireOnce(deps, { ...schedule, batchId, deviceIds: ['d1', 'd2'], lastFiredAt: afterFirst.lastFiredAt }, new Date())
+    db.update(schedules).set({ deviceIds: ['d1', 'd2'] }).where(eq(schedules.id, 's1')).run()
+    await fireOnce(deps, scheduleRow(db), new Date())
 
-    const memberJobs = db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()
-    expect(memberJobs).toHaveLength(2)
-    const d1Job = memberJobs.find((j) => j.deviceId === 'd1')!
-    const d2Job = memberJobs.find((j) => j.deviceId === 'd2')!
-    expect(deps.runs.getJob(d1Job.id)?.runCount).toBe(2) // fired twice
-    expect(deps.runs.getJob(d2Job.id)?.runCount).toBe(1) // joined on the second fire
+    expect(db.select().from(jobs).where(eq(jobs.batchId, firstBatchId)).all().map((j) => j.deviceId)).toEqual(['d1'])
+    const newMembers = db.select().from(jobs).where(eq(jobs.batchId, scheduleRow(db).batchId!)).all()
+    expect(new Set(newMembers.map((j) => j.deviceId))).toEqual(new Set(['d1', 'd2']))
   })
 })
 
-describe('fireOnce — onOverlap (plan 211 §3.2 decision 4, G10)', () => {
-  test('onOverlap skip adds no run while a previous run is live', async () => {
+describe('fireOnce — a later fire is planned like a manual batch (plan 316)', () => {
+  test('a sequential schedule\'s second fire gets its own sub-groups: sub-group 0 released, later sub-groups held', async () => {
+    // The bug this closes: a later fire reused the first batch and added runs
+    // with no `batchRepeat`, `batchWave` or `held`, which the pacer ignores and
+    // the claim releases — so every phone started at once.
+    const db = setUp()
+    for (const id of ['d1', 'd2', 'd3', 'd4']) seedDevice(db, id)
+    seedSchedule(db, { id: 's1', deviceIds: ['d1', 'd2', 'd3', 'd4'], sequential: true, waveSize: 2, repeatCount: 2 })
+    const deps = baseDeps(db)
+    const pacer = createBatchPacer({ db, runs: deps.runs, scheduler: fakeScheduler(), log: createLogger('test') })
+    const pacedDeps = { ...deps, pacer }
+
+    try {
+      const latestRunShape = (batchId: string) =>
+        db
+          .select()
+          .from(jobs)
+          .where(eq(jobs.batchId, batchId))
+          .orderBy(jobs.batchSeq)
+          .all()
+          .map((j) => {
+            const run = deps.runs.latestRun(j.id)!
+            return { deviceId: j.deviceId, batchRepeat: run.batchRepeat, batchWave: run.batchWave, held: run.held }
+          })
+
+      await fireOnce(pacedDeps, scheduleRow(db), new Date())
+      const firstBatchId = scheduleRow(db).batchId!
+      const expected = [
+        { deviceId: 'd1', batchRepeat: 0, batchWave: 0, held: false },
+        { deviceId: 'd2', batchRepeat: 0, batchWave: 0, held: false },
+        { deviceId: 'd3', batchRepeat: 0, batchWave: 1, held: true },
+        { deviceId: 'd4', batchRepeat: 0, batchWave: 1, held: true },
+      ]
+      expect(latestRunShape(firstBatchId)).toEqual(expected)
+
+      settleBatch(db, firstBatchId)
+      const firstBefore = batchSnapshot(db, firstBatchId)
+
+      await fireOnce(pacedDeps, scheduleRow(db), new Date())
+      const secondBatchId = scheduleRow(db).batchId!
+      expect(secondBatchId).not.toBe(firstBatchId)
+      const secondBatch = db.select().from(batches).where(eq(batches.id, secondBatchId)).get()!
+      expect(secondBatch.sequential).toBe(true)
+      expect(secondBatch.waveSize).toBe(2)
+      expect(secondBatch.repeatCount).toBe(2)
+      // Planned exactly like the first — its own phase 0, its own sub-groups.
+      expect(latestRunShape(secondBatchId)).toEqual(expected)
+      // And the first fire's finished runs were not re-planned.
+      expect(batchSnapshot(db, firstBatchId)).toBe(firstBefore)
+    } finally {
+      pacer.stop()
+    }
+  })
+})
+
+describe('fireOnce — onOverlap is judged against the previous fire\'s batch', () => {
+  test('skip creates no batch while the previous one still has a queued member, and says why', async () => {
     const db = setUp()
     seedDevice(db, 'd1')
-    const schedule = seedSchedule(db, { id: 's1', deviceIds: ['d1'], onOverlap: 'skip' })
-    const deps = baseDeps(db)
+    seedSchedule(db, { id: 's1', deviceIds: ['d1'], onOverlap: 'skip' })
+    const fired: { outcome: string; batchId: string | null }[] = []
+    const deps = baseDeps(db, { broadcastFired: (msg) => fired.push({ outcome: msg.payload.outcome, batchId: msg.payload.batchId }) })
 
-    await fireOnce(deps, schedule, new Date())
-    const afterFirst = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!
-    const batchId = afterFirst.batchId!
-    const job = db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()[0]!
-    // The run is left `running` (or `queued`) — never settled — so the batch is still active.
-    expect(deps.runs.getJob(job.id)?.runCount).toBe(1)
+    await fireOnce(deps, scheduleRow(db), new Date())
+    const firstBatchId = scheduleRow(db).batchId!
+    // The first fire's run is left queued — never settled — so the batch is still active.
+    const firstBefore = batchSnapshot(db, firstBatchId)
 
-    await fireOnce(deps, { ...schedule, batchId, lastFiredAt: afterFirst.lastFiredAt }, new Date())
+    await fireOnce(deps, scheduleRow(db), new Date())
 
-    expect(deps.runs.getJob(job.id)?.runCount).toBe(1) // unchanged — no run added
-    const row = db.select().from(schedules).where(eq(schedules.id, 's1')).get()
-    expect(row?.lastFireOutcome).toBe('skipped-overlap')
+    const row = scheduleRow(db)
+    expect(row.lastFireOutcome).toBe('skipped-overlap')
+    expect(row.lastFireDetail).toContain('previous run still active')
+    expect(row.batchId).toBe(firstBatchId) // still the newest batch there is
+    expect(db.select().from(batches).all()).toHaveLength(1)
+    expect(batchSnapshot(db, firstBatchId)).toBe(firstBefore)
+    expect(fired.at(-1)).toEqual({ outcome: 'skipped-overlap', batchId: null })
   })
 
-  test('onOverlap queue adds a run even while the previous one is still live', async () => {
+  test('a settled previous batch is not an overlap', async () => {
     const db = setUp()
     seedDevice(db, 'd1')
-    const schedule = seedSchedule(db, { id: 's1', deviceIds: ['d1'], onOverlap: 'queue' })
+    seedSchedule(db, { id: 's1', deviceIds: ['d1'], onOverlap: 'skip' })
     const deps = baseDeps(db)
 
-    await fireOnce(deps, schedule, new Date())
-    const afterFirst = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!
-    const batchId = afterFirst.batchId!
-    const job = db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()[0]!
+    await fireOnce(deps, scheduleRow(db), new Date())
+    settleBatch(db, scheduleRow(db).batchId!)
+    await fireOnce(deps, scheduleRow(db), new Date())
 
-    await fireOnce(deps, { ...schedule, batchId, lastFiredAt: afterFirst.lastFiredAt }, new Date())
+    expect(scheduleRow(db).lastFireOutcome).toBe('dispatched')
+    expect(db.select().from(batches).all()).toHaveLength(2)
+  })
 
-    expect(deps.runs.getJob(job.id)?.runCount).toBe(2)
-    const row = db.select().from(schedules).where(eq(schedules.id, 's1')).get()
-    expect(row?.lastFireOutcome).toBe('dispatched')
+  test('queue creates the new batch anyway and moves schedule.batchId to it, leaving the live one alone', async () => {
+    const db = setUp()
+    seedDevice(db, 'd1')
+    seedSchedule(db, { id: 's1', deviceIds: ['d1'], onOverlap: 'queue' })
+    const deps = baseDeps(db)
+
+    await fireOnce(deps, scheduleRow(db), new Date())
+    const firstBatchId = scheduleRow(db).batchId!
+    const firstBefore = batchSnapshot(db, firstBatchId)
+
+    await fireOnce(deps, scheduleRow(db), new Date())
+
+    const row = scheduleRow(db)
+    expect(row.lastFireOutcome).toBe('dispatched')
+    expect(row.lastFireDetail).toContain('previous run still active')
+    expect(row.batchId).not.toBe(firstBatchId)
+    expect(db.select().from(jobs).where(eq(jobs.batchId, row.batchId!)).all()).toHaveLength(1)
+    expect(batchSnapshot(db, firstBatchId)).toBe(firstBefore)
   })
 })
 
@@ -293,7 +378,7 @@ describe('fireOnce — a label target (plan 225)', () => {
     applyDeviceLabels(db, 'd2', 'add', [smoke.id])
     await fireOnce(deps, afterFirst, new Date())
 
-    const memberJobs = db.select().from(jobs).where(eq(jobs.batchId, afterFirst.batchId!)).all()
+    const memberJobs = db.select().from(jobs).where(eq(jobs.batchId, scheduleRow(db).batchId!)).all()
     expect(new Set(memberJobs.map((j) => j.deviceId))).toEqual(new Set(['d1', 'd2']))
   })
 
@@ -406,61 +491,57 @@ describe('fireOnce — a schedule may target a WORKFLOW (plan 314 §7.1)', () =>
     expect([...runsByDevice(db, batchId).values()].flat().map((r) => r.trigger)).toEqual(['schedule'])
   })
 
-  test('a later fire reuses the batch, adds a run per member, and gives a NEW device its own job', async () => {
+  test('a later fire creates a NEW workflow batch, with a device that joined in between', async () => {
     const db = setUp()
     seedDevice(db, 'd1')
     seedWorkflow(db)
-    const schedule = seedSchedule(db, { id: 's1', scriptRef: '' })
+    seedSchedule(db, { id: 's1', scriptRef: '' })
     seedWorkflowSchedule(db, 's1')
     const deps = baseDeps(db, { workflows: createWorkflowStore(db) })
 
-    await fireOnce(deps, schedule, new Date())
-    const batchId = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!.batchId!
-    for (const j of db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()) {
-      const run = deps.runs.latestRun(j.id)
-      if (run) db.update(jobRuns).set({ status: 'success' }).where(eq(jobRuns.id, run.id)).run()
-    }
+    await fireOnce(deps, scheduleRow(db), new Date())
+    const firstBatchId = scheduleRow(db).batchId!
+    settleBatch(db, firstBatchId)
+    const firstBefore = batchSnapshot(db, firstBatchId)
 
-    // A phone joins the group between the two firings — the target is
-    // re-resolved at EVERY fire, so it must be in the next one.
+    // A phone joins between the two firings — the target is re-resolved at
+    // EVERY fire, so it must be in the next one.
     seedDevice(db, 'd2')
-    const after = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!
-    await fireOnce(deps, after, new Date())
+    await fireOnce(deps, scheduleRow(db), new Date())
 
-    expect(db.select().from(schedules).where(eq(schedules.id, 's1')).get()!.batchId).toBe(batchId)
-    const byDevice = runsByDevice(db, batchId)
-    expect(byDevice.get('d1')).toHaveLength(2)
+    const secondBatchId = scheduleRow(db).batchId!
+    expect(secondBatchId).not.toBe(firstBatchId)
+    expect(batchSnapshot(db, firstBatchId)).toBe(firstBefore)
+    const byDevice = runsByDevice(db, secondBatchId)
+    expect(byDevice.get('d1')).toHaveLength(1)
     expect(byDevice.get('d2')).toHaveLength(1)
-    expect(db.select().from(batches).where(eq(batches.id, batchId)).all()).toHaveLength(1)
+    for (const j of db.select().from(jobs).where(eq(jobs.batchId, secondBatchId)).all()) expect(j.kind).toBe('workflow')
   })
 
-  test('a later fire re-snapshots the CURRENT document onto a settled member', async () => {
+  test('a later fire snapshots the CURRENT document onto its own batch, and the earlier batch keeps its own', async () => {
     // Editing a warm-up must change what tomorrow runs. Pinning the document
     // at the first fire would mean an operator edits it, sees it saved, and
     // the farm keeps running last month's version with nothing to show.
     const db = setUp()
     seedDevice(db, 'd1')
     seedWorkflow(db)
-    const schedule = seedSchedule(db, { id: 's1', scriptRef: '' })
+    seedSchedule(db, { id: 's1', scriptRef: '' })
     seedWorkflowSchedule(db, 's1')
-    const store = createWorkflowStore(db)
-    const deps = baseDeps(db, { workflows: store })
+    const deps = baseDeps(db, { workflows: createWorkflowStore(db) })
 
-    await fireOnce(deps, schedule, new Date())
-    const batchId = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!.batchId!
-    for (const j of db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()) {
-      const run = deps.runs.latestRun(j.id)
-      if (run) db.update(jobRuns).set({ status: 'success' }).where(eq(jobRuns.id, run.id)).run()
-    }
+    await fireOnce(deps, scheduleRow(db), new Date())
+    const firstBatchId = scheduleRow(db).batchId!
+    settleBatch(db, firstBatchId)
 
     const edited = { ...warmupDoc(), title: 'Warmup, edited' }
     db.update(workflows).set({ doc: edited, updatedAt: new Date() }).where(eq(workflows.name, 'warmup')).run()
 
-    const after = db.select().from(schedules).where(eq(schedules.id, 's1')).get()!
-    await fireOnce(deps, after, new Date())
+    await fireOnce(deps, scheduleRow(db), new Date())
 
-    const member = db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()[0]!
-    expect((member.workflowDoc as { title?: string }).title).toBe('Warmup, edited')
+    const newMember = db.select().from(jobs).where(eq(jobs.batchId, scheduleRow(db).batchId!)).all()[0]!
+    expect((newMember.workflowDoc as { title?: string }).title).toBe('Warmup, edited')
+    const oldMember = db.select().from(jobs).where(eq(jobs.batchId, firstBatchId)).all()[0]!
+    expect((oldMember.workflowDoc as { title?: string }).title).toBe('Warmup')
   })
 
   test('a workflow schedule on a core with no workflow store fails NAMED, never silently', async () => {

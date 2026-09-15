@@ -383,10 +383,10 @@ export function createWorkflowBatch(
 
 /**
  * Adds a run to every named member job of a batch (a re-run or re-run-failed,
- * plan 211 §4.8/§4.9). Creates a member job for a device newly in the target
- * that has none yet — deliberately NOT done here (a schedule's own re-target
- * happens in `schedules/runner.ts`; a batch's own re-run only ever touches
- * jobs the batch already has).
+ * plan 211 §4.8/§4.9). It never creates a member job: a batch's own re-run
+ * only ever touches jobs the batch already has. A schedule fire does not come
+ * here — every fire creates its own batch through `createBatch` or
+ * `createWorkflowBatch`, so it is paced like any other batch.
  */
 export function addRunsToBatch(
   deps: BatchDispatchDeps,

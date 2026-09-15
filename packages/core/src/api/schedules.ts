@@ -32,6 +32,7 @@ import { requirePermission } from '../auth/middleware'
 import { rowToBatchInfo, type BatchRoutesDeps } from './batches'
 import type { Db } from '../db'
 import { batches, groups, schedules, scheduleAgentTargets, scheduleWorkflowTargets, type ScheduleAgentTargetRow, type ScheduleWorkflowTargetRow, type ScheduleRow, type ScriptRow } from '../db/schema'
+import type { BatchPacer } from '../groups/pacer'
 import type { ExecutorRegistry } from '../jobs/executor'
 import type { RunStore } from '../jobs/runs/store'
 import { validateScriptForRun } from '../jobs/validate-script'
@@ -292,6 +293,8 @@ export interface ScheduleRoutesDeps {
    */
   shellMode?: () => ShellMode
   transferEnabled?: () => boolean
+  /** The batch pacer, passed straight through to `fireOnce` so `run-now` plans its batch exactly as a cron firing does. */
+  pacer?: BatchPacer
 }
 
 /** One `scheduleAgentTargets` row, or null for a script-kind schedule (plan 68 §4.1's companion-table discriminator). */
@@ -431,6 +434,7 @@ export function createScheduleRoutes(deps: ScheduleRoutesDeps): Hono<AuthEnv> {
     ...(deps.agentDispatch ? { agentDispatch: deps.agentDispatch } : {}),
     ...(deps.scheduledAgentCeilings ? { scheduledAgentCeilings: deps.scheduledAgentCeilings } : {}),
     ...(deps.notifySystem ? { notifySystem: deps.notifySystem } : {}),
+    ...(deps.pacer ? { pacer: deps.pacer } : {}),
   }
 
   const batchDeps: BatchRoutesDeps = {

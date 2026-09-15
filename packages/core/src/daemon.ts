@@ -2392,6 +2392,11 @@ let blobGc: BlobGc | null = null
         // abort path for a running member, the SAME instance `batchRoutes`
         // gets (no second one — `stopBatch`'s own "no second abort path").
         jobService,
+        // Every fire creates its own batch through `createBatch`/
+        // `createWorkflowBatch`, which call `pacer.planFirst` — without the
+        // SAME pacer the batch routes and the actions router get, a scheduled
+        // batch's sub-groups, waves and repetitions would never be planned.
+        pacer,
       })
 
       // Remote jobs: a device owned by a node runs on that node (plan 12 §4.5).
@@ -3496,6 +3501,10 @@ let blobGc: BlobGc | null = null
           // time, so a schedule cannot be saved against a workflow that does
           // not exist and then fail silently at its first firing.
           workflows: workflowStore,
+          // `run-now` fires through `fireOnce` with this router's own deps, so
+          // it needs the same pacer the cron firing gets, or its batch would
+          // start every phone at once.
+          pacer,
           // Plan 93 §3.12, §4.6, step 93.8 — the same pair `batchRoutes`
           // above and `scheduleRunner`'s own construction get, so a
           // schedule's `internal:install` is gated identically whether it

@@ -29,11 +29,10 @@ function ScheduleDetail() {
   useEffect(load, [scheduleId])
 
   useEffect(() => {
-    // `schedules.batchId` (plan 211 §4.1, renamed from `lastBatchId`) is the
-    // ONE batch this schedule owns — every fire adds runs to its member
-    // jobs, it does not create a new batch (MVP 14 §1, plan 211 §3.2
-    // decision 4). This is why there is one "Last run" card, not a growing
-    // list of batches.
+    // `schedules.batchId` is the batch the most recent dispatched fire
+    // created. Every fire creates its own batch, and the core moves this
+    // pointer on each one, so the "Last run" card and its Stop button below
+    // always address the NEWEST batch. Earlier fires stay on the Jobs tab.
     if (!schedule?.batchId) {
       setLastBatch(null)
       return

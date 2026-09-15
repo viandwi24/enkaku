@@ -16,10 +16,11 @@ import {
 } from '@enkaku/protocol'
 import type { AuditLogger } from '../auth/audit'
 import { stopBatch } from '../api/batches'
-import { addRunsToBatch, createBatch, createWorkflowBatch, type BatchDispatchDeps } from '../groups/dispatch'
+import { createBatch, createWorkflowBatch, type BatchDispatchDeps } from '../groups/dispatch'
+import type { BatchPacer } from '../groups/pacer'
 import { resolveGroup, resolveTarget } from '../groups/resolve'
 import type { Db } from '../db'
-import { batches, groups, jobs, schedules, scheduleAgentTargets, scheduleWorkflowTargets, type ScheduleAgentTargetRow, type ScheduleRow, type ScheduleWorkflowTargetRow } from '../db/schema'
+import { groups, jobs, schedules, scheduleAgentTargets, scheduleWorkflowTargets, type ScheduleAgentTargetRow, type ScheduleRow, type ScheduleWorkflowTargetRow } from '../db/schema'
 import type { JobStore } from '../queue/job-store'
 import type { RunStore } from '../jobs/runs/store'
 import type { Scheduler } from '../queue/scheduler'
@@ -138,6 +139,15 @@ export interface ScheduleRunnerDeps {
    * `createBatchRoutes` itself gets.
    */
   jobService?: Pick<JobService, 'cancel'>
+  /**
+   * The batch pacer every fire's `createBatch`/`createWorkflowBatch` hands to
+   * `planFirst` — the SAME instance the actions router and the batch routes
+   * use, so a scheduled batch gets its sequential sub-groups, waves,
+   * repetitions and per-device delay exactly as a manual one does. Optional
+   * so a test that does not care about pacing needs none; omitted, a batch
+   * is created unplanned (every member released at once), as it was before.
+   */
+  pacer?: BatchPacer
 }
 
 interface ResolvedDeps extends ScheduleRunnerDeps {
@@ -201,10 +211,12 @@ export function scheduleTarget(schedule: ScheduleRow): { groupId: string } | { d
 const NON_TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set(['queued', 'running'])
 
 /**
- * Overlap is "any member job's latest run is non-terminal" (plan 211 §3.2
- * decision 4), replacing `isBatchActive`'s old batch-status check — a
- * schedule's batch has no terminal status of its own any more once it is
- * reused across fires; only its members' latest runs say whether it is live.
+ * Overlap is "any member job of the previous fire's batch has a queued or
+ * running latest run". Read from the runs rather than the cached
+ * `batches.status`, which can lag them. It still covers a paced batch
+ * between phases: the pacer adds the next repetition's runs (queued, or
+ * queued and held) in the same step that settles the last one, so a batch
+ * with work left always has a non-terminal latest run somewhere.
  */
 function isBatchActive(deps: { db: Db; runs: RunStore }, batchId: string | null): boolean {
   if (!batchId) return false
@@ -243,24 +255,34 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
   // touched, so the script branch below is byte-for-byte what it was.
   const workflowTarget = deps.db.select().from(scheduleWorkflowTargets).where(eq(scheduleWorkflowTargets.scheduleId, schedule.id)).get() ?? null
 
-  const active = isBatchActive(deps, schedule.batchId)
+  // Every fire creates its OWN batch, and `schedules.batchId` names the newest
+  // one — so overlap is judged against the previous fire's batch only.
+  const previousBatchId = schedule.batchId
+  const active = isBatchActive(deps, previousBatchId)
 
   // Claim this fire time first — see the doc comment above.
   deps.db.update(schedules).set({ lastFiredAt: dueAt }).where(eq(schedules.id, schedule.id)).run()
 
   let outcome: ScheduleRunOutcome
-  let batchId: string | null = schedule.batchId
+  // This fire's own batch, or null when it created none. Never the previous
+  // fire's: a skipped or failed fire leaves `schedules.batchId` where it was.
+  let batchId: string | null = null
   let detail: string | null = null
   let runIds: string[] = []
 
   if (active && schedule.onOverlap === 'skip') {
+    // Two batches on the same phones is exactly what `skip` exists to prevent.
     outcome = 'skipped-overlap'
-    detail = `the previous batch (${schedule.batchId}) has not finished`
+    detail = `previous run still active: batch ${previousBatchId} has queued or running members`
+    deps.log.info(`schedule ${schedule.id} (${schedule.name}) skipped: ${detail}`)
   } else {
-    if (active && schedule.onOverlap === 'cancel-previous' && schedule.batchId) {
+    if (active && schedule.onOverlap === 'queue') {
+      detail = `previous run still active (batch ${previousBatchId}); this fire's runs queue behind it`
+    }
+    if (active && schedule.onOverlap === 'cancel-previous' && previousBatchId) {
       // Plan 94 §3.9, §4.9, step 94.8 — routed through the SAME stop `POST
       // /api/batches/:id/stop` uses (no second implementation).
-      const stopped = stopBatch(deps, schedule.batchId, null)
+      const stopped = stopBatch(deps, previousBatchId, null)
       detail = `stopped the previous run before starting — ${stopped.cancelled} queued, ${stopped.aborted} running`
     }
 
@@ -277,6 +299,9 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
       onJobStatus: deps.onJobStatus,
       ...(deps.validateScript ? { validateScript: deps.validateScript } : {}),
       ...(deps.registry ? { scriptNameOf: (scriptId: string) => deps.registry!.get(scriptId) } : {}),
+      // What makes a scheduled batch paced at all: `createBatch` and
+      // `createWorkflowBatch` call `pacer.planFirst` only when one is given.
+      ...(deps.pacer ? { pacer: deps.pacer } : {}),
     }
     try {
       // The queue timeout lives on the run, set from whatever created it
@@ -292,7 +317,7 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
         // duplicating anything: overlap, jitter, the queue timeout, the
         // outcome row and the `schedule.fired` broadcast all stay in this
         // one function, shared by all three work kinds.
-        const dispatched = dispatchWorkflowFire(deps, schedule, workflowTarget, batchDeps, batchId, expiresAtShared)
+        const dispatched = dispatchWorkflowFire(deps, schedule, workflowTarget, batchDeps, expiresAtShared)
         batchId = dispatched.batchId
         runIds = dispatched.runIds
         outcome = 'dispatched'
@@ -318,71 +343,31 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
         )
       }
 
-      const expiresAt = expiresAtShared
-
-      if (!batchId) {
-        // First fire (plan 211 §3.2 decision 4): the schedule owns a NEW
-        // batch whose member jobs are one per target device.
-        const { batch, jobs: memberJobs } = createBatch(batchDeps, {
-          scriptId: resolved.id,
-          params: reconciliation.value,
-          target: scheduleTarget(schedule),
-          concurrency: schedule.concurrency,
-          order: schedule.order as BatchOrder,
-          priority: schedule.priority,
-          createdBy: schedule.createdBy,
-          expiresAt,
-          pacing: schedulePacing(schedule),
-          // G10's own parameter ("every run trigger = 'schedule'") and
-          // `GET /api/schedules/:id/jobs` both need this stamped from the
-          // FIRST fire, not only from a later one that goes through
-          // `addRunsToBatch` below.
-          scheduleId: schedule.id,
-          trigger: 'schedule',
-        })
-        batchId = batch.id
-        // Every member job's own first run was created by `createBatch` —
-        // those ARE this fire's runs.
-        runIds = memberJobs.map((j) => j.latestRunId).filter((id): id is string => id !== null)
-      } else {
-        // A later fire (plan 211 §3.2 decision 4): reuse the batch. A device
-        // newly in the target that has no member job yet gets one; a
-        // device that left the target keeps its existing job untouched.
-        const deviceIds = resolveScheduleDeviceIds(deps.db, schedule)
-        const existingMembers = deps.db.select().from(jobs).where(eq(jobs.batchId, batchId)).all()
-        const byDevice = new Map(existingMembers.map((j) => [j.deviceId, j]))
-        const nextSeqBase = existingMembers.length
-        const jobIdsToRun: string[] = []
-        let created = 0
-        for (const deviceId of deviceIds) {
-          const existing = byDevice.get(deviceId)
-          if (existing) {
-            jobIdsToRun.push(existing.id)
-            continue
-          }
-          const newJob = deps.runs.createJob({
-            kind: 'script',
-            scriptId: resolved.id,
-            deviceId,
-            params: reconciliation.value,
-            scriptName: resolved.name,
-            scriptVersion: resolved.version,
-            batchId,
-            batchSeq: nextSeqBase + created,
-            scheduleId: schedule.id,
-            createdBy: schedule.createdBy,
-          })
-          created += 1
-          jobIdsToRun.push(newJob.id)
-        }
-        const { runIds: addedRunIds } = addRunsToBatch(batchDeps, batchId, {
-          jobIds: jobIdsToRun,
-          trigger: 'schedule',
-          priority: schedule.priority,
-          expiresAt,
-        })
-        runIds = addedRunIds
-      }
+      // Every fire creates its OWN batch through the same `createBatch` a
+      // manual run-script uses, so `planFirst`, the audit row and the batch
+      // status all behave identically. The target is resolved here, at fire
+      // time (`scheduleTarget`), and earlier fires' batches are never touched.
+      // Reusing one batch across fires instead added unplanned runs the
+      // pacer ignores, which started every phone at once.
+      const { batch, jobs: memberJobs } = createBatch(batchDeps, {
+        scriptId: resolved.id,
+        params: reconciliation.value,
+        target: scheduleTarget(schedule),
+        concurrency: schedule.concurrency,
+        order: schedule.order as BatchOrder,
+        priority: schedule.priority,
+        createdBy: schedule.createdBy,
+        expiresAt: expiresAtShared,
+        pacing: schedulePacing(schedule),
+        // G10's own parameter ("every run trigger = 'schedule'") and
+        // `GET /api/schedules/:id/jobs` both read these.
+        scheduleId: schedule.id,
+        trigger: 'schedule',
+      })
+      batchId = batch.id
+      // Every member job's own first run was created by `createBatch` —
+      // those ARE this fire's runs.
+      runIds = memberJobs.map((j) => j.latestRunId).filter((id): id is string => id !== null)
       outcome = 'dispatched'
       }
     } catch (err) {
@@ -430,8 +415,13 @@ export async function fireOnce(rawDeps: ScheduleRunnerDeps, schedule: ScheduleRo
  *   workflow is worth scheduling — the alternative, pinning the document at
  *   the first fire, would mean an operator edits a warm-up, sees it saved,
  *   and the farm runs last month's version forever.
- * - the **device target**, by `resolveScheduleDeviceIds`, exactly as the
- *   script branch does (spec §4.7).
+ * - the **device target**, by `scheduleTarget` inside `createWorkflowBatch`,
+ *   exactly as the script branch does (spec §4.7).
+ *
+ * Every fire creates its OWN batch through the same `createWorkflowBatch` the
+ * run-workflow action uses, so the schedule's pacing is planned by
+ * `planFirst` exactly as a manual run's is, and an earlier fire's batch, its
+ * jobs and their document snapshots are never touched.
  *
  * Params go through the SAME `reconcileParams` the script branch uses, against
  * the document's own declared params — so a workflow whose params changed
@@ -443,7 +433,6 @@ function dispatchWorkflowFire(
   schedule: ScheduleRow,
   target: ScheduleWorkflowTargetRow,
   batchDeps: BatchDispatchDeps,
-  existingBatchId: string | null,
   expiresAt: number | null,
 ): { batchId: string; runIds: string[] } {
   if (!deps.workflows) {
@@ -465,75 +454,21 @@ function dispatchWorkflowFire(
     )
   }
 
-  if (!existingBatchId) {
-    // First fire (plan 211 §3.2 decision 4) — the schedule owns a new batch.
-    const { batch, jobs: memberJobs } = createWorkflowBatch(batchDeps, {
-      workflowName: target.workflowName,
-      workflowDoc: doc,
-      params: reconciliation.value,
-      target: scheduleTarget(schedule),
-      concurrency: schedule.concurrency,
-      order: schedule.order as BatchOrder,
-      priority: schedule.priority,
-      createdBy: schedule.createdBy,
-      pacing: schedulePacing(schedule),
-      scheduleId: schedule.id,
-      trigger: 'schedule',
-      expiresAt,
-    })
-    return { batchId: batch.id, runIds: memberJobs.map((j) => j.latestRunId).filter((id): id is string => id !== null) }
-  }
-
-  // A later fire — reuse the batch, exactly as the script branch does: a
-  // device newly in the target gets a member job, a device that left keeps
-  // its existing job untouched.
-  const deviceIds = resolveScheduleDeviceIds(deps.db, schedule)
-  const existingMembers = deps.db.select().from(jobs).where(eq(jobs.batchId, existingBatchId)).all()
-  const byDevice = new Map(existingMembers.map((j) => [j.deviceId, j]))
-  const nextSeqBase = existingMembers.length
-  const jobIdsToRun: string[] = []
-  let created = 0
-
-  for (const deviceId of deviceIds) {
-    const existing = byDevice.get(deviceId)
-    if (existing) {
-      // Re-snapshot the document onto a member that is not mid-flight, so
-      // this fire runs what the workflow says TODAY. Guarded on a terminal
-      // latest run rather than applied blindly: a run reads its document
-      // once at start, so rewriting the column under a queued or running
-      // member would hand the next reader a document its earlier steps were
-      // never planned against. A member skipped here picks the new document
-      // up on the following fire.
-      const latest = deps.runs.latestRun(existing.id)
-      const settled = !latest || (latest.status !== 'queued' && latest.status !== 'running')
-      if (settled) deps.db.update(jobs).set({ workflowDoc: doc, params: reconciliation.value }).where(eq(jobs.id, existing.id)).run()
-      jobIdsToRun.push(existing.id)
-      continue
-    }
-    const newJob = deps.runs.createJob({
-      kind: 'workflow',
-      workflowName: target.workflowName,
-      workflowDoc: doc,
-      deviceId,
-      params: reconciliation.value,
-      scriptName: target.workflowName,
-      scriptVersion: null,
-      batchId: existingBatchId,
-      batchSeq: nextSeqBase + created,
-      scheduleId: schedule.id,
-      createdBy: schedule.createdBy,
-    })
-    created += 1
-    jobIdsToRun.push(newJob.id)
-  }
-
-  const { runIds } = addRunsToBatch(batchDeps, existingBatchId, {
-    jobIds: jobIdsToRun,
-    trigger: 'schedule',
+  const { batch, jobs: memberJobs } = createWorkflowBatch(batchDeps, {
+    workflowName: target.workflowName,
+    workflowDoc: doc,
+    params: reconciliation.value,
+    target: scheduleTarget(schedule),
+    concurrency: schedule.concurrency,
+    order: schedule.order as BatchOrder,
     priority: schedule.priority,
+    createdBy: schedule.createdBy,
+    pacing: schedulePacing(schedule),
+    scheduleId: schedule.id,
+    trigger: 'schedule',
     expiresAt,
   })
-  return { batchId: existingBatchId, runIds }
+  return { batchId: batch.id, runIds: memberJobs.map((j) => j.latestRunId).filter((id): id is string => id !== null) }
 }
 
 /**
