@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.6',
+  version: '0.39.7',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,23 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.7 — a details screen that never stops loading is judged by the band
+   * Upload sits in, and a launch covered by a Google account page says so.** Two
+   * production failures from 2026-09-16, both on phones that were working fine.
+   * #73 waited out the whole 150 s: stillness needs two byte-identical
+   * screenshots, which a thumbnail that keeps playing never gives, and 0.38.1's
+   * escape hatch needs a readable Upload button, which a screen withholding its
+   * whole window set never shows — so both tests were unavailable at once. What
+   * the run is about to do is tap Upload, so it now asks whether THAT band has
+   * stopped changing, using the same measured region `putKeyboardAway` compares.
+   * #54 met a Play services account page over the launch, pressed it away twice,
+   * never got the navigation back, and was told "that is usually a signed-out
+   * YouTube" — about a phone signed in the whole time. `relaunch` now reports how
+   * many times it had to press that page away, and the Create-button failure says
+   * so instead of guessing at the account. A retry gets a fresh child process and
+   * therefore no report, which is exactly right: the wording falls back rather
+   * than claiming anything about a launch this process did not perform.
    *
    * **0.39.6 — a title field the reader cannot see is decided by pixels.** The
    * class 0.39.4 and 0.39.5 were both written for, and both missed: production #9

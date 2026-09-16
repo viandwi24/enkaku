@@ -268,7 +268,14 @@ async function answerPermissionsBeforeLaunch(ctx: ScriptContext<unknown>): Promi
  * still gets its run and the caller's own anchor reports what it actually
  * found.
  */
-export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecents?: boolean }): Promise<void> {
+export interface RelaunchReport {
+  /** True when YouTube's own navigation was on screen by the end. */
+  ready: boolean
+  /** How many times a Google account page had to be pressed away during this launch (0.39.7). */
+  accountPagePresses: number
+}
+
+export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecents?: boolean }): Promise<RelaunchReport> {
   await answerPermissionsBeforeLaunch(ctx)
   await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: opts?.clearRecents ?? true })
   await ctx.device.app.launch(YOUTUBE_PACKAGE)
@@ -277,8 +284,17 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
   // without answering anything on it — its only buttons add a recovery phone or open settings.
   const readyOrAccountPage = (t: UiNode): boolean => isReady(t) || googleAccountPageOnTop(t) || pictureInPictureOnly(t)
   let nav = await waitForTree(ctx, readyOrAccountPage, { budgetMs: READY_TIMEOUT_MS })
+  /*
+    Counted, because the caller's failure depends on it (0.39.7). Production #54 (2026-09-16) met this
+    page twice, pressed it away twice, never got the navigation, and the run then reported "YouTube's
+    bottom bar has no Create button — that is usually a signed-out YouTube". It was not signed out: a
+    Play services page had been standing over the launch. The presses are reported back so the failure
+    can say what was actually in the way instead of guessing at the account.
+  */
+  let accountPagePresses = 0
   for (let round = 0; round < 3 && !isReady(nav.tree) && googleAccountPageOnTop(nav.tree); round++) {
     ctx.log.warn('a Google account page opened over YouTube at launch — leaving it with BACK; nothing on it is tapped')
+    accountPagePresses += 1
     await ctx.device.key('BACK')
     await sleep(1_500)
     nav = await waitForTree(ctx, readyOrAccountPage, { budgetMs: 12_000 })
@@ -297,7 +313,7 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
   }
   if (!isReady(nav.tree)) {
     ctx.log.warn(`youtube did not show its navigation within ${READY_TIMEOUT_MS / 1000}s — continuing, and the next anchor will say where the device is`)
-    return
+    return { ready: false, accountPagePresses }
   }
 
   /*
@@ -318,12 +334,13 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
     const size = countNodes((await dismissPopups(ctx, await ctx.device.dump())).tree)
     if (size === previous) {
       ctx.log.info(`youtube settled at ${size} nodes, ${Math.round((Date.now() - (deadline - SETTLE_TIMEOUT_MS)) / 1000)}s after its navigation appeared`)
-      return
+      return { ready: true, accountPagePresses }
     }
     previous = size
     await sleep(1_500)
   }
   ctx.log.warn(`youtube was still redrawing after ${SETTLE_TIMEOUT_MS / 1000}s — continuing anyway`)
+  return { ready: true, accountPagePresses }
 }
 
 /** How long to wait for the tree to stop changing once the navigation is up. */

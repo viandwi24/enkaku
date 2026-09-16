@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { compareShots, pngSize } from './screen-pixels'
 import type { Region } from './screen-pixels'
 import { all, flatten, rowsById } from './tree'
-import { YOUTUBE_PACKAGE, capture, centre, hasId, labelled, relaunch, sleep, waitForTree } from './youtube'
+import { YOUTUBE_PACKAGE, capture, centre, hasId, labelled, relaunch, sleep, waitForTree, type RelaunchReport } from './youtube'
 import { between, makeRng, planConfirmStep, pullToRefresh } from './behavior'
 import type { ConfirmMove, ConfirmPlan } from './behavior'
 
@@ -189,6 +189,21 @@ const TRIM_PROCESSING_MS = 3 * 60_000
  * (2026-09-15) asked for up to 2 min 30 s, because a slow phone still processing a Short is not a failed post.
  */
 const DETAILS_LOAD_MS = 150_000
+
+/**
+ * What the launch had to push out of the way, kept for the failure that follows it (0.39.7).
+ *
+ * `prepare` and `run` are two functions, and the reason a run cannot find the Create button is
+ * usually discovered in the first: production #54 (2026-09-16) met a Google account page twice,
+ * pressed it away twice, never got the navigation back, and the run then reported "that is usually a
+ * signed-out YouTube" — about a phone that was signed in the whole time.
+ *
+ * The child process imports this bundle once and serves both phases from it (`child-entry.ts`'s
+ * `loadBundle`), so a module-level note written in `prepare` is there to be read in `run`. A RETRY
+ * gets a fresh child and therefore `null`, which is exactly right: nothing is claimed about a launch
+ * this process did not perform, and the message falls back to what it always said.
+ */
+let lastLaunch: RelaunchReport | null = null
 
 /**
  * How long the title tap gets before the text is typed.
@@ -1180,7 +1195,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
   timeout: 15 * 60_000,
 
   async prepare(ctx) {
-    await relaunch(ctx)
+    lastLaunch = await relaunch(ctx)
   },
 
   async run(ctx) {
@@ -1250,7 +1265,11 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       }
       fail(
         'E_ANCHOR_NOT_FOUND',
-        'YouTube\'s bottom bar has no Create ("Buat") button. That is usually a signed-out YouTube or a build too old to upload from — see artifacts yt-01-home and yt-01-account-tab.',
+        `YouTube's bottom bar has no Create ("Buat") button — see artifacts yt-01-home and yt-01-account-tab. ${
+          lastLaunch !== null && lastLaunch.accountPagePresses > 0
+            ? `A Google account page from Play services covered this launch and had to be pressed away ${lastLaunch.accountPagePresses} time(s), and YouTube's navigation never came back afterwards — that, rather than a signed-out account, is what stopped this run.`
+            : 'That is usually a signed-out YouTube, or a build too old to upload from.'
+        }`,
       )
     }
     screens.push('home')
@@ -1469,7 +1488,31 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     await ctx.artifact.screenshot('yt-08-details')
     // A READABLE details screen with its Upload button drawn has finished loading (0.38.1): on production (2026-09-15, 3 runs)
     // its thumbnail preview kept playing, so the screen was never pixel-still and the run failed with the screen ready.
-    if (!still.still && !readableDetails(await ctx.device.dump())?.upload) fail('E_DETAILS_NOT_READY', `the details screen never stopped loading within ${DETAILS_LOAD_MS / 1000}s, so no tap was aimed at it — nothing was uploaded. See artifact yt-08-details.`)
+    if (!still.still && !readableDetails(await ctx.device.dump())?.upload) {
+      /*
+        A HIDDEN details screen can satisfy neither test (0.39.7). Stillness needs two byte-identical
+        screenshots, which a thumbnail that keeps playing never gives; 0.38.1's escape hatch needs a
+        readable Upload button, which a screen that withholds its whole window set never shows. So a
+        phone with both — production #73 (2026-09-16) — waits out the whole 150 s and fails with the
+        screen perfectly usable. Neither reading was wrong; they simply cannot both be unavailable.
+
+        What the run is about to do is tap the Upload button, so the question that matters is whether
+        THAT part has settled, not whether a preview elsewhere is still animating. The Upload band is
+        the region `putKeyboardAway` already compares, and it is measured, not guessed.
+      */
+      const band = detailsGeometry(await ctx.device.dump()).uploadBand
+      const first = await ctx.device.screenshot()
+      await sleep(700)
+      const steady = compareShots(first, await ctx.device.screenshot(), band)
+      if (steady === 'same') {
+        ctx.log.info('the details screen is still drawing somewhere, but the band Upload sits in has stopped changing — aiming at it rather than waiting for a preview that never stops')
+      } else {
+        fail(
+          'E_DETAILS_NOT_READY',
+          `the details screen never stopped loading within ${DETAILS_LOAD_MS / 1000}s, its Upload button could not be read, and the band it sits in was still changing (${steady}) — so no tap was aimed at it and nothing was uploaded. See artifact yt-08-details.`,
+        )
+      }
+    }
     const settled = await ctx.device.dump()
     if (!onDetailsScreen(settled)) fail('E_ANCHOR_NOT_FOUND', 'the details screen closed while it loaded — nothing was uploaded. See artifact yt-08-details.')
     /*
