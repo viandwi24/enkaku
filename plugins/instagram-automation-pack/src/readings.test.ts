@@ -517,6 +517,15 @@ describe('the "confirm you are human" gate (0.10.4)', () => {
     expect(humanCheckAccount(await fixture('screen-home.json'))).toBeNull()
   })
 
+  test('an English build names its account too, from whichever half of the node carries it', async () => {
+    const tree = await fixture('screen-human-check.json')
+    const split = JSON.parse(JSON.stringify(tree)) as UiNode
+    const line = split.children[1] as UiNode
+    line.text = "Confirm you're human to use your account, owner.account"
+    line.desc = 'Instagram'
+    expect(humanCheckAccount(split)).toBe('owner.account')
+  })
+
   test('the gate without a handle still reports itself', async () => {
     const tree = await fixture('screen-human-check.json')
     const stripped = JSON.parse(JSON.stringify(tree)) as UiNode

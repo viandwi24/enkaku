@@ -52,7 +52,7 @@ import clearDrafts from './clear-drafts'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.10.4',
+  version: '0.10.5',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -61,6 +61,16 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.10.5 — the gate is read from either half of a node, in either language.**
+   * The session that prompted 0.10.4 reached eight held phones by the evening, and
+   * they are not all worded alike: `bitorexsocial` is an English build ("Confirm
+   * you're human to use your account"), and the Indonesian ones vary between
+   * "menggunakan profil Anda" and "menggunakan akun Anda". The reader now matches
+   * the first clause only, and looks at a node's `text` and `desc` separately
+   * rather than joined — the handle sits at the END of whichever line carries it,
+   * so joining would hide the name on any build that describes the screen in one
+   * half and names the account in the other. Still no press on "Lanjut".
    *
    * **0.10.4 — a held account is named, not reported as a missing navigation.**
    * Three phones in one production session (#4, #14, #59 on 2026-09-16) failed

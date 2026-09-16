@@ -121,19 +121,32 @@ export function isSignedOut(tree: UiNode): boolean {
  * here does, and a phone in this state is reported to the operator rather than driven through it.
  *
  * Returns the handle when the line names one, `'this account'` when the gate is up but unnamed, and
- * null when it is not this screen. The English wording is UNMEASURED — it is matched on the chance
- * the farm meets an English build, exactly as `isSignedOut` does.
+ * null when it is not this screen. Both wordings are now MEASURED (0.10.5): eight phones in the
+ * 2026-09-16 session, `bitorexsocial` on an English build ("Confirm you're human to use your
+ * account"), the rest Indonesian — and those vary too, "menggunakan profil Anda" on some and
+ * "menggunakan akun Anda" on others, which is why only the first clause is matched.
  */
+const HUMAN_GATE = /konfirmasikan bahwa anda adalah manusia|confirm (that )?you(?:'re| are)? (?:a )?human/i
+/** The handle sits at the END of the gate's own line: "…profil Anda, bitorexdecode". */
+const GATE_HANDLE = /,\s*@?([A-Za-z0-9._]{2,30})\s*$/
+
 export function humanCheckAccount(tree: UiNode): string | null {
   if (isReady(tree)) return null
-  const lines = flatten(tree)
+  // Each half on its own (0.10.5). A node's `text` and `desc` are not always the same string, and the
+  // handle is at the END of whichever line carries it — joining the two halves worked only because the
+  // production dumps repeat the sentence in both, and would hide the name on a build that describes the
+  // screen in one half and names the account in the other. Naming the account is the point of this read.
+  const halves = flatten(tree)
     .filter((n) => n.packageName === INSTAGRAM_PACKAGE)
-    .map((n) => `${n.text} ${n.desc}`.trim())
+    .flatMap((n) => [n.text.trim(), n.desc.trim()])
     .filter((s) => s !== '')
-  const line = lines.find((s) => /konfirmasikan bahwa anda adalah manusia|confirm (that )?you(?:'re| are)? (?:a )?human/i.test(s))
-  if (!line) return null
-  const named = /,\s*@?([A-Za-z0-9._]{2,30})\s*$/.exec(line)
-  return named?.[1] ?? 'this account'
+  const lines = halves.filter((s) => HUMAN_GATE.test(s))
+  if (lines.length === 0) return null
+  for (const line of lines) {
+    const named = GATE_HANDLE.exec(line)
+    if (named?.[1]) return named[1]
+  }
+  return 'this account'
 }
 
 const MEDIA_PERMISSIONS = ['READ_MEDIA_VIDEO', 'READ_MEDIA_IMAGES', 'READ_MEDIA_VISUAL_USER_SELECTED', 'READ_EXTERNAL_STORAGE', 'POST_NOTIFICATIONS'] as const
