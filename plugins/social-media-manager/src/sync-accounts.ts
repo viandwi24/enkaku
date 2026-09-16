@@ -92,6 +92,28 @@ async function tapLabel(ctx: ScriptContext<unknown>, tree: UiNode, labels: reado
   return got.ok ? got.tree : null
 }
 
+/**
+ * Save what was on screen when a platform could not be read (0.41.0).
+ *
+ * Ten production runs on 2026-09-16 failed to read TikTok on four phones and YouTube on three, and
+ * every one of those runs saved exactly ONE artifact: its log. So "the TikTok switch-account sheet did
+ * not open" arrived with no way to see what HAD opened — and with the farm being shut down, that
+ * evidence is gone for good. Every other member in these packs captures a tree and a screenshot when
+ * it fails; this one now does too, before the `finally` below closes the app.
+ *
+ * Neither failure here is fatal: a capture that cannot be taken must not turn a readable platform into
+ * an unreadable one.
+ */
+async function capture(ctx: ScriptContext<unknown>, label: string): Promise<void> {
+  await ctx.artifact.screenshot(label).catch((err: unknown) => ctx.log.warn(`could not save the ${label} screenshot`, { error: String(err) }))
+  try {
+    const tree = await ctx.device.dump()
+    await ctx.artifact.file(label, JSON.stringify(tree, null, 2), { ext: 'json' })
+  } catch (err) {
+    ctx.log.warn(`could not save the ${label} tree`, { error: String(err) })
+  }
+}
+
 async function launch(ctx: ScriptContext<unknown>, pkg: string): Promise<void> {
   await ctx.device.app.forceStop(pkg, { clearRecents: true })
   await ctx.device.app.launch(pkg)
@@ -212,6 +234,8 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       } catch (err) {
         error = err instanceof Error ? err.message : String(err)
         ctx.log.warn(`could not read the ${platform} accounts on this phone`, { error })
+        // Before the `finally` closes the app — see `capture`. This is the only record of the screen.
+        await capture(ctx, `accounts-${platform}-failed`)
       } finally {
         await ctx.device.app.forceStop(PACKAGES[platform as keyof typeof PACKAGES], { clearRecents: true }).catch(() => undefined)
       }
@@ -235,6 +259,23 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       read.length === 0
         ? `no platform could be read (${failed.map((l) => l.platform).join(', ')})`
         : `read ${read.map((l) => `${l.platform}: ${l.accounts}`).join(', ')}${failed.length > 0 ? `; could not read ${failed.map((l) => l.platform).join(', ')}` : ''}`
+    if (read.length === 0) {
+      /*
+        A sync that read nothing is not a success (0.41.0). Ten production runs on 2026-09-16 all
+        reported `success` while seven of fifteen stored rows carried an error, so the operator saw
+        green jobs beside a half-empty Accounts tab with nothing tying the two together. The core
+        derives no summary from a result (`resultSummaryFields: () => []`), so a clearer `reason` alone
+        would still have shown green — only a thrown error reaches the Jobs list. A run that read at
+        least one platform still succeeds, because it did store something; one that read none has done
+        nothing at all and now says so where it can be seen.
+      */
+      throw new Error(`${reason} — nothing was stored for this phone`)
+    }
+    if (failed.length > 0) {
+      ctx.log.warn(`read ${read.length} of ${lines.length} platform(s) on this phone — the rest kept whatever the last sync stored`, {
+        failed: failed.map((l) => `${l.platform}: ${l.error}`).join('; '),
+      })
+    }
     return { platforms: lines, reason }
   },
 }

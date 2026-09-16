@@ -18,8 +18,15 @@ import type { UiNode } from '@enkaku/protocol'
 */
 
 const INSTAGRAM_PACKAGE = 'com.instagram.android'
-/** Rows the sheet lists that are actions, never accounts. */
-const NOT_AN_ACCOUNT = /^(tambahkan|add|buka pengaturan|open .*settings|kelola|manage)\b/i
+/**
+ * Rows the sheet lists that are actions, never accounts.
+ *
+ * `buka pengaturan` was too narrow (0.41.0). Production synced five phones on 2026-09-16 and every
+ * one of them reported TWO Instagram accounts, the second being **"Buka Pusat Akun"** — the Accounts
+ * Centre row, an action that this pattern let through because it is not "Buka pengaturan". Every
+ * phone's count was therefore one too high. Matched on the verb plus either noun, in both languages.
+ */
+const NOT_AN_ACCOUNT = /^(tambahkan|add|buka (pengaturan|pusat)|open (.*settings|accounts? cent\w*)|kelola|manage)\b/i
 
 const onScreen = (n: UiNode): boolean => n.bounds.left >= 0 && n.bounds.right > n.bounds.left && n.bounds.bottom > n.bounds.top
 const fromInstagram = (n: UiNode): boolean => n.packageName === INSTAGRAM_PACKAGE

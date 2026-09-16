@@ -77,6 +77,19 @@ import {
  *
  * ## Changelog
  *
+ * - **0.41.0 — the Accounts sync stops overcounting, stops hiding its failures,
+ *   and keeps the evidence.** Three findings from the production sync of
+ *   2026-09-16 (5 phones, 10 runs, 15 stored rows): (1) every phone reported two
+ *   Instagram accounts, the second being **"Buka Pusat Akun"** — the Accounts
+ *   Centre row, which the action filter let through because it is not "Buka
+ *   pengaturan"; (2) all 10 runs reported `success` while 7 rows held an error,
+ *   and since the core derives no summary from a result, a clearer `reason` could
+ *   never have shown that — so a run that reads NO platform now throws, while a
+ *   partial read stays a success and logs which platforms failed; (3) every failed
+ *   read saved only its log — no screenshot, no tree — so "the TikTok
+ *   switch-account sheet did not open" arrived with no way to see what had opened
+ *   instead. Each failure now captures both, before the app is closed.
+ *
  * - **0.40.0 — four options, and this screen stops routing by label.** The owner
  *   (2026-09-16) dropped the fifth option 0.39.0 had kept. The picker now offers
  *   exactly four, everywhere: all phones in the farm, only the phones I choose,
@@ -1324,7 +1337,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.40.0',
+  version: '0.41.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
