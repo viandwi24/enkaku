@@ -1,9 +1,10 @@
 import { defineService, definePlugin, ui, type PluginMemberScript, type PluginServiceContext, type ScriptContext } from '@enkaku/sdk'
-import type { Selector } from '@enkaku/protocol'
+import type { Selector, UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { between, makeRng, pickWatchMs, pngSize, sleep } from './human'
 import { clearBlockingDialog, nextDialogAction } from './dialogs'
-import { dismissInterruptions } from './interruptions'
+import { flatten } from './tree'
+import { dismissInterruptions, keyboardWindowShowing } from './interruptions'
 import switchAccount from './switch-account'
 import searchFollow from './search-follow'
 import listAccounts from './list-accounts'
@@ -171,6 +172,48 @@ const escapeForRegex = (v: string): string => v.replace(/[.*+?^${}()|[\]\\]/g, '
  * that already matched, never on every video, because a session that opens every comment section is
  * neither a useful signal nor a human-looking one.
  */
+/** The comment sheet's own title — the one word that says the sheet is still up (1.49.0). */
+const COMMENT_SHEET_TITLES = ['Komentar', 'Comments', 'Comment']
+
+function commentSheetShowing(tree: UiNode): boolean {
+  return flatten(tree).some((n) => COMMENT_SHEET_TITLES.includes(n.text.trim()) || COMMENT_SHEET_TITLES.includes(n.desc.trim()))
+}
+
+/**
+ * Leave the comment sheet, one proven step at a time (1.49.0).
+ *
+ * The owner met a phone parked here mid warm-up, the farm's own keyboard flickering under it. A swipe
+ * inside the sheet had landed on "Tambahkan komentar…" — the input sits directly below the list — and
+ * the field took focus, so the single BACK this function used to be closed the KEYBOARD and left the
+ * sheet up. The run then went round its loop against a screen that is not the feed.
+ *
+ * BACK is pressed only while something is READ on screen that BACK should close: the keyboard, then
+ * the sheet. Never blindly — BACK on the bare feed leaves TikTok, which is the one recovery this
+ * member must never invent.
+ */
+async function leaveCommentSheet(ctx: ScriptContext<unknown>, rng: () => number): Promise<void> {
+  for (let step = 0; step < 3; step++) {
+    let tree: UiNode | null = null
+    try {
+      tree = await ctx.device.dump()
+    } catch {
+      // The inspector is not dependable on this app (see `readVisibleSignals`). One BACK is still owed
+      // for the sheet this function was called to close, and only on the first step.
+      if (step === 0) {
+        await ctx.device.key('BACK')
+        await sleep(Math.round(between(rng, 500, 1_100)))
+      }
+      return
+    }
+    const keyboard = keyboardWindowShowing(tree)
+    if (!keyboard && !commentSheetShowing(tree)) return
+    ctx.log.info(keyboard ? 'closing the keyboard the comment field opened' : 'closing the comment sheet')
+    await ctx.device.key('BACK')
+    await sleep(Math.round(between(rng, 500, 1_100)))
+  }
+  ctx.log.warn('the comment sheet was still readable after three BACK presses — carrying on, the feed check below decides')
+}
+
 async function browseComments(
   ctx: ScriptContext<unknown>,
   frame: { width: number; height: number },
@@ -191,16 +234,21 @@ async function browseComments(
   for (let i = 0; i < passes; i++) {
     await sleep(Math.round(between(rng, 900, 2_600)))
     const x = Math.round(between(rng, 0.25, 0.7) * frame.width)
+    /*
+      Both ends stay ABOVE the input box (1.49.0). "Tambahkan komentar…" sits at roughly 0.50–0.57h
+      with its emoji row just above it, and a swipe that ended there put the caret in the field and
+      brought the farm's keyboard up — the phone the owner found parked in the comments. Ending at
+      0.30–0.42h reads the same list without ever finishing on the field.
+    */
     await ctx.device.swipe(
-      { x, y: Math.round(0.78 * frame.height) },
-      { x, y: Math.round(between(rng, 0.44, 0.56) * frame.height) },
+      { x, y: Math.round(0.72 * frame.height) },
+      { x, y: Math.round(between(rng, 0.30, 0.42) * frame.height) },
       Math.round(between(rng, 220, 420)),
       { easing: 'easeInOutCubic' },
     )
   }
   await sleep(Math.round(between(rng, 700, 1_800)))
-  await ctx.device.key('BACK')
-  await sleep(Math.round(between(rng, 500, 1_100)))
+  await leaveCommentSheet(ctx, rng)
   return true
 }
 
@@ -451,6 +499,29 @@ export const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof re
           if (Date.now() >= deadline) {
             ctx.log.info(`stopping at the ${ctx.params.maxMinutes}-minute ceiling after ${i} videos`)
             break
+          }
+
+          /*
+            A keyboard over the feed is not a dialog (1.49.0): the sweep ladder below looks for ack and
+            deny buttons and finds none, so a phone whose comment field took focus sat there spamming
+            the same reading. BACK closes a keyboard and nothing else when one is up, so it is safe to
+            press for exactly that.
+          */
+          try {
+            const before = await ctx.device.dump()
+            if (keyboardWindowShowing(before)) {
+              ctx.log.warn('a keyboard is up over the feed — closing it before reading the video')
+              await ctx.device.key('BACK')
+              await sleep(1_200)
+              const after = await ctx.device.dump()
+              if (commentSheetShowing(after)) {
+                await ctx.device.key('BACK')
+                await sleep(1_000)
+              }
+              recoveries += 1
+            }
+          } catch {
+            // The inspector is unreliable on this app; the ladder below is the fallback it always was.
           }
 
           const signals = await readVisibleSignals(ctx)
@@ -865,6 +936,12 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.49.0 — the comment sheet is left properly, and a keyboard over the feed is closed. The owner found a phone
+  //   parked in TikTok's comments during a warm-up, the farm's own keyboard flickering under it: a swipe inside the
+  //   sheet ended on "Tambahkan komentar…", the field took focus, and the single BACK that followed closed the
+  //   KEYBOARD rather than the sheet. Swipes now end well above the input box, `leaveCommentSheet` presses BACK only
+  //   while a keyboard or the sheet's own title is read on screen (never blindly — BACK on the bare feed leaves
+  //   TikTok), and the scroll loop closes a keyboard it finds over the feed instead of reading the same screen again.
   // 1.48.0 — the owner's own TikTok handles are out of this pack's source and tests. They were transcribed
   //   from the hardware runs of plan 86 and had been sitting in `switch-account.ts`'s comments (which ship in the
   //   bundle) and four test files ever since; the fixtures and tests now use masked handles, the way the rest of
@@ -1190,7 +1267,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.48.0',
+  version: '1.49.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
