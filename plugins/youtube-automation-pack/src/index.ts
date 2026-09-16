@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.3',
+  version: '0.39.4',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,18 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.4 — two more presses for a swallowed "Berikutnya", and an
+   * unreadable title field is asked again.** Two production runs on 2026-09-16,
+   * both on 0.39.1. #60 spent both of 0.37.0's retaps and failed with the editor
+   * still drawn, its button in the dump and nothing processing — two taps short
+   * rather than blocked, so the ceiling is four. #13 left the thumbnail editor,
+   * reached the details screen and read the title field as `null` on a dump that
+   * holds no YouTube text at all — a screen still drawing, not a field that
+   * cannot be read — and stopped on the branch meant for a field holding
+   * something unexpected. It now reads twice more, a second apart, before
+   * deciding; a field that stays unreadable still fails, and one read non-empty
+   * is still left alone, so the title is never typed twice.
    *
    * **0.39.3 — a trim "Done" YouTube ignored is tapped again.** Production #42
  * (2026-09-16) tapped the trim screen's own `shorts_trim_finish_trim_button`

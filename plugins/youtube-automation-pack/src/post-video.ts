@@ -467,6 +467,9 @@ export function isSelectedCell(tree: UiNode, cell: UiNode): boolean {
  * "Selesai"/"Done" or described "Tambahkan segmen ke project". The same node serves the wait and the tap.
  */
 const TRIM_DONE_IDS = ['shorts_trim_finish_trim_button', 'creation_next_button'] as const
+/** How many times the Shorts editor's "Berikutnya" is pressed again when YouTube does not act on it (0.39.4). */
+const EDITOR_RETAPS = 4
+
 const TRIM_DONE_TEXTS: readonly string[] = ['Selesai', 'Done']
 const TRIM_DONE_DESCS: readonly string[] = ['Tambahkan segmen ke project', 'Add segment to project']
 
@@ -1413,11 +1416,17 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     screens.push('editor')
 
     let details = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: 30_000 })
-    for (let retap = 0; retap < 2 && !details.ok; retap++) {
+    for (let retap = 0; retap < EDITOR_RETAPS && !details.ok; retap++) {
       /*
         A "Berikutnya" YouTube did not act on (0.37.0). Production #25 and #57 (2026-09-15) were still on the Shorts editor,
         its button in view, 30 s after the tap. While the editor and its button are still there — and YouTube is not
         processing — the button is tapped again, as a person would.
+
+        The ceiling was two and is four (0.39.4). Production #60 (2026-09-16) spent both of them — the log shows the two
+        warnings, and the failing dump is still the editor with `shorts_post_bottom_button` drawn and nothing processing —
+        so the run died having been two taps short rather than having learnt anything new. Each pass costs one 20 s wait
+        and stops the moment the editor goes away, which is why the answer to a swallowed tap is another tap, not a
+        longer wait: waiting does not press a button that was never pressed.
       */
       const again = rowsById(details.tree, 'shorts_post_bottom_button')[0]
       if (!again || processingOverlay(details.tree) !== null) break
@@ -1536,7 +1545,19 @@ const script: PluginMemberScript<typeof params, typeof result> = {
           is typed again only into a field read empty; a field already holding the whole title is left as it is; anything
           else (part of it, or a field the reader cannot see) stops the run here, with nothing uploaded.
         */
-        const held = titleFieldText(back.tree)
+        /*
+          An unreadable field is asked again before it decides (0.39.4). Production #13 (2026-09-16) left the thumbnail
+          editor, reached the details screen, and read `null` — and its dump holds no YouTube text node at all, which is
+          that screen still drawing rather than a field that cannot be read. The run stopped on the branch meant for "the
+          field holds something unexpected". Two more reads, a second apart, cost two seconds on a screen that is about to
+          settle, and change nothing about the twice-typed title this branch exists to prevent: a field that stays
+          unreadable still fails, and a field read non-empty is still left alone.
+        */
+        let held = titleFieldText(back.tree)
+        for (let read = 0; read < 2 && held === null; read++) {
+          await sleep(1_000)
+          held = titleFieldText(await ctx.device.dump())
+        }
         if (held === '') {
           await ctx.device.tap({ point: titlePoint }, { via: 'adb' })
           await sleep(FOCUS_SETTLE_MS)
