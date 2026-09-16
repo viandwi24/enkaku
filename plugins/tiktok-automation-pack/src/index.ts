@@ -976,6 +976,13 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.49.3 — a caption that put TikTok back on the editor is walked forward again, once. Production #24
+  //   (2026-09-16) typed its caption through the agent IME and the next read found the EDITOR — the saved
+  //   screenshot is that screen plainly, and its dump carries `prf` "Berikutnya", the button this flow
+  //   already presses by its own bounds because TikTok draws it unclickable. The post screen was one tap
+  //   forward and the run reported it gone. `enterCaption` now presses it once, waits for the post screen
+  //   the ordinary way, and types into the field that comes back; a second visit, or any other screen, is
+  //   still the failure it was. Nothing is posted on that path, so a repeat costs a caption, not a post.
   // 1.49.2 — a feed that stopped because TikTok LEFT is relaunched, not reported as a modal. The `blocked`
   //   screenshot a production auto-scroll saved (2026-09-16) showed the phone's launcher: the app was gone from
   //   the foreground, so every dialog sweep was looking for an ack button on a home screen. The branch now reads
@@ -1317,7 +1324,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.49.2',
+  version: '1.49.3',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

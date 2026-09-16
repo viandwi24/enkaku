@@ -1874,6 +1874,8 @@ async function typeCaption(ctx: ScriptContext<unknown>, caption: string): Promis
  */
 async function enterCaption(ctx: ScriptContext<unknown>, frame: { width: number; height: number }, field: UiNode, caption: string): Promise<string> {
   let target = field
+  /** One return trip from the editor per run (1.49.3) — see the catch below. */
+  let recovered = false
   for (let round = 1; round <= 2; round++) {
     await ctx.device.tap({ point: centreOf(target) })
     await clearCaptionField(ctx, frame, target)
@@ -1882,7 +1884,37 @@ async function enterCaption(ctx: ScriptContext<unknown>, frame: { width: number;
     await sleep(800)
     // Clearing and typing are keystrokes, and a keystroke the field does not take goes to TikTok — which,
     // on the production fleet, backed out to the camera (1.31.0). `readPostScreen` says so by name.
-    const tree = await readPostScreen(ctx, round === 1 ? 'typing the caption' : 'retyping the caption')
+    let tree: UiNode
+    try {
+      tree = await readPostScreen(ctx, round === 1 ? 'typing the caption' : 'retyping the caption')
+    } catch (err) {
+      /*
+        The post screen one step back is not a lost run (1.49.3). Production #24 (2026-09-16) typed its
+        caption through the agent IME and the next read found the EDITOR: the screenshot is that screen
+        plainly, and its dump carries `prf` "Berikutnya" — the same button this flow already presses by
+        its own bounds, because TikTok draws it unclickable. So the post screen was one tap forward, and
+        the run died reporting it gone.
+
+        Recovered once per run, and only from the editor: press that button, wait for the post screen the
+        ordinary way, and type into the field it comes back with. Nothing was posted at this point and the
+        caption field on a freshly opened post screen is empty, so this round is spent again rather than
+        counted — `recovered` is what stops that from being a loop. Any other screen, or a second visit
+        here, is still the failure it was.
+      */
+      const code = (err as { code?: string }).code
+      const back = code === 'E_LEFT_POST_SCREEN' && !recovered ? await ctx.device.dump().catch(() => null) : null
+      if (!back || detectScreen(back) !== 'editor') throw err
+      recovered = true
+      ctx.log.warn('typing the caption put TikTok back on the editor — pressing its next button once to return to the post screen')
+      await capture(ctx, 'caption-left-post-screen', back)
+      await tapNext(ctx, back, 'editor', frame)
+      const again = await enterScreen(ctx, UPLOAD_MODAL_POLICIES, 'post', { rounds: 8 })
+      const reopened = again.tree ? (onScreenCaptionField(again.tree, frame.width) ?? captionField(again.tree)) : null
+      if (!reopened) throw err
+      target = reopened
+      round -= 1
+      continue
+    }
     const now = onScreenCaptionField(tree, frame.width)
     if (now && captionLanded(now, caption)) return captionTextToClear(now)
     const holds = now ? captionTextToClear(now) : '(no caption field on screen)'
