@@ -1382,7 +1382,14 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             const role = deps.roleOf(state.userId)
             const shellSettings = deps.shellSettings()
             if (!canUseShell(role, shellSettings.mode)) {
-              sendError(ws, 'auth.forbidden', 'you do not have permission to run shell commands on this device', msgId)
+              // The switch being off and the role being wrong are different problems with different
+              // fixes, so the terminal says which one it met (2026-09-16) — the same wording the `adb`
+              // action verb uses, since an operator meets whichever of the two they happen to click.
+              const why =
+                shellSettings.mode === 'off'
+                  ? 'the Adb command action is off on this farm — an admin turns it back on in Settings → Privacy ("Adb command action for operators")'
+                  : 'your role may not run shell commands on this device'
+              sendError(ws, 'auth.forbidden', why, msgId)
               return
             }
             // 1b. `adb shell …` / `shell …` / the bare command — the same

@@ -161,13 +161,26 @@ function checkGate(deps: ActionsDeps, actor: ActionActor, verb: ActionVerb): voi
   }
   const shell = deps.shellSettings()
   if (spec.gate.gate === 'shell') {
-    if (!canUseShell(actor.role, shell.mode)) throw new EnkakuError('auth.forbidden', 'you do not have permission to run shell commands on a device')
+    /*
+      Two different refusals, said apart (2026-09-16). The farm-wide switch being off is not the same
+      fact as "your role may not", and the one message covering both sent the owner looking for a
+      permission problem when they had turned off `privacy.adbCommand` by accident — which also
+      silently takes Notifications, Quick settings, Brightness and the no-session key fallback with
+      it, since those all run through this verb.
+    */
+    if (shell.mode === 'off') {
+      throw new EnkakuError('auth.forbidden', `${SHELL_OFF}`)
+    }
+    if (!canUseShell(actor.role, shell.mode)) throw new EnkakuError('auth.forbidden', 'your role may not run shell commands on a device')
     return
   }
   if (!canUseFiles(actor.role, shell.mode) || !deps.transferSettings().enabled) {
     throw new EnkakuError('auth.forbidden', 'you do not have permission to transfer files on this device')
   }
 }
+
+/** What an operator is told when the farm's own Adb command switch is off — it names the switch, because nothing else on screen does. */
+const SHELL_OFF = 'the Adb command action is off on this farm — an admin turns it back on in Settings → Privacy ("Adb command action for operators")'
 
 /** One device's candidacy: a final result, or `null` meaning "dispatch it". */
 function evaluateDevice(deps: ActionsDeps, verb: ActionVerb, deviceId: string, force: boolean): ActionResult | null {
