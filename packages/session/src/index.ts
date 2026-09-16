@@ -68,6 +68,7 @@ export {
   INSPECTOR_METHODS,
   needsInspector,
   WAITFOR_WATCH_RECHECK_MS,
+  type DeviceCallObserver,
   type TimingSettings,
 } from './device-executor'
 export { createChangeSignal, type ChangeSignal } from './change-signal'

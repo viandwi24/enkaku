@@ -2,9 +2,11 @@ import { shellQuote } from '@enkaku/adb'
 import { AdbInput, buildGesturePath, planHumanTyping, resolveHumanTypingOptions, supportsElementActions } from '@enkaku/drivers'
 import {
   centerOf,
+  MAX_TRACE_TOUCH_POINTS,
   matchSelector,
   resolveKeyCode,
   TimingSettingsSchema,
+  type Bounds,
   type FindOutcome,
   type GestureSample,
   type HumanGestureOptions,
@@ -12,6 +14,7 @@ import {
   type Inspector,
   type InputSink,
   type InspectorWatch,
+  type JobTraceTouch,
   type KeyCode,
   type NormGestureSample,
   type NormPoint,
@@ -273,6 +276,30 @@ export function deviceToFrame(
   }
 }
 
+/**
+ * Per-call observers for `execute` — how a caller learns what a call actually
+ * did without the call's return value changing. The script receives exactly
+ * what it always did; only the observer sees more.
+ */
+export interface DeviceCallObserver {
+  /**
+   * What the input engine was actually sent for a touch method, normalised to
+   * the screen (`JobTraceTouch`). Called once, just before the engine is
+   * sent it; never called for a call that failed before touching (a selector
+   * that matched nothing). The job trace records it as `meta.touch`.
+   */
+  touch?: (touch: JobTraceTouch) => void
+}
+
+/** Evenly thins a path to at most `max` points, always keeping the first and the last. */
+function thinPath<T>(points: readonly T[], max: number): T[] {
+  if (points.length <= max || max < 2) return [...points]
+  const out: T[] = []
+  const step = (points.length - 1) / (max - 1)
+  for (let i = 0; i < max; i++) out.push(points[Math.round(i * step)]!)
+  return out
+}
+
 export function createDeviceExecutor(deps: {
   session: DeviceSession
   /**
@@ -420,27 +447,83 @@ export function createDeviceExecutor(deps: {
   /** Device pixels → the frame the sink injects in. See `deviceToFrame`. */
   const toFrame = (p: Point): Point => deviceToFrame(p, deps.session.frameSize, deps.session.deviceSize)
 
-  async function resolveTarget(sel: Selector): Promise<Point> {
-    if ('point' in sel) return sel.point
+  /** A selector's centre, with the bounds of the node it matched (null for a literal point) for the trace. */
+  async function resolveTargetDetailed(sel: Selector): Promise<{ point: Point; bounds: Bounds | null }> {
+    if ('point' in sel) return { point: sel.point, bounds: null }
     const node = await inspectorOrThrow().find(sel)
     if (!node) throw new SessionError('element_not_found', `element not found: ${JSON.stringify(sel)}`)
-    return centerOf(node.bounds)
+    return { point: centerOf(node.bounds), bounds: node.bounds }
   }
 
   /**
-   * `resolveTarget`, but aiming INSIDE the node when the call asked for a human tap (2026-09-17).
+   * `resolveTargetDetailed`, but aiming INSIDE the node when the call asked for a human tap (2026-09-17).
    *
    * A literal `{ point }` target is left exactly where it was put: the caller has already decided,
    * and on some screens a measured point is the only one that works — YouTube's upload details
    * screen is the standing example, where the centre of the title area opens the thumbnail editor
    * instead. Only a SELECTOR target, whose box this can read, gets a varied landing point.
    */
-  async function resolveTapPoint(sel: Selector, human?: true | HumanTapOptions): Promise<Point> {
-    if (human === undefined || 'point' in sel) return resolveTarget(sel)
+  async function resolveTapPoint(sel: Selector, human?: true | HumanTapOptions): Promise<{ point: Point; bounds: Bounds | null }> {
+    if (human === undefined || 'point' in sel) return resolveTargetDetailed(sel)
     const node = await inspectorOrThrow().find(sel)
     if (!node) throw new SessionError('element_not_found', `element not found: ${JSON.stringify(sel)}`)
     const resolved = resolveHumanTap(human)
-    return humanTapPoint(node.bounds, resolved, makeGestureRng(resolved.seed))
+    return { point: humanTapPoint(node.bounds, resolved, makeGestureRng(resolved.seed)), bounds: node.bounds }
+  }
+
+  /**
+   * Screen normalisation for `DeviceCallObserver.touch`. FRAME-space points
+   * (what the sink is handed) divide by `frameSize`; DEVICE-pixel values (a
+   * node's bounds, a `via: 'adb'` point) divide by the device size oriented
+   * against the frame, the same orientation rule `deviceToFrame` applies.
+   * Null when the session does not know its screen yet — a touch that cannot
+   * be placed is left out rather than drawn in the wrong corner.
+   */
+  function frameNorm(): ((p: Point) => { x: number; y: number }) | null {
+    const f = deps.session.frameSize
+    if (f.width <= 0 || f.height <= 0) return null
+    return (p) => ({ x: p.x / f.width, y: p.y / f.height })
+  }
+
+  function deviceNorm(): ((p: Point) => { x: number; y: number }) | null {
+    const f = deps.session.frameSize
+    const d = deps.session.deviceSize
+    if (!d || d.width <= 0 || d.height <= 0) return frameNorm()
+    const landscapeFrame = f.width > 0 && f.height > 0 && f.width > f.height
+    const o = landscapeFrame === d.width > d.height ? d : { width: d.height, height: d.width }
+    return (p) => ({ x: p.x / o.width, y: p.y / o.height })
+  }
+
+  function normBounds(b: Bounds | null): JobTraceTouch['target'] {
+    const n = b ? deviceNorm() : null
+    if (!b || !n) return null
+    const tl = n({ x: b.left, y: b.top })
+    const br = n({ x: b.right, y: b.bottom })
+    return { left: tl.x, top: tl.y, right: br.x, bottom: br.y }
+  }
+
+  /** An observer that throws must not fail the call it is watching. */
+  function report(observe: DeviceCallObserver | undefined, build: () => JobTraceTouch | null): void {
+    if (!observe?.touch) return
+    try {
+      const touch = build()
+      if (touch) observe.touch(touch)
+    } catch {
+      // observe, never alter
+    }
+  }
+
+  function tapTouch(p: Point, space: 'frame' | 'device', holdMs: [number, number], bounds: Bounds | null, via: 'input' | 'adb'): JobTraceTouch | null {
+    const n = space === 'frame' ? frameNorm() : deviceNorm()
+    if (!n) return null
+    return { kind: 'tap', points: [n(p)], durationMs: null, holdMs, target: normBounds(bounds), via }
+  }
+
+  function pathTouch(samples: readonly { x: number; y: number; atMs?: number }[], durationMs: number): JobTraceTouch | null {
+    const n = frameNorm()
+    if (!n || samples.length === 0) return null
+    const points = thinPath(samples, MAX_TRACE_TOUCH_POINTS).map((s) => ({ ...n(s), ...(s.atMs !== undefined ? { atMs: s.atMs } : {}) }))
+    return { kind: 'path', points, durationMs, holdMs: null, target: null, via: 'input' }
   }
 
   /**
@@ -474,6 +557,7 @@ export function createDeviceExecutor(deps: {
     ms: number,
     timing: TimingSettings,
     opts?: { curvature?: number; easing?: Easing },
+    observe?: DeviceCallObserver,
   ): Promise<void> {
     const s = sink()
     if (timing.gestureCurvature > 0 && s.gesture) {
@@ -485,9 +569,12 @@ export function createDeviceExecutor(deps: {
         ...(opts?.easing ? { easing: opts.easing } : {}),
         sampleIntervalMs: timing.gestureSampleIntervalMs,
       })
+      // The path exactly as sent — the curve and the easing are the executor's, not the script's.
+      report(observe, () => pathTouch(samples, ms))
       await s.gesture(samples)
       return
     }
+    report(observe, () => pathTouch([{ x: from.x, y: from.y, atMs: 0 }, { x: to.x, y: to.y, atMs: ms }], ms))
     await s.swipe(from, to, ms)
   }
 
@@ -506,7 +593,7 @@ export function createDeviceExecutor(deps: {
     return varyGesture(g, resolved, makeGestureRng(resolved.seed), deps.session.frameSize)
   }
 
-  return async function execute(call: DeviceCall): Promise<unknown> {
+  return async function execute(call: DeviceCall, observe?: DeviceCallObserver): Promise<unknown> {
     // Resolved ONCE per call, not once per executor (plan 94 §4.5, F10) —
     // see `deps.timing`'s own doc comment above `createDeviceExecutor`. A
     // single call is one action; using one snapshot for its whole duration
@@ -520,10 +607,15 @@ export function createDeviceExecutor(deps: {
         if (call.args.via === 'adb') {
           // Android's own injection, in DEVICE pixels — `input tap` never sees
           // the video frame, so this skips `toFrame` (see `InputViaSchema`).
-          await new AdbInput(deps.session.transport).tap(jitterPoint(await resolveTapPoint(call.args.target, call.args.human), timing))
+          const aimed = await resolveTapPoint(call.args.target, call.args.human)
+          const devicePoint = jitterPoint(aimed.point, timing)
+          report(observe, () => tapTouch(devicePoint, 'device', timing.tapJitterMs, aimed.bounds, 'adb'))
+          await new AdbInput(deps.session.transport).tap(devicePoint)
           return undefined
         }
-        const point = toFrame(jitterPoint(await resolveTapPoint(call.args.target, call.args.human), timing))
+        const aimed = await resolveTapPoint(call.args.target, call.args.human)
+        const point = toFrame(jitterPoint(aimed.point, timing))
+        report(observe, () => tapTouch(point, 'frame', timing.tapJitterMs, aimed.bounds, 'input'))
         // tapJitterMs (spec §9.3, §17): the hold duration is sampled per tap
         // from a range, not fixed — test realism, not evasion. The engine
         // does the actual sampling (so it can stay deterministic under an
@@ -547,7 +639,9 @@ export function createDeviceExecutor(deps: {
         // recorded hold duration). Omitted falls back to the device's own
         // `tapJitterMs` range, identical to plain `tap`.
         const holdMs = call.args.holdMs
-        await sink().tap(point, { holdMs: holdMs !== undefined ? [holdMs, holdMs] : timing.tapJitterMs })
+        const holdRange: [number, number] = holdMs !== undefined ? [holdMs, holdMs] : timing.tapJitterMs
+        report(observe, () => tapTouch(point, 'frame', holdRange, null, 'input'))
+        await sink().tap(point, { holdMs: holdRange })
         return undefined
       }
       case 'longPress': {
@@ -559,9 +653,11 @@ export function createDeviceExecutor(deps: {
         // `tapJitterMs` itself, which would ignore the caller's `ms` entirely.
         await pause(timing)
         lastTarget = 'point' in call.args.target ? null : call.args.target
-        const point = toFrame(jitterPoint(await resolveTarget(call.args.target), timing))
+        const aimed = await resolveTargetDetailed(call.args.target)
+        const point = toFrame(jitterPoint(aimed.point, timing))
         const halfWidth = Math.max(0, timing.tapJitterMs[1] - timing.tapJitterMs[0]) / 2
         const holdRange: [number, number] = [Math.max(0, call.args.ms - halfWidth), call.args.ms + halfWidth]
+        report(observe, () => tapTouch(point, 'frame', holdRange, aimed.bounds, 'input'))
         await sink().tap(point, { holdMs: holdRange })
         return undefined
       }
@@ -589,6 +685,7 @@ export function createDeviceExecutor(deps: {
             code: 'E_GESTURE_UNSUPPORTED',
           })
         }
+        report(observe, () => pathTouch(samples, samples[samples.length - 1]?.atMs ?? 0))
         await s.gesture(samples)
         return undefined
       }
@@ -602,6 +699,7 @@ export function createDeviceExecutor(deps: {
         const frame = deps.session.frameSize
         const from = jitterPoint(mapNormToDevice(call.args.from, frame), timing)
         const to = jitterPoint(mapNormToDevice(call.args.to, frame), timing)
+        report(observe, () => pathTouch([{ x: from.x, y: from.y, atMs: 0 }, { x: to.x, y: to.y, atMs: call.args.ms }], call.args.ms))
         await sink().swipe(from, to, call.args.ms)
         return undefined
       }
@@ -616,7 +714,7 @@ export function createDeviceExecutor(deps: {
         // The endpoints given stay the ANCHOR; `human` wanders them, the reach and the duration
         // around it (2026-09-17). See `human-gesture.ts` for why this lives under the API.
         const varied = humanise({ from, to, ms: call.args.ms, easing: call.args.easing }, call.args.human)
-        await runSwipe(varied.from, varied.to, varied.ms, timing, { curvature: call.args.curvature, easing: varied.easing })
+        await runSwipe(varied.from, varied.to, varied.ms, timing, { curvature: call.args.curvature, easing: varied.easing }, observe)
         return undefined
       }
       case 'scroll': {
@@ -628,7 +726,7 @@ export function createDeviceExecutor(deps: {
         const anchor = call.args.from ? jitterPoint(call.args.from, timing) : undefined
         const { from, to } = directionalSwipe(call.args.direction, distance, frame, anchor)
         const varied = humanise({ from, to, ms: SCROLL_DURATION_MS, easing: 'easeInOutCubic' }, call.args.human)
-        await runSwipe(varied.from, varied.to, varied.ms, timing, { easing: varied.easing })
+        await runSwipe(varied.from, varied.to, varied.ms, timing, { easing: varied.easing }, observe)
         return undefined
       }
       case 'fling': {
@@ -640,7 +738,7 @@ export function createDeviceExecutor(deps: {
         const distance = Math.round(axis * profile.distanceFraction)
         const { from, to } = directionalSwipe(call.args.direction, distance, frame)
         const varied = humanise({ from, to, ms: profile.durationMs, easing: 'easeOutQuad' }, call.args.human)
-        await runSwipe(varied.from, varied.to, varied.ms, timing, { easing: varied.easing })
+        await runSwipe(varied.from, varied.to, varied.ms, timing, { easing: varied.easing }, observe)
         return undefined
       }
       case 'type': {

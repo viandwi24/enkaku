@@ -6,6 +6,7 @@ import {
   RESULT_LIMITS,
   type Inspector,
   type JobSettings,
+  type JobTraceTouch,
   type ResultOutcome,
   type RotationMode,
   type RuntimeEnvelope,
@@ -1110,7 +1111,11 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
           // about `execDevice` moves.
           const traceToken = tee.begin(call.data)
           pendingDeviceCalls += 1
-          void execDevice(call.data)
+          // What the input engine was actually sent — a selector's resolved
+          // point, a humanised landing, a curved path — for the Timeline to
+          // draw. Collected beside the call, never returned to the script.
+          let touch: JobTraceTouch | undefined
+          void execDevice(call.data, { touch: (t) => (touch = t) })
             .finally(() => {
               pendingDeviceCalls -= 1
               // The child could not speak while it waited, so its silence starts when the answer reaches it.
@@ -1132,7 +1137,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
                   )
                 }
               }
-              tee.end(traceToken, { ok: true, value })
+              tee.end(traceToken, { ok: true, value }, touch)
               send({ t: 'device.result', callId: msg.callId, ok: true, value })
             })
             .catch((err: unknown) => {
@@ -1148,7 +1153,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
                   : err && typeof err === 'object' && 'code' in err && typeof (err as { code: unknown }).code === 'string'
                     ? (err as { code: string }).code
                     : 'DEVICE_CALL_FAILED'
-              tee.end(traceToken, { ok: false, code, message })
+              tee.end(traceToken, { ok: false, code, message }, touch)
               send({ t: 'device.result', callId: msg.callId, ok: false, error: { code, message } })
             })
         } else if (msg.t === 'kv.call') {

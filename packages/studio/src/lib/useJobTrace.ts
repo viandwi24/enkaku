@@ -174,12 +174,19 @@ export function uiTreeEventAt(events: readonly JobTraceEvent[], index: number): 
   return null
 }
 
-/** The frame BEFORE the one `frameEventAt` resolves to — the "before" half of the before/after toggle (plan §4.6). */
-export function previousFrameEventAt(events: readonly JobTraceEvent[], index: number): JobTraceEvent | null {
-  const current = frameEventAt(events, index)
-  if (!current) return null
-  const at = events.indexOf(current)
-  return at <= 0 ? null : frameEventAt(events, at - 1)
+/**
+ * The first frame AT or after `index` — the screen as a step left it. The
+ * step's own frame when it has one; otherwise the next step that captured
+ * one, which on an on-failure engine may be several steps later (the caller
+ * says so). The before/after toggle's "after" half (plan §4.6); `frameEventAt`
+ * one step back is its "before".
+ */
+export function frameAfterStep(events: readonly JobTraceEvent[], index: number): JobTraceEvent | null {
+  for (let i = Math.max(0, index); i < events.length; i++) {
+    const e = events[i]
+    if (e?.frameHash) return e
+  }
+  return null
 }
 
 /**

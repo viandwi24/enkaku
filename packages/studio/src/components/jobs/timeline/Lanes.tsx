@@ -3,6 +3,7 @@
 import { useMemo, type ReactNode } from 'react'
 import type { JobTraceEvent } from '@enkaku/protocol'
 import { cn } from '@enkaku/ui'
+import type { TimelineTouch } from '@/lib/trace-touch'
 import { stepLabel } from '@/lib/useJobTrace'
 import { PHASE_FILL, formatOffset, phaseBands } from './lane-math'
 
@@ -29,6 +30,7 @@ const LOG_BUCKETS = 40
 export function Lanes({
   events,
   actions,
+  touches,
   selected,
   onSelect,
   originMs,
@@ -37,6 +39,8 @@ export function Lanes({
 }: {
   events: JobTraceEvent[]
   actions: JobTraceEvent[]
+  /** `touchOf` for each of `actions`, index for index. */
+  touches: readonly (TimelineTouch | null)[]
   selected: number
   onSelect: (index: number) => void
   originMs: number
@@ -91,7 +95,11 @@ export function Lanes({
       </Lane>
 
       <Lane label="Actions">
-        {actions.map((e, i) => (
+        {actions.map((e, i) => {
+          // A gesture's tick is a short bar and a tap's a dot, so the lane
+          // reads as the run's rhythm of taps and swipes at a glance.
+          const path = touches[i]?.kind === 'path'
+          return (
           <button
             key={e.id}
             type="button"
@@ -99,12 +107,14 @@ export function Lanes({
             aria-label={`${stepLabel(e)} at ${formatOffset(e.atMs, originMs)}`}
             onClick={() => onSelect(i)}
             className={cn(
-              'absolute inset-y-[3px] w-[4px] rounded-pill',
+              'absolute rounded-pill',
+              path ? 'inset-y-[5px] w-[12px]' : 'inset-y-[3px] w-[4px]',
               i === selected ? 'bg-text' : e.kind === 'error' || e.ok === false ? 'bg-danger' : e.attempt > 1 ? 'bg-warn' : 'bg-accent',
             )}
-            style={{ left: `calc(${pct(e.atMs)}% - 2px)` }}
+            style={{ left: `calc(${pct(e.atMs)}% - ${path ? 6 : 2}px)` }}
           />
-        ))}
+          )
+        })}
       </Lane>
 
       <Lane label="Logs">

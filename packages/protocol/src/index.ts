@@ -1652,4 +1652,12 @@ export {
 // tail. Appended as its own statement for the same append-only reason as
 // above; `JobTraceMessage` is also registered in `ServerMessageSchema` (last
 // entry in that union, same convention).
-export { JobTraceEventSchema, JobTraceMessage, type JobTraceEvent } from './messages/job'
+export {
+  JobTraceEventSchema,
+  JobTraceMessage,
+  JobTraceTouchPointSchema,
+  JobTraceTouchSchema,
+  MAX_TRACE_TOUCH_POINTS,
+  type JobTraceEvent,
+  type JobTraceTouch,
+} from './messages/job'

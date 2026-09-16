@@ -1,4 +1,4 @@
-import type { DeviceCallMethod, JobTraceEvent, TimelineFramePolicy, UiNode } from '@enkaku/protocol'
+import type { DeviceCallMethod, JobTraceEvent, JobTraceTouch, TimelineFramePolicy, UiNode } from '@enkaku/protocol'
 import type { DeviceCall } from './ipc'
 
 /**
@@ -211,8 +211,13 @@ export interface TraceToken {
 export interface TraceTee {
   /** Called with the parsed call the instant before it is executed. Returns the token to close with. */
   begin(call: DeviceCall): TraceToken
-  /** Called when the call settles. NEVER throws, NEVER returns a promise the caller awaits. */
-  end(token: TraceToken, outcome: TraceOutcome): void
+  /**
+   * Called when the call settles. NEVER throws, NEVER returns a promise the caller awaits.
+   * `touch` is what the input engine was actually sent (`DeviceCallObserver.touch`), stored as
+   * `meta.touch` beside the redacted `meta.args` — present on a failed call too when the touch
+   * went out before the failure.
+   */
+  end(token: TraceToken, outcome: TraceOutcome, touch?: JobTraceTouch): void
   /**
    * A phase boundary. Closes the previous phase with an `end` event and opens
    * this one with a `start` event carrying `meta: { inspectorEngineId,
@@ -610,7 +615,7 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
       }
     },
 
-    end(token, outcome) {
+    end(token, outcome, touch) {
       // Nothing in here may throw: `end()` sits between a device call
       // settling and the child being told about it (§3.1, §8 R3).
       try {
@@ -628,6 +633,7 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
           errorCode: outcome.ok ? null : outcome.code,
           meta: {
             args: token.args,
+            ...(touch ? { touch } : {}),
             ...(outcome.ok ? {} : { message: outcome.message }),
           } as Record<string, unknown>,
         }

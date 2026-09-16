@@ -502,6 +502,47 @@ export const JobTraceEventSchema = z.object({
 export type JobTraceEvent = z.infer<typeof JobTraceEventSchema>
 
 /**
+ * `meta.touch` on a touch `action` event — what the input engine was ACTUALLY
+ * sent, as opposed to `meta.args`, which is what the script asked for.
+ *
+ * The two differ in exactly the cases a debugger cares about: a `tap` by
+ * selector records only the selector in its args, never the point it
+ * resolved to; `human: true` moves the landing point and wanders a gesture;
+ * `scroll` and `fling` carry only a direction; and a curved swipe's path is
+ * built inside the executor. So the Timeline draws touches from this, and
+ * from `args` only as a labelled estimate for an event recorded before it
+ * existed.
+ *
+ * Every coordinate is NORMALISED 0..1 against the screen in the orientation
+ * it had at that moment, so it lands on a frame of any resolution.
+ */
+export const JobTraceTouchPointSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  /** Milliseconds from the start of the gesture, when the path was sampled. */
+  atMs: z.number().optional(),
+})
+
+export const JobTraceTouchSchema = z.object({
+  /** `tap` for a single press (tap, longPress, tapNorm); `path` for anything that moves. */
+  kind: z.enum(['tap', 'path']),
+  /** One point for a tap; the path as sent (downsampled to at most `MAX_TRACE_TOUCH_POINTS`) for a gesture. */
+  points: z.array(JobTraceTouchPointSchema).min(1).max(64),
+  /** A gesture's duration. Null for a tap, whose hold is a range the engine samples from. */
+  durationMs: z.number().nonnegative().nullable(),
+  /** The hold range handed to the engine for a tap. Null for a gesture. */
+  holdMs: z.tuple([z.number(), z.number()]).nullable(),
+  /** The bounds of the node a selector resolved to, normalised the same way — the element the script aimed at. */
+  target: z.object({ left: z.number(), top: z.number(), right: z.number(), bottom: z.number() }).nullable(),
+  /** `adb` when the call used `via: 'adb'` (Android's own injection) instead of the session's input engine. */
+  via: z.enum(['input', 'adb']),
+})
+export type JobTraceTouch = z.infer<typeof JobTraceTouchSchema>
+
+/** The most points a recorded gesture keeps — enough for its shape on a 168px frame, small enough for a trace row. */
+export const MAX_TRACE_TOUCH_POINTS = 32
+
+/**
  * The trace's live tail (plan 128 §4.2), mirroring `JobLogMessage`'s shape
  * and placement — one event per message, pushed as the recorder publishes it
  * and BEFORE the row is written (§3.6).
