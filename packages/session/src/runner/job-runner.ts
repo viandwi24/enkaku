@@ -1390,21 +1390,28 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
        * the script's own call sits on.
        *
        * `'reuse'` never goes back to the device — the bytes or the tree are
-       * the ones the call already produced (§3.2, §3.4). A frame failure
-       * rejects (the event records `frameStatus: 'failed'`); a UI-tree
-       * failure does NOT, because losing the tree is no reason to also throw
-       * away a frame that was captured successfully.
+       * the ones the call already produced (§3.2, §3.4). Neither half's
+       * failure costs the other: a frame that cannot be taken is reported as
+       * `frameError` (the event records `frameStatus: 'failed'`) while the
+       * tree is still stored, and a tree that cannot be read never throws
+       * away a frame that was captured. The tree is what an agent reading a
+       * failed run needs most, so a dead screenshot path must not take it.
        */
       const captureForTrace = async (req: TraceCaptureRequest): Promise<TraceCaptureResult> => {
         const store = deps.traceStore
         if (!store) return { frameHash: null, uiHash: null }
         const inspector = session?.inspector ?? null
         let frameHash: string | null = null
-        if (req.frame === 'reuse') {
-          const bytes = toFrameBytes(req.frameValue)
-          if (bytes) frameHash = await store.putFrame(job.runId, bytes)
-        } else if (req.frame === 'capture' && inspector) {
-          frameHash = await store.putFrame(job.runId, await inspector.screenshot())
+        let frameError: string | undefined
+        try {
+          if (req.frame === 'reuse') {
+            const bytes = toFrameBytes(req.frameValue)
+            if (bytes) frameHash = await store.putFrame(job.runId, bytes)
+          } else if (req.frame === 'capture' && inspector) {
+            frameHash = await store.putFrame(job.runId, await inspector.screenshot())
+          }
+        } catch (err) {
+          frameError = err instanceof Error ? err.message : String(err)
         }
         let uiHash: string | null = null
         try {
@@ -1421,7 +1428,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         } catch {
           uiHash = null
         }
-        return { frameHash, uiHash }
+        return { frameHash, uiHash, ...(frameError !== undefined ? { frameError } : {}) }
       }
 
       const tee: TraceTee = deps.onTraceEvent

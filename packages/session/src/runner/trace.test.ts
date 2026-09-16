@@ -537,6 +537,20 @@ describe('createTraceTee — the other lanes (plan 128 §4.1)', () => {
     expect(h.captures.every((c) => c.frame === 'capture' && c.uiTree === 'capture')).toBe(true)
   })
 
+  test('a snapshot whose screenshot failed still keeps its UI tree, and says why the frame is missing', async () => {
+    const h = harness({ engineId: 'ui-tree', capture: async () => ({ frameHash: null, uiHash: 'tree-only', frameError: 'screencap timed out' }) })
+    h.tee.phase('run')
+    h.tee.phase('finish')
+    h.tee.error({ code: 'SCRIPT_ERROR', message: 'x', phase: 'run' })
+    await drain()
+    const snap = h.events.find((e) => e.name === 'snapshot')
+    expect(snap).toMatchObject({ uiHash: 'tree-only', frameHash: null, frameStatus: 'failed' })
+    expect(snap?.meta).toEqual({ phase: 'run', captureError: 'screencap timed out' })
+    const error = h.events.find((e) => e.kind === 'error')
+    expect(error).toMatchObject({ uiHash: 'tree-only', frameStatus: 'failed' })
+    expect(error?.meta).toEqual({ message: 'x', phase: 'run', captureError: 'screencap timed out' })
+  })
+
   test('no snapshot is taken when the policy is none', async () => {
     const h = harness({ engineId: 'ui-tree', capture: async () => ({ frameHash: 'x' }), framePolicy: () => 'off' })
     h.tee.phase('run')

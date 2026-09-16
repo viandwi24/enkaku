@@ -82,6 +82,13 @@ export interface TraceCaptureRequest {
 export interface TraceCaptureResult {
   frameHash?: string | null
   uiHash?: string | null
+  /**
+   * Why the frame is missing when the host could not take it but still
+   * stored the tree. A frame failure no longer rejects the whole capture:
+   * rejecting threw the UI tree away with it, and the tree is what an agent
+   * reading a failed run needs most.
+   */
+  frameError?: string
 }
 
 /** `ui-server` is the only engine that can afford a frame per action (§0.3, §3.4). */
@@ -526,6 +533,7 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
           build({
             ...event,
             frameStatus: res.frameHash ? 'ok' : req.frame === 'none' ? frameNoneStatus : 'failed',
+            ...(res.frameError ? { meta: { ...(event.meta ?? {}), captureError: res.frameError } } : {}),
             ...(res.frameHash !== undefined ? { frameHash: res.frameHash } : {}),
             ...(res.uiHash !== undefined ? { uiHash: res.uiHash } : {}),
           }),
@@ -572,7 +580,7 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
     )
     snapshots.set(phase, { attempt, atMs, result: settled })
     void settled.then((res) => {
-      const captureError = 'error' in res ? (res as { error: string }).error : null
+      const captureError = 'error' in res ? (res as { error: string }).error : (res.frameError ?? null)
       safeEmit(
         build({
           atMs,
@@ -751,6 +759,7 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
                 ...base,
                 atMs: snap.atMs,
                 phase: failedPhase,
+                ...(res.frameError ? { meta: { ...base.meta, captureError: res.frameError } } : {}),
                 frameHash: res.frameHash ?? null,
                 frameStatus: res.frameHash ? 'ok' : 'failed',
                 uiHash: res.uiHash ?? null,

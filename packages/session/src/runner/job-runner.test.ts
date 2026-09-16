@@ -2495,6 +2495,51 @@ describe('createJobRunner — the job trace tee (plan 128 §3.1, §3.4, step 128
     expect(errors[0]).toMatchObject({ name: 'SCRIPT_ERROR', ok: false, phase: 'run', atMs: runEnd?.atMs, frameHash: 'frame-hash', frameStatus: 'ok' })
   })
 
+  test('a screenshot that throws at the failure still stores the UI tree for it', async () => {
+    const events: TraceEventInput[] = []
+    const { isolation } = fakeIsolation([
+      {
+        ready: { t: 'ready', scriptId: 's', version: '1.0.0' },
+        onInit: (_init, emit) => {
+          emit({ t: 'phase', phase: 'run' })
+          setTimeout(() => emit({ t: 'phase', phase: 'finish' }), 20)
+          setTimeout(() => emit({ t: 'result', ok: false, error: { code: 'SCRIPT_ERROR', message: 'x', phase: 'run' }, finishRan: true }), 50)
+        },
+      },
+    ])
+    const store = traceStore()
+    const runner = createJobRunner({
+      isolation,
+      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
+      sessions: fakeSessions(
+        fakeSessionWithInspector({
+          engineId: 'ui-tree',
+          screenshot: async () => {
+            throw new Error('screencap timed out')
+          },
+        }),
+      ),
+      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
+      log: silentLog(),
+      onLog: () => {},
+      onArtifact: () => {},
+      onPhase: () => {},
+      heartbeat: () => {},
+      resetPolicy: () => ({ ...HOME_SETTINGS, resetPolicy: 'none' }),
+      timing: () => NO_TIMING,
+      onTraceEvent: (_jobId, event) => events.push(event),
+      traceStore: store.store,
+    })
+
+    expect((await runner.execute(JOB)).ok).toBe(false)
+    await Bun.sleep(20)
+
+    const error = events.find((e) => e.kind === 'error')
+    expect(error).toMatchObject({ frameHash: null, frameStatus: 'failed', uiHash: 'tree-hash' })
+    expect((error?.meta as { captureError?: string }).captureError).toBe('screencap timed out')
+    expect(store.frames).toBe(0)
+  })
+
   test('a capture that rejects does not fail the job — it becomes a frameStatus and nothing more', async () => {
     const events: TraceEventInput[] = []
     const { isolation } = fakeIsolation([twoCallBehavior()])
