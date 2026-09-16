@@ -160,6 +160,9 @@ async function openCreateGallery(ctx: ScriptContext<unknown>): Promise<UiNode> {
   return opened.tree
 }
 
+/** How many times the "Draf" tab is tapped before giving up — `drafts.ts` measured this app dropping about one tap in three. */
+const DRAFTS_TAB_TAPS = 3
+
 /** The new-post gallery's list: its "Draf" tab and "Kelola", or nothing when the account has none there. */
 async function clearNewPostDrafts(ctx: ScriptContext<{ dryRun: boolean }>): Promise<{ found: number; removed: number; opened: boolean }> {
   // The tab is drawn with the gallery's own folder menu; two readings with the menu and no tab are "no drafts".
@@ -178,12 +181,44 @@ async function clearNewPostDrafts(ctx: ScriptContext<{ dryRun: boolean }>): Prom
     ctx.log.info('the new-post gallery shows no "Draf" tab — no drafts in that list')
     return { found: 0, removed: 0, opened: false }
   }
-  await tapCentre(ctx, tab)
-  const section = await waitForTree(ctx, (t) => draftsManageButton(t) !== null, { budgetMs: 8_000 })
-  const manage = draftsManageButton(section.tree)
+  /*
+    The tab tap is checked and repeated, and the failure no longer claims the tab opened (0.10.10).
+
+    Measured on the owner's moto g06, 2026-09-17: this member failed with `the "Draf" tab opened but
+    its "Kelola" button was not found`, and the tree saved beside that very message showed the
+    gallery still on its folder list — `gallery_folder_menu_tv` ("Terbaru") present,
+    `drafts_tab_text` still sitting there unpressed, and `gallery_manage_button` absent from all 401
+    nodes. Nothing had opened. "Kelola" was not missing or renamed; the run never reached the screen
+    that button lives on.
+
+    The old wording asserted a step nothing had proven, and it sends whoever reads it hunting for a
+    changed Instagram button that was never on screen — it cost exactly that here before the tree was
+    read. A failure message may only state what was actually established.
+
+    `drafts.ts`'s own header measured the cause: in this app "about one tap in three was not taken
+    and had to be repeated". Every DELETION in this file is already checked and repeated for that
+    reason. This one tap was sent once and believed. Now it is neither: each retry re-reads the tab
+    from the current tree rather than re-tapping stale bounds, and a tap that already worked costs
+    nothing because the loop checks before it taps again.
+  */
+  let section = looked
+  let manage: ReturnType<typeof draftsManageButton> = null
+  for (let attempt = 1; attempt <= DRAFTS_TAB_TAPS && !manage; attempt++) {
+    const target = attempt === 1 ? tab : draftsTabButton(section.tree)
+    if (!target) break
+    if (attempt > 1) ctx.log.warn(`the "Draf" tab did not open — tapping it again (attempt ${attempt} of ${DRAFTS_TAB_TAPS}; this app drops about one tap in three)`)
+    await tapCentre(ctx, target)
+    section = await waitForTree(ctx, (t) => draftsManageButton(t) !== null, { budgetMs: 8_000 })
+    manage = draftsManageButton(section.tree)
+  }
   if (!manage) {
     await capture(ctx, 'ig-drafts-no-manage', section.tree)
-    fail('E_DRAFTS_NOT_CLEARED', 'the "Draf" tab opened but its "Kelola" button was not found — see artifact ig-drafts-no-manage.')
+    fail(
+      'E_DRAFTS_NOT_CLEARED',
+      draftsTabButton(section.tree) !== null
+        ? `the "Draf" tab was tapped ${DRAFTS_TAB_TAPS}x and the gallery stayed on its folder list, so its "Kelola" button was never reachable — see artifact ig-drafts-no-manage.`
+        : 'the "Draf" tab was tapped and then could not be read again, and no "Kelola" button appeared — see artifact ig-drafts-no-manage.',
+    )
   }
   await human(500, 1_000)
   await tapCentre(ctx, manage.node)

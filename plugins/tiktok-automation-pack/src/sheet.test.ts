@@ -149,3 +149,63 @@ describe('the shared scroll bound', () => {
     expect(MAX_SHEET_SCROLL_ATTEMPTS).toBeLessThanOrEqual(10)
   })
 })
+
+/*
+  1.49.8 — the same sheet, on a phone whose TikTok is in English.
+
+  Every case here FAILS on the code that shipped in 1.49.7, which is the point: that suite was 362
+  green while five of this pack's twelve members could not take a single step on such a phone.
+  `readSheetSnapshot` matched the sheet by the one string 'Lembar bawah' and dropped the add-account
+  row by the one string 'Tambah akun'. The en spellings below are not translations — they were read
+  off the owner's moto g06 (`tt-switch.xml`, 2026-09-16), whose TikTok reports `en-US`.
+
+  The second case is the one that matters most, and it is the quiet one: an unmatched "Add account"
+  is not a failure at all. The row simply stays in the list as an ordinary, tappable account, and a
+  member that taps "row N" can tap it and walk into the sign-in flow.
+*/
+describe('readSheetSnapshot — the same sheet in English (1.49.8)', () => {
+  const enRow = (opts: { username: string; top: number; checkmark?: boolean }): UiNode => {
+    const children: UiNode[] = [mkNode({ resourceId: 'app:id/mvp', text: opts.username, bounds: box(147, opts.top + 46, 416, opts.top + 81) })]
+    if (opts.checkmark) children.push(mkNode({ resourceId: 'app:id/fef', desc: 'Checkmark', bounds: box(650, opts.top + 42, 692, opts.top + 84) }))
+    return mkNode({ resourceId: 'app:id/l_z', desc: opts.username, clickable: true, bounds: box(0, opts.top, 720, opts.top + 126), children })
+  }
+
+  const enSheet = (rows: UiNode[]): UiNode =>
+    mkNode({
+      resourceId: 'app:id/fsz',
+      desc: 'Bottom sheet',
+      bounds: box(0, 1059, 720, 1556),
+      children: [
+        mkNode({ resourceId: 'app:id/p9w', text: 'Switch account', desc: 'Switch account', bounds: box(271, 1085, 450, 1124) }),
+        mkNode({ desc: 'Close', clickable: true, bounds: box(636, 1066, 706, 1143) }),
+        ...rows,
+      ],
+    })
+
+  test('the sheet is found by its English description, not only "Lembar bawah"', () => {
+    const snap = readSheetSnapshot(wrapInScreen(enSheet([enRow({ username: 'dewi_purnama280', top: 1150, checkmark: true })])))
+    expect(snap).not.toBeNull()
+    expect(snap?.rows.map((r) => r.desc)).toEqual(['dewi_purnama280'])
+  })
+
+  test('"Add account" is dropped in English too — unmatched, it becomes a tappable account row', () => {
+    const rows = [
+      enRow({ username: 'dewi_purnama280', top: 1150, checkmark: true }),
+      enRow({ username: 'user2578127329501', top: 1276 }),
+      enRow({ username: 'Add account', top: 1402 }),
+    ]
+    const snap = readSheetSnapshot(wrapInScreen(enSheet(rows)))
+    expect(snap?.rows.map((r) => r.desc)).toEqual(['dewi_purnama280', 'user2578127329501'])
+  })
+
+  test('the English checkmark is read, so the row-0 cross-check still has something to say', () => {
+    const rows = [enRow({ username: 'dewi_purnama280', top: 1150, checkmark: true }), enRow({ username: 'user2578127329501', top: 1276 })]
+    const snap = readSheetSnapshot(wrapInScreen(enSheet(rows)))
+    expect(detectCurrentIndex(snap?.rows ?? [])).toBe(0)
+  })
+
+  test('the Indonesian sheet still reads exactly as before — this fix adds a spelling, it does not move one', () => {
+    const snap = readSheetSnapshot(wrapInScreen(mkSheet([mkRow({ username: 'dewi_purnama280', top: 1150, checkmark: true })])))
+    expect(snap?.rows.map((r) => r.desc)).toEqual(['dewi_purnama280'])
+  })
+})

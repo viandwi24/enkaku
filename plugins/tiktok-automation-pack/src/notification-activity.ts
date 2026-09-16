@@ -23,6 +23,9 @@ import { bytesEqual, capture, frameOf, jitteredPoint, relaunch, snapshot, TIKTOK
  * no thread, no message request, and never the "Simpan info login" grant.
  */
 
+/** The bottom-nav Inbox item, in both languages TikTok ships on these phones (1.49.9). */
+const INBOX_TAB_DESCS: readonly string[] = ['Kotak Masuk', 'Inbox']
+
 const paramsSchema = z.object({
   scrolls: z
     .number()
@@ -81,8 +84,12 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     // --- the nav: badge first, then the tap -------------------------------------------------
     // The add-phone sheet covers the bottom nav — closed first, or Kotak Masuk is never found.
     const home = (await dismissInterruptions(ctx)).tree
-    const inbox = all(home, (n) => n.clickable && n.desc.trim() === 'Kotak Masuk' && n.bounds.top > 1_400)[0]
-    if (!inbox) throw new Error('the Kotak Masuk tab was not on the bottom navigation — see the first artifact')
+    // Both spellings (1.49.9) — see `shop-browse.ts`. On the owner's en-US moto this member failed
+    // with "the Kotak Masuk tab was not on the bottom navigation" while the nav read
+    // `Home, Shop, Create, Inbox, Profile`. This one matters more than most: `notification-activity`
+    // is called TWICE per warm-up rotation, so on an English farm that rotation lost it every run.
+    const inbox = all(home, (n) => n.clickable && INBOX_TAB_DESCS.includes(n.desc.trim()) && n.bounds.top > 1_400)[0]
+    if (!inbox) throw new Error(`the Inbox tab (${INBOX_TAB_DESCS.join('/')}) was not on the bottom navigation — see the first artifact`)
     const badge = all(home, (n) => /^\d+\+?$/.test(n.text.trim()) && n.bounds.top >= inbox.bounds.top && n.bounds.bottom <= inbox.bounds.bottom + 2 && n.bounds.left >= inbox.bounds.left - 2 && n.bounds.right <= inbox.bounds.right + 2)[0]?.text.trim() ?? ''
     await ctx.device.tap({ point: jitteredPoint(inbox, rng) })
     await sleep(between(rng, 2_500, 4_000))

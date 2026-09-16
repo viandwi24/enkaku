@@ -7,13 +7,13 @@ import { all, centerOf } from './tree'
 import { ACCOUNTS_KEY, AccountsSchema, storedPositionOf, type StoredAccounts } from './accounts'
 import {
   MAX_SHEET_SCROLL_ATTEMPTS,
-  MENU_PROFIL,
-  PROFIL_TAB,
-  SHEET_DESC,
+  MENU_PROFIL_ANCHORS,
+  PROFIL_TAB_ANCHORS,
   TIKTOK_PACKAGE,
+  isSheetNode,
   openSwitchAccountSheet,
   scanSheet,
-  waitForAnchor,
+  waitForAnyAnchor,
   type SheetRow,
 } from './sheet'
 
@@ -167,7 +167,7 @@ function isErrorCode(err: unknown, code: string): boolean {
 export function ownProfileShowsHandle(tree: UiNode, handle: string): boolean {
   const wantedHandle = `@${handle.trim()}`.toLowerCase()
   const handleFound = all(tree, (n) => n.text.trim().toLowerCase() === wantedHandle).length > 0
-  const sheetStillOpen = all(tree, (n) => n.desc === SHEET_DESC).length > 0
+  const sheetStillOpen = all(tree, isSheetNode).length > 0
   return handleFound && !sheetStillOpen
 }
 
@@ -336,9 +336,9 @@ const switchAccountScript: PluginMemberScript<typeof paramsSchema, typeof result
     ctx.log.info('switching account', { from: current.desc, to: targetRow.desc })
     await ctx.device.tap({ point: centerOf(targetRow.bounds) })
 
-    const feedNode = await waitForAnchor(ctx, ARTIFACT_PREFIX, 'home feed after switch', PROFIL_TAB, { timeout: 20_000 })
+    const feedNode = await waitForAnyAnchor(ctx, ARTIFACT_PREFIX, 'home feed after switch', PROFIL_TAB_ANCHORS, { timeout: 20_000 })
     await ctx.device.tap({ point: centerOf(feedNode.bounds) })
-    await waitForAnchor(ctx, ARTIFACT_PREFIX, 'profile screen (verify pass)', MENU_PROFIL)
+    await waitForAnyAnchor(ctx, ARTIFACT_PREFIX, 'profile screen (verify pass)', MENU_PROFIL_ANCHORS)
 
     // Verify the switch actually landed: read the profile screen and confirm the target's OWN handle
     // is there, AND that the switch-account sheet is gone (`ownProfileShowsHandle` — see its own

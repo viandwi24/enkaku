@@ -28,6 +28,31 @@ export const MENU_PROFIL: Selector = { desc: 'Menu profil' }
 export const SETTINGS_ROW: Selector = { desc: 'Pengaturan dan privasi' }
 export const BERALIH_AKUN: Selector = { desc: 'Beralih akun' }
 
+/*
+  The same four anchors, in BOTH languages TikTok ships on these phones (1.49.8).
+
+  A `Selector` matches exactly — `{desc}`/`{text}`/`{id}`, no regex, `.strict()` in the protocol — so
+  a bilingual anchor can only be a list to try in turn. `gesture.ts`'s `HOME_TAB` already said this
+  and gave the reason not to reach for the resource id instead: the id would be language-proof but
+  rotates between TikTok builds, and a wrong id matches on NO phone. This file simply had not
+  followed its own pack's rule, and `post-video.ts` had worked around it at each call site
+  (`[descOf(PROFIL_TAB), 'Profile']`) rather than fixing it here — so the two members that use these
+  constants DIRECTLY, `list-accounts` and `switch-account`, were the ones left behind.
+
+  Measured, not translated. Every en spelling below was read off a real dump from the owner's moto
+  g06 whose TikTok runs `en-US`: the live feed dump of 2026-09-17 ('Profile'), and the walk saved in
+  the same session — `tt-profile.xml` ('Profile menu'), `tt-settings.xml` ('Settings and privacy'),
+  `tt-switch.xml` ('Switch account', 'Bottom sheet', 'Add account', 'Checkmark').
+
+  Evidence this was live, not theoretical: on that phone `list-accounts` failed twice with
+  `the "home feed (Profil tab)" anchor never appeared` while its own failure screenshot showed the
+  feed, bottom nav and all, reading "Profile".
+*/
+export const PROFIL_TAB_ANCHORS: readonly Selector[] = [{ desc: 'Profil' }, { desc: 'Profile' }]
+export const MENU_PROFIL_ANCHORS: readonly Selector[] = [{ desc: 'Menu profil' }, { desc: 'Profile menu' }]
+export const SETTINGS_ROW_ANCHORS: readonly Selector[] = [{ desc: 'Pengaturan dan privasi' }, { desc: 'Settings and privacy' }]
+export const BERALIH_AKUN_ANCHORS: readonly Selector[] = [{ desc: 'Beralih akun' }, { desc: 'Switch account' }]
+
 /**
  * The sheet's own container description (plan 86 §4.2, row A6). Spelled once, as a bare string,
  * because it is needed BOTH as a selector (`SHEET_ANCHOR`, to prove the sheet opened) and as a
@@ -37,11 +62,25 @@ export const BERALIH_AKUN: Selector = { desc: 'Beralih akun' }
  */
 export const SHEET_DESC = 'Lembar bawah'
 export const SHEET_ANCHOR: Selector = { desc: SHEET_DESC }
+/** Both spellings, and the predicate that reads them — the "two spellings of one string" the comment above warns about is exactly what a second locale would have introduced. */
+export const SHEET_DESCS: readonly string[] = [SHEET_DESC, 'Bottom sheet']
+export const SHEET_ANCHORS: readonly Selector[] = SHEET_DESCS.map((desc) => ({ desc }))
+export function isSheetNode(n: UiNode): boolean {
+  return SHEET_DESCS.includes(n.desc)
+}
 
 // The sheet row container's shared resource id (plan 86 §4.2) — never a selector on its own; only
 // ever fed to `rowsById`.
 const ROW_SHORT_ID = 'l_z'
 const TAMBAH_AKUN_DESC = 'Tambah akun'
+/*
+  This one is not a "the anchor was not found" bug, which is why it is called out separately: the row
+  is DROPPED by name so it can never be a switch target. Unmatched, it is not dropped — it stays in
+  the list as an ordinary account row, and a member that taps "row N" can tap "Add account" and walk
+  into the sign-in flow. A wrong tap is strictly worse than a red job, so this list matters more than
+  the anchors above even though it fails more quietly.
+*/
+const TAMBAH_AKUN_DESCS: readonly string[] = [TAMBAH_AKUN_DESC, 'Add account']
 
 /**
  * Indonesian TalkBack's label for the current-account checkmark (plan 86 §4.2's sheet dump, node
@@ -51,6 +90,8 @@ const TAMBAH_AKUN_DESC = 'Tambah akun'
  * reading degrades every caller from "confirmed" to "assumed", never into a wrong tap.
  */
 export const CHECKMARK_DESC = 'Tanda centang'
+/** Both spellings ('Checkmark' read off `tt-switch.xml`). Per plan 86 §3.3 above, a miss here only ever downgrades "confirmed" to "assumed" — it cannot produce a wrong tap, unlike `TAMBAH_AKUN_DESCS`. */
+export const CHECKMARK_DESCS: readonly string[] = [CHECKMARK_DESC, 'Checkmark']
 
 const MAX_SETTINGS_SCROLLS = 4 // measured on hardware to reach "Beralih akun" from the top — plan 86 §4.2, row A4
 export const MAX_SHEET_SCROLL_ATTEMPTS = 5 // bounded — plan 86 §4.3; an account list this pack has never seen ships untested (§7.4)
@@ -80,12 +121,12 @@ export interface SheetSnapshot {
  * for it, so this is a genuine "it vanished between the wait and the dump", not an ordinary miss).
  */
 export function readSheetSnapshot(tree: UiNode): SheetSnapshot | null {
-  const sheetNode = all(tree, (n) => n.desc === SHEET_DESC)[0]
+  const sheetNode = all(tree, isSheetNode)[0]
   if (!sheetNode) return null
   const rows = rowsById(sheetNode, ROW_SHORT_ID)
     .filter((r) => within(sheetNode.bounds, r.bounds))
-    .filter((r) => r.desc !== TAMBAH_AKUN_DESC)
-    .map((r) => ({ desc: r.desc, bounds: r.bounds, hasCheckmark: all(r, (n) => n.desc === CHECKMARK_DESC).length > 0 }))
+    .filter((r) => !TAMBAH_AKUN_DESCS.includes(r.desc))
+    .map((r) => ({ desc: r.desc, bounds: r.bounds, hasCheckmark: all(r, (n) => CHECKMARK_DESCS.includes(n.desc)).length > 0 }))
   return { sheetBounds: sheetNode.bounds, rows }
 }
 
@@ -153,6 +194,46 @@ export async function waitForAnchor(
 }
 
 /**
+ * `waitForAnchor` for an anchor that has more than one spelling (1.49.8).
+ *
+ * Same contract as the single-selector version above — including the deliberate refusal to press
+ * BACK, for the reasons its comment sets out — with one difference: the per-try timeout is the
+ * caller's budget SPLIT across the spellings, so adding a second language cannot double how long a
+ * genuinely-missing anchor takes to report. The sweep still happens exactly once, between the two
+ * rounds, not once per spelling.
+ */
+export async function waitForAnyAnchor(
+  ctx: ScriptContext<unknown>,
+  artifactPrefix: string,
+  label: string,
+  sels: readonly Selector[],
+  opts?: WaitForOptions,
+): Promise<UiNode> {
+  const budget = opts?.timeout ?? 10_000
+  const each = { ...opts, timeout: Math.max(2_000, Math.round(budget / (sels.length * 2))) }
+  for (let round = 0; round < 2; round++) {
+    for (const sel of sels) {
+      try {
+        return await ctx.device.waitFor(sel, each)
+      } catch {
+        // Not this spelling, or not yet — try the next, then sweep once and go round again.
+      }
+    }
+    if (round === 0) {
+      ctx.log.warn(`anchor "${label}" did not appear in any known spelling — sweeping for a blocking dialog once`, { selectors: JSON.stringify(sels) })
+      await clearBlockingDialog(ctx, { allowBack: false })
+      await sleep(1_500)
+    }
+  }
+  const artifactLabel = `${artifactPrefix}-missing-${label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`
+  await ctx.artifact.screenshot(artifactLabel)
+  throw Object.assign(
+    new Error(`the "${label}" anchor never appeared in any known spelling (${sels.map((s) => JSON.stringify(s)).join(', ')}), even after a dialog sweep — cannot confirm where the device actually is`),
+    { code: 'E_ANCHOR_NOT_FOUND' },
+  )
+}
+
+/**
  * Settings has no scrollable flag (plan 86 §0.4, like everywhere else in this app), so reaching
  * "Beralih akun" is a fixed number of blind gesture-scrolls, measured on hardware at 4 (§4.2, row
  * A4). Checking with a plain `find` before each one — safe here, since this desc is verified unique
@@ -161,7 +242,9 @@ export async function waitForAnchor(
  */
 async function scrollToRevealBeralihAkun(ctx: ScriptContext<unknown>): Promise<void> {
   for (let i = 0; i < MAX_SETTINGS_SCROLLS; i++) {
-    if (await ctx.device.find(BERALIH_AKUN)) return
+    for (const sel of BERALIH_AKUN_ANCHORS) {
+      if (await ctx.device.find(sel)) return
+    }
     await ctx.device.scroll({ direction: 'down' })
     await sleep(400)
   }
@@ -187,26 +270,26 @@ async function scrollSheet(ctx: ScriptContext<unknown>, sheetBounds: Bounds): Pr
  * that returns from here has PROVEN the sheet is on screen rather than assumed it.
  */
 export async function openSwitchAccountSheet(ctx: ScriptContext<unknown>, artifactPrefix: string): Promise<void> {
-  const profilNode = await waitForAnchor(ctx, artifactPrefix, 'home feed (Profil tab)', PROFIL_TAB, { timeout: 20_000 })
+  const profilNode = await waitForAnyAnchor(ctx, artifactPrefix, 'home feed (Profile tab)', PROFIL_TAB_ANCHORS, { timeout: 20_000 })
   await ctx.device.tap({ point: centerOf(profilNode.bounds) })
 
-  const hamburgerNode = await waitForAnchor(ctx, artifactPrefix, 'profile screen (hamburger)', MENU_PROFIL)
+  const hamburgerNode = await waitForAnyAnchor(ctx, artifactPrefix, 'profile screen (hamburger)', MENU_PROFIL_ANCHORS)
   await ctx.device.tap({ point: centerOf(hamburgerNode.bounds) })
 
-  const settingsRowNode = await waitForAnchor(ctx, artifactPrefix, 'profile drawer (Pengaturan dan privasi)', SETTINGS_ROW)
+  const settingsRowNode = await waitForAnyAnchor(ctx, artifactPrefix, 'profile drawer (Settings and privacy)', SETTINGS_ROW_ANCHORS)
   await ctx.device.tap({ point: centerOf(settingsRowNode.bounds) })
 
   // Settings has no anchor of its own confirming "you are on this screen" — "Beralih akun" doubles
   // as both the scroll target and that confirmation, since it is verified unique screen-wide
   // (plan 86 §4.2, row A5).
   await scrollToRevealBeralihAkun(ctx)
-  const beralihNode = await waitForAnchor(ctx, artifactPrefix, 'Beralih akun row', BERALIH_AKUN)
+  const beralihNode = await waitForAnyAnchor(ctx, artifactPrefix, 'Switch account row', BERALIH_AKUN_ANCHORS)
   // The dumped bounds centre, never a screen fraction (plan 86 §0.6): "Keluar" (log out) sits 98px
   // directly below this row with no gap. A tap aimed at a fraction of the screen instead of this
   // node's own measured box is how an account gets logged out by accident.
   await ctx.device.tap({ point: centerOf(beralihNode.bounds) })
 
-  await waitForAnchor(ctx, artifactPrefix, 'switch-account sheet', SHEET_ANCHOR)
+  await waitForAnyAnchor(ctx, artifactPrefix, 'switch-account sheet', SHEET_ANCHORS)
 }
 
 /** One dump of the sheet, as `scanSheet` hands it to its caller. */

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { Bounds, UiNode } from '@enkaku/protocol'
-import { findQueryInput, findSearchIcon, findSubmitButton } from './search'
+import { findQueryInput, findSearchIcon, findSubmitButton, tabAliases } from './search'
 
 /** Fills in every field `UiNode` requires so a test only has to spell out what it cares about. */
 function mkNode(partial: Partial<UiNode> & { bounds: Bounds }): UiNode {
@@ -85,5 +85,73 @@ describe('findSubmitButton — id first, bounds-filtered text fallback (plan §4
     const historyRow = mkNode({ resourceId: '', text: 'Cari', bounds: box(56, 1424, 522, 1452) })
     const tree = mkNode({ bounds: box(0, 0, 720, 1640), children: [historyRow] })
     expect(findSubmitButton(tree)).toBeNull()
+  })
+})
+
+/*
+  1.49.8 — the same screens in English. These fail on 1.49.7.
+
+  Proven on hardware before it was written: the owner's moto g06 runs TikTok in `en-US`, and a live
+  feed dump taken on 2026-09-17 carries no node reading "Cari" anywhere, while the real top-bar icon
+  reads `desc: 'Search'` at `top: 72`. The bounds filter was never the problem — it was the word — so
+  the chip case is repeated here in English to prove the filter still does its job either way.
+*/
+describe('findSearchIcon / findSubmitButton — an English TikTok (1.49.8)', () => {
+  test('the top-bar icon is found when it reads "Search"', () => {
+    const icon = mkNode({ resourceId: 'app:id/jvu', desc: 'Search', bounds: box(622, 72, 720, 170) })
+    const tree = mkNode({ bounds: box(0, 0, 720, 1640), children: [icon] })
+    expect(findSearchIcon(tree)?.bounds).toEqual(box(622, 72, 720, 170))
+  })
+
+  test('the per-video chip is still refused in English — the bounds filter is not language-bound', () => {
+    const chip = mkNode({ resourceId: 'app:id/enm', desc: 'Search', bounds: box(21, 1424, 49, 1452) })
+    const icon = mkNode({ resourceId: 'app:id/jvu', desc: 'Search', bounds: box(622, 72, 720, 170) })
+    const tree = mkNode({ bounds: box(0, 0, 720, 1640), children: [chip, icon] })
+    expect(findSearchIcon(tree)?.bounds).toEqual(box(622, 72, 720, 170))
+    expect(findSearchIcon(mkNode({ bounds: box(0, 0, 720, 1640), children: [chip] }))).toBeNull()
+  })
+
+  test('the submit fallback reads "Search" as well as "Cari"', () => {
+    const submit = mkNode({ text: 'Search', bounds: box(613, 77, 720, 154) })
+    const tree = mkNode({ bounds: box(0, 0, 720, 1640), children: [submit] })
+    expect(findSubmitButton(tree)?.bounds).toEqual(box(613, 77, 720, 154))
+  })
+
+  test('the Indonesian icon still wins where it always did', () => {
+    const icon = mkNode({ resourceId: 'app:id/jvu', desc: 'Cari', bounds: box(622, 72, 720, 170) })
+    const tree = mkNode({ bounds: box(0, 0, 720, 1640), children: [icon] })
+    expect(findSearchIcon(tree)?.bounds).toEqual(box(622, 72, 720, 170))
+  })
+})
+
+/*
+  1.49.9 — the results tab strip in both languages.
+
+  `search-keyword` and `keyword-videos` BOTH died here on the owner's en-US moto, after the search
+  itself had already worked: `the "results tab strip (Teratas)"/(Video)" anchor never appeared`.
+
+  The plural is the whole point of measuring instead of translating: TikTok's English tab is
+  "Videos", not "Video", and a Selector matches exactly. A translated guess would have failed in the
+  same silent way as the bug it was meant to fix.
+*/
+describe('tabAliases — the operator-facing enum stays Indonesian, the selector gains a spelling', () => {
+  test('each enum value keeps its own label first, so an Indonesian phone is unchanged', () => {
+    for (const tab of ['Teratas', 'Video', 'Pengguna', 'LIVE']) {
+      expect(tabAliases(tab)[0]).toBe(tab)
+    }
+  })
+
+  test('the English spellings are the ones read off the device', () => {
+    expect(tabAliases('Teratas')).toEqual(['Teratas', 'Top'])
+    expect(tabAliases('Video')).toEqual(['Video', 'Videos'])
+    expect(tabAliases('Pengguna')).toEqual(['Pengguna', 'Users'])
+  })
+
+  test('LIVE is one word in both, and is not given a second spelling it does not have', () => {
+    expect(tabAliases('LIVE')).toEqual(['LIVE'])
+  })
+
+  test('an unknown tab is passed through rather than dropped', () => {
+    expect(tabAliases('Foto')).toEqual(['Foto'])
   })
 })

@@ -52,7 +52,7 @@ import clearDrafts from './clear-drafts'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.10.9',
+  version: '0.10.10',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -61,6 +61,22 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.10.10 — the drafts tab is tapped until it opens, and the failure stops
+   * blaming the wrong button.**
+   * `clear-drafts` reported `the "Draf" tab opened but its "Kelola" button was
+   * not found` on the owner's moto g06 (2026-09-17). The tree saved beside that
+   * message showed the gallery still on its folder list — `gallery_folder_menu_tv`
+   * ("Terbaru") present, `drafts_tab_text` still sitting there unpressed, and
+   * `gallery_manage_button` absent from all 401 nodes. Nothing had opened.
+   * "Kelola" was not missing or renamed: the run never reached the screen that
+   * button lives on. The old wording asserted a step nothing had proven, and it
+   * cost two separate readings of this failure before the tree was opened.
+   * `drafts.ts`'s own measured header says why the tap was lost — in this app
+   * "about one tap in three was not taken and had to be repeated" — which every
+   * DELETION here already accounts for. This one tab tap was sent once and
+   * believed. It is re-read from the current tree and repeated up to 3x now, and
+   * the failure states only what was actually established.
    *
    * **0.10.9 — the timing kit is the SDK's now, not this pack's own copy.**
    * `makeRng`, `between`, the dwell model and `planConfirmStep` existed three

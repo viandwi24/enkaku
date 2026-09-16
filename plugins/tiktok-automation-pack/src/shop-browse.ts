@@ -40,6 +40,9 @@ function hasShopSurface(tree: UiNode): boolean {
  * against the category strip's measured bounds only.
  */
 
+/** The bottom-nav Shop item, in both languages TikTok ships on these phones (1.49.9). */
+const SHOP_TAB_DESCS: readonly string[] = ['Toko', 'Shop']
+
 const paramsSchema = z.object({
   scrolls: z
     .number()
@@ -94,8 +97,13 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     // The bottom-nav Toko item — located by desc INSIDE the nav band, so it can never be the
     // results-page tab that shares its description (see `search-keyword`'s note).
     const nav = await ctx.device.dump()
-    const tab = all(nav, (n) => n.clickable && n.desc.trim() === 'Toko' && n.bounds.top > 1_400)[0]
-    if (!tab) throw new Error('the Toko tab was not on the bottom navigation — see the first artifact')
+    // Both spellings (1.49.9). Measured on the owner's moto g06, whose TikTok runs `en-US`: the
+    // bottom nav reads `Home, Shop, Create, Inbox, Profile`. Before this, `shop-browse` failed on
+    // that phone with "the Toko tab was not on the bottom navigation" while the tab was plainly
+    // drawn — it just said "Shop". The `top > 1_400` band is kept: it is what stops this matching a
+    // "Toko" written anywhere else on the page, and it is not language-bound.
+    const tab = all(nav, (n) => n.clickable && SHOP_TAB_DESCS.includes(n.desc.trim()) && n.bounds.top > 1_400)[0]
+    if (!tab) throw new Error(`the Shop tab (${SHOP_TAB_DESCS.join('/')}) was not on the bottom navigation — see the first artifact`)
     await ctx.device.tap({ point: jitteredPoint(tab, rng) })
 
     /*

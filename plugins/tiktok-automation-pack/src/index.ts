@@ -976,6 +976,60 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.49.9 — the rest of the English phone: the Switch account row, the results tab strip, and the
+  //   Shop and Inbox tabs.
+  //   1.49.8 was fixed from dumps; this one was fixed from a RUN. The whole pack was driven on the
+  //   owner's moto g06 with TikTok in `en-US` and scored 4 of 9, which found three things the dumps
+  //   had not:
+  //   (1) `openSwitchAccountSheet` had a FOURTH anchor I missed — `waitForAnchor(…, 'Beralih akun
+  //       row', BERALIH_AKUN)`. 1.49.8 made the row's SEARCH bilingual but not its WAIT, so the walk
+  //       got three screens further and then died in the same way. Now `waitForAnyAnchor`. The
+  //       measured-bounds tap is untouched: "Keluar" sits 98px below that row with no gap, and that
+  //       is why this step may never aim at a screen fraction.
+  //   (2) `search-keyword` AND `keyword-videos` both died at the results tab strip — `the "results
+  //       tab strip (Teratas)"/(Video)" anchor never appeared` — after the search itself had
+  //       worked. The `tab` parameter stays Indonesian, because every stored workflow and schedule
+  //       already carries those values and changing them would invalidate them silently; only the
+  //       selector gained the second spelling. Read off the failure screenshot: the English strip is
+  //       `Ask | Top | LIVE | Videos | Users | Photos | Shop`. Note `Video` -> `VideoS`. A translated
+  //       guess would have failed exactly like the bug it fixes.
+  //   (3) `shop-browse` and `notification-activity` could not find their BOTTOM-NAV tabs: `Toko` and
+  //       `Kotak Masuk` read `Shop` and `Inbox`. Neither showed up in a static scan of this pack,
+  //       because both are built inline rather than as `desc:` literals — only running it found
+  //       them. `notification-activity` is called TWICE per warm-up rotation, so an English farm
+  //       lost it on every single run.
+  //   That makes SEVEN of twelve members, not five: the 1.49.8 note's count was an undercount taken
+  //   before the pack had ever been run in English.
+  //   The `top > 1_400` nav band is kept in both: it is what stops a tab match landing on the same
+  //   word elsewhere on the page, and it is not language-bound.
+  // 1.49.8 — five members could not work at all on a phone whose TikTok is in English.
+  //   Found by testing this pack on the owner's own moto g06, whose TikTok runs `en-US`
+  //   (`cmd locale get-app-locales` says so). `list-accounts` failed twice with `the "home feed
+  //   (Profil tab)" anchor never appeared` while its OWN failure screenshot showed the feed, bottom
+  //   nav and all, reading "Profile". A Selector matches exactly — `{desc}`/`{text}`/`{id}`, no
+  //   regex — so `{desc:'Profil'}` can never match `Profile`, and every anchor on the five-screen
+  //   walk in `sheet.ts` was spelled in Indonesian only: Profil, Menu profil, Pengaturan dan
+  //   privasi, Beralih akun, Lembar bawah. So were the search flow's `desc:"Cari"` icon and its
+  //   `text:"Cari"` submit fallback. That is `list-accounts`, `switch-account`, `search-keyword`,
+  //   `keyword-videos` and `search-follow` — five of twelve — dead on any farm whose app is not in
+  //   Indonesian, with no test in this repo able to see it: the suite was 362 green before this fix
+  //   and 362 green after, which is why this commit adds the failing cases it lacked.
+  //   `gesture.ts` had already solved this for the feed tab (`HOME_TAB`, both spellings, tried in
+  //   turn) and `post-video.ts` had worked around it at each call site (`[descOf(PROFIL_TAB),
+  //   'Profile']`). Neither reached the constants themselves, so the two members that use them
+  //   directly were the ones left behind. They are ladders now, with `waitForAnyAnchor` splitting
+  //   the caller's timeout across the spellings so a second language cannot double how long a
+  //   genuinely-missing anchor takes to report.
+  //   The en spellings are measured, not translated — read off this phone's dumps: 'Profile' (live
+  //   feed, 2026-09-17), 'Profile menu', 'Settings and privacy', 'Switch account', 'Bottom sheet',
+  //   'Add account', 'Checkmark'.
+  //   One of these was worse than a red job: `TAMBAH_AKUN_DESC` DROPS the "Tambah akun" row so it
+  //   can never be a switch target. Unmatched, it stayed in the list as an ordinary account row —
+  //   `switch-account` tapping "row N" could tap "Add account" and walk into the sign-in flow. A
+  //   wrong tap beats a loud failure every time, and not in a good way.
+  //   Still open, deliberately: `search-keyword`'s `tab` enum is `['Teratas','Video','Pengguna',
+  //   'LIVE']` — an operator-facing parameter, not just a selector. Its English spellings have not
+  //   been read off the device yet, and guessing them is exactly how this bug was born.
   // 1.49.7 — the timing kit is the SDK's now, not this pack's own copy.
   //   `makeRng`, `between`, the watch-time model and `planConfirmStep` existed three times over —
   //   once here, once in the Instagram pack, once in the YouTube pack — and the copies had already
@@ -1372,7 +1426,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.49.7',
+  version: '1.49.9',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
