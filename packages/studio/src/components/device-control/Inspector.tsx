@@ -3,32 +3,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { CHANNEL, decodeSnapshot, type InspectState, type UiNode } from '@enkaku/protocol'
 import { Button, CameraIcon, cn } from '@enkaku/ui'
+import { flatten, formatBounds, primaryLabel, shortClassName } from '@/lib/ui-tree'
 import { newId, ws, WsRequestError } from '@/lib/ws'
-
-/** Copied from `InspectorPanel.tsx` before that file was deleted (plan 215 §4.11). */
-function shortClassName(className: string): string {
-  const idx = className.lastIndexOf('.')
-  return idx === -1 ? className : className.slice(idx + 1)
-}
-
-function primaryLabel(node: UiNode): string {
-  if (node.resourceId.trim()) return node.resourceId
-  if (node.text.trim()) return node.text
-  if (node.desc.trim()) return node.desc
-  return ''
-}
-
-interface FlatRow {
-  node: UiNode
-  depth: number
-  path: number[]
-}
-
-function flatten(node: UiNode, depth = 0, path: number[] = []): FlatRow[] {
-  const rows: FlatRow[] = [{ node, depth, path }]
-  node.children.forEach((child, i) => rows.push(...flatten(child, depth + 1, [...path, i])))
-  return rows
-}
 
 /**
  * The Inspector tab (design handoff README.md:274-278; plan 215 §4.11):
@@ -184,7 +160,7 @@ export function Inspector({ deviceId, nodeOwned }: { deviceId: string; nodeOwned
         <NodeDetailRow label="text" value={selected?.text || null} />
         <NodeDetailRow
           label="bounds"
-          value={selected ? `${selected.bounds.left},${selected.bounds.top} ${selected.bounds.right},${selected.bounds.bottom}` : null}
+          value={selected ? formatBounds(selected.bounds) : null}
         />
         <NodeDetailRow label="clickable" value={selected ? String(selected.clickable) : null} />
         <NodeDetailRow label="enabled" value={selected ? String(selected.enabled) : null} />

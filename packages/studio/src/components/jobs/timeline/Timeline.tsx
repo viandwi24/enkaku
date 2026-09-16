@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import type { JobStatus } from '@enkaku/protocol'
 import { EmptyState, ErrorState, LoadingRows } from '@enkaku/ui'
 import {
@@ -12,6 +12,7 @@ import {
   isTimelineStep,
   nearestEventIndex,
   previousFrameEventAt,
+  uiTreeEventAt,
   useJobTrace,
 } from '@/lib/useJobTrace'
 import { FrameAndEvent } from './FrameAndEvent'
@@ -19,6 +20,7 @@ import { FrameStrip } from './FrameStrip'
 import { Lanes } from './Lanes'
 import { Transport } from './Transport'
 import { useTracePlayback } from './useTracePlayback'
+import { UiTreePanel, type SelectedUiNode } from './UiTreePanel'
 
 /**
  * The replay debugger (design handoff, "Screen: Jobs", **Timeline**): "four
@@ -53,6 +55,7 @@ export function Timeline({ jobId, runId, runStatus }: { jobId: string; runId: st
   const endMs = events[events.length - 1]?.atMs ?? originMs
   const policy = useMemo(() => capturePolicyAt(events, nearestEventIndex(events, playheadMs)), [events, playheadMs])
   const emptyLane = useMemo(() => explainEmptyActionLane(events, policy), [events, policy])
+  const [highlight, setHighlight] = useState<SelectedUiNode | null>(null)
 
   if (loading) {
     return (
@@ -133,6 +136,15 @@ export function Timeline({ jobId, runId, runStatus }: { jobId: string; runId: st
         event={actions[selected] ?? null}
         frameEvent={frameEventAt(actions, selected)}
         previousFrameEvent={previousFrameEventAt(actions, selected)}
+        highlight={highlight}
+      />
+      <UiTreePanel
+        jobId={jobId}
+        runId={runId}
+        originMs={originMs}
+        step={actions[selected] ?? null}
+        treeEvent={uiTreeEventAt(actions, selected)}
+        onSelectNode={setHighlight}
       />
       </div>
     </div>

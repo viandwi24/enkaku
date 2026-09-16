@@ -160,6 +160,20 @@ export function frameEventAt(events: readonly JobTraceEvent[], index: number): J
   return null
 }
 
+/**
+ * The UI tree to show at the playhead: the selected step's own, or the most
+ * recent one before it — the same rule `frameEventAt` uses for pictures, so
+ * a tap (which stores no tree) still shows the screen's nodes as the last
+ * `dump` read them.
+ */
+export function uiTreeEventAt(events: readonly JobTraceEvent[], index: number): JobTraceEvent | null {
+  for (let i = Math.min(index, events.length - 1); i >= 0; i--) {
+    const e = events[i]
+    if (e?.uiHash) return e
+  }
+  return null
+}
+
 /** The frame BEFORE the one `frameEventAt` resolves to — the "before" half of the before/after toggle (plan §4.6). */
 export function previousFrameEventAt(events: readonly JobTraceEvent[], index: number): JobTraceEvent | null {
   const current = frameEventAt(events, index)
