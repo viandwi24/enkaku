@@ -1363,6 +1363,21 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     }
 
     let editor = await waitForId(ctx, 'shorts_post_bottom_button', 20_000)
+    /*
+      A trim "Done" YouTube did not act on (0.39.3). Production #42 (2026-09-16) tapped the trim screen's own
+      button — `shorts_trim_finish_trim_button`, drawn "Done" on that phone's English build — and twenty seconds
+      later the dump was still the same screen, that same button in it, nothing processing. That is exactly the
+      swallowed tap the editor's "Berikutnya" gets, which 0.37.0 fixed by tapping again and which was never
+      applied here: the run instead died reporting the editor never opened, which was true and not the reason.
+      While the trim screen is still up and YouTube is not processing, tap it again, as a person would.
+    */
+    for (let retap = 0; retap < 2 && !editor.node; retap++) {
+      const stillTrim = trimDoneButton(editor.tree)
+      if (!stillTrim || processingOverlay(editor.tree) !== null) break
+      ctx.log.warn('still on the trim screen after its "Selesai" — tapping it again', { retap: retap + 1, id: stillTrim.resourceId, text: stillTrim.text })
+      await tapCentre(ctx, stillTrim)
+      editor = await waitForId(ctx, 'shorts_post_bottom_button', 20_000)
+    }
     const processing = editor.node ? null : processingOverlay(editor.tree)
     if (processing !== null) {
       /*

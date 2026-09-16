@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.2',
+  version: '0.39.3',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -94,7 +94,15 @@ export default definePlugin({
   /**
    * ## Changelog
    *
-   * **0.39.2 — a search result is never a sponsored card.** Production
+   * **0.39.3 — a trim "Done" YouTube ignored is tapped again.** Production #42
+ * (2026-09-16) tapped the trim screen's own `shorts_trim_finish_trim_button`
+ * — drawn "Done" on that phone's English build — and twenty seconds later the
+ * dump was still that same screen, the button in it, nothing processing. The
+ * run reported that the Shorts editor never opened, which was true and not the
+ * reason. It is the swallowed tap the editor's "Berikutnya" already gets, fixed
+ * there in 0.37.0; the trim screen now gets the same two retaps.
+ *
+ * **0.39.2 — a search result is never a sponsored card.** Production
    * (2026-09-16): twelve `search-play` runs and two `watch-video` runs failed "a
    * result was tapped but nothing that looks like a player appeared". The dumps
    * show why — a query's first page carried two sponsored install cards above the
