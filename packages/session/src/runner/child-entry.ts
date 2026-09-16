@@ -141,7 +141,11 @@ const log = (level: Level) => (msg: string, fields?: Record<string, unknown>) =>
 /** Built twice: once for `prepare`/`run`, once over `finishRequest` for `finish()` (see `deviceRequest`). */
 function makeDeviceApi(request: DeviceRequest) {
   return {
-  tap: (target: unknown, opts?: { via?: 'adb' }) => request<void>({ method: 'tap', args: { target, ...(opts?.via ? { via: opts.via } : {}) } } as never),
+  tap: (target: unknown, opts?: { via?: 'adb'; human?: unknown }) =>
+    request<void>({
+      method: 'tap',
+      args: { target, ...(opts?.via ? { via: opts.via } : {}), ...(opts?.human !== undefined ? { human: opts.human } : {}) },
+    } as never),
   /*
    * Plan 94 step 94.2's four replay verbs, forwarded HERE — the line they were
    * missing from until 2026-08-27.
@@ -170,7 +174,7 @@ function makeDeviceApi(request: DeviceRequest) {
   swipeNorm: (from: unknown, to: unknown, ms: number) => request<void>({ method: 'swipeNorm', args: { from, to, ms } } as never),
   longPress: (target: unknown, ms: number) => request<void>({ method: 'longPress', args: { target, ms } } as never),
   gesture: (samples: unknown) => request<void>({ method: 'gesture', args: { samples } } as never),
-  swipe: (from: unknown, to: unknown, ms = 300, opts?: { curvature?: number; easing?: string }) =>
+  swipe: (from: unknown, to: unknown, ms = 300, opts?: { curvature?: number; easing?: string; human?: unknown }) =>
     request<void>({
       method: 'swipe',
       args: {
@@ -179,11 +183,12 @@ function makeDeviceApi(request: DeviceRequest) {
         ms,
         ...(opts?.curvature !== undefined ? { curvature: opts.curvature } : {}),
         ...(opts?.easing !== undefined ? { easing: opts.easing } : {}),
+        ...(opts?.human !== undefined ? { human: opts.human } : {}),
       },
     } as never),
-  scroll: (opts: { direction: string; distance?: number; from?: unknown }) =>
+  scroll: (opts: { direction: string; distance?: number; from?: unknown; human?: unknown }) =>
     request<void>({ method: 'scroll', args: opts } as never),
-  fling: (opts: { direction: string; strength?: string }) => request<void>({ method: 'fling', args: opts } as never),
+  fling: (opts: { direction: string; strength?: string; human?: unknown }) => request<void>({ method: 'fling', args: opts } as never),
   type: (text: string, opts?: { perCharMs?: [number, number]; instant?: boolean; via?: 'adb'; human?: unknown }) =>
     request<void>({
       method: 'type',

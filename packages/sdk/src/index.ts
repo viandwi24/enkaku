@@ -29,6 +29,23 @@ export type {
   TriggerInput,
   TriggerResult,
 } from './types'
+/**
+ * The human-behaviour kit (2026-09-17). Pure helpers a plugin uses instead of re-deriving them —
+ * see `human.ts`'s own header for why they moved here. The DEVICE-side half of the same idea is not
+ * here but on the API itself: `tap(…, { human: true })`, `swipe(…, { human: true })`,
+ * `scroll({ …, human: true })`.
+ */
+export {
+  makeRng,
+  between,
+  pick,
+  pickDwellMs,
+  planRevisitStep,
+  pauseBetweenWordsMs,
+  DWELL_BUCKETS,
+  MAX_REFRESHES_IN_A_ROW,
+} from './human'
+export type { DwellBucket, RevisitMove, RevisitStep, RevisitPlan } from './human'
 export { definePlugin, isPlugin } from './plugin'
 export type { PluginDefinition, PluginMemberScript, Plugin } from './plugin'
 /**

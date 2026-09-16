@@ -53,7 +53,62 @@ export const PackageNameSchema = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]*(\.[a-z
  */
 export const InputViaSchema = z.enum(['adb'])
 
-export const TapArgsSchema = z.object({ target: SelectorSchema, via: InputViaSchema.optional() })
+/**
+ * Opt-in "human" variation for a GESTURE (2026-09-17), the movement twin of `HumanTypingOptions`.
+ *
+ * Why it lives here rather than in each pack: a survey of the TikTok, Instagram and YouTube packs
+ * found all three had re-derived the same kit — a seeded rng, a jittered aim point, a randomised
+ * up-swipe — with slightly different numbers, and the differences had drifted into real gaps (only
+ * TikTok ever scrolled back; YouTube's own `swipeDownRandomised` was written and never called). One
+ * implementation under the API is what stops that happening again, and every plugin gets it by
+ * passing a flag rather than by copying a helper.
+ *
+ * The farm's touch profile already supplies the FLOOR — a curved, eased, per-sample-jittered path
+ * (`gestureCurvature`), a sampled hold, ±`coordJitterPx` on every tap. What that floor cannot give
+ * is VARIETY: the same corridor, the same reach and the same duration on every repetition is a
+ * pattern of its own. These options vary those three, around whatever the caller asked for.
+ *
+ * Deliberately never the default, exactly like `human` on `type()`: omit it and the call behaves
+ * byte-for-byte as it did before this existed.
+ */
+export const HumanGestureOptionsSchema = z.object({
+  /** How far each endpoint may wander, as a fraction of the gesture's own span. Default 0.06. */
+  drift: z.number().min(0).max(0.5).optional(),
+  /** The requested duration is multiplied by a factor drawn from this range. Default [0.75, 1.35]. */
+  speed: z.tuple([z.number().positive(), z.number().positive()]).optional(),
+  /** The requested distance is multiplied by a factor drawn from this range. Default [0.85, 1.2]. */
+  reach: z.tuple([z.number().positive(), z.number().positive()]).optional(),
+  /** Pick the easing at random from the three the engine supports, instead of keeping the caller's. Default true. */
+  varyEasing: z.boolean().optional(),
+  /** Deterministic variation: same seed, same call, same path. Omit for a run that does not need to replay. */
+  seed: z.number().int().optional(),
+})
+export type HumanGestureOptions = z.infer<typeof HumanGestureOptionsSchema>
+
+/**
+ * Opt-in "human" aim for a TAP (2026-09-17): land somewhere inside the target's own box rather than
+ * on its exact centre. A thumb does not hit the middle of a button 200 times running, and all three
+ * packs had already written this helper for themselves (`jitteredPoint`, `jitterPoint`, `insetPoint`)
+ * — each drawing from `Math.random`, so a seeded run never replayed its taps.
+ *
+ * Only meaningful for a SELECTOR target: a caller that passes a literal point has already decided
+ * where to land, and a measured point is sometimes the only one that works (YouTube's upload details
+ * screen is the standing example), so a point target is left exactly where it was put.
+ */
+export const HumanTapOptionsSchema = z.object({
+  /** Fraction of the node kept clear at each edge. Default 0.15 — the middle 70% of the box. */
+  inset: z.number().min(0).max(0.45).optional(),
+  /** Deterministic aim: same seed, same box, same point. */
+  seed: z.number().int().optional(),
+})
+export type HumanTapOptions = z.infer<typeof HumanTapOptionsSchema>
+
+export const TapArgsSchema = z.object({
+  target: SelectorSchema,
+  via: InputViaSchema.optional(),
+  /** See `HumanTapOptionsSchema`. `true` takes every default. Ignored for a `{ point }` target. */
+  human: z.union([z.literal(true), HumanTapOptionsSchema]).optional(),
+})
 
 /**
  * Plan 94 §3.3, §4.4 — the recorder's coordinate-space rule, resolved in step
@@ -113,6 +168,8 @@ export const SwipeArgsSchema = z.object({
   /** Overrides `TimingSettings.gestureCurvature` for this call (plan 40 §4.4). */
   curvature: z.number().min(0).max(0.5).optional(),
   easing: GestureEasingSchema.optional(),
+  /** See `HumanGestureOptionsSchema`. `true` takes every default; the endpoints given stay the anchor. */
+  human: z.union([z.literal(true), HumanGestureOptionsSchema]).optional(),
 })
 
 export const ScrollArgsSchema = z.object({
@@ -120,11 +177,20 @@ export const ScrollArgsSchema = z.object({
   /** Pixels; defaults to 60% of the relevant viewport axis. */
   distance: z.number().positive().optional(),
   from: PointSchema.optional(),
+  /**
+   * See `HumanGestureOptionsSchema`. This is the "just call it" form: with `human`, the corridor the
+   * gesture runs down, its reach, its duration and its easing are all drawn per call, so a plugin
+   * that wants a human-looking page turn writes `scroll({ direction: 'up', human: true })` and
+   * computes no geometry of its own.
+   */
+  human: z.union([z.literal(true), HumanGestureOptionsSchema]).optional(),
 })
 
 export const FlingArgsSchema = z.object({
   direction: ScrollDirectionSchema,
   strength: z.enum(['soft', 'normal', 'hard']).optional(),
+  /** See `HumanGestureOptionsSchema`. Varies the corridor, reach and duration around the chosen strength. */
+  human: z.union([z.literal(true), HumanGestureOptionsSchema]).optional(),
 })
 
 /**

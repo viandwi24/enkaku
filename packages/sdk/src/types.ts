@@ -6,6 +6,8 @@ import type {
   DeviceMediaKind,
   DeviceMediaListResult,
   FindOutcome,
+  HumanGestureOptions,
+  HumanTapOptions,
   HumanTypingOptions,
   JobStatus,
   JobSummary,
@@ -110,7 +112,7 @@ export interface DeviceApi {
    * upload details screen never focused its title field for one, 2026-09-11). Slower, no hold
    * duration; reach for it only where a real run showed the default does not work.
    */
-  tap(target: Selector, opts?: { via?: 'adb' }): Promise<void>
+  tap(target: Selector, opts?: { via?: 'adb'; human?: true | HumanTapOptions }): Promise<void>
   /**
    * The replay interpreter's own verb (plan 94 §3.4, §4.4, F6, F7) — a
    * literal RECORDED point, normalised 0..1 (see the coordinate-space rule
@@ -159,18 +161,18 @@ export interface DeviceApi {
    * before plan 40. `curvature`/`easing` override the farm's Timing settings
    * for this call only.
    */
-  swipe(from: Point, to: Point, ms?: number, opts?: { curvature?: number; easing?: GestureEasing }): Promise<void>
+  swipe(from: Point, to: Point, ms?: number, opts?: { curvature?: number; easing?: GestureEasing; human?: true | HumanGestureOptions }): Promise<void>
   /**
    * A controlled drag that ends at low velocity and stops where it is put
    * (plan 40 §3.4, §4.4) — the geometry is derived from the device's current
    * screen size; `distance` defaults to 60% of the relevant viewport axis.
    */
-  scroll(opts: { direction: 'up' | 'down' | 'left' | 'right'; distance?: number; from?: Point }): Promise<void>
+  scroll(opts: { direction: 'up' | 'down' | 'left' | 'right'; distance?: number; from?: Point; human?: true | HumanGestureOptions }): Promise<void>
   /**
    * A short, fast gesture that ends at high velocity and lets the list coast
    * (plan 40 §3.4, §4.4) — `strength` maps to duration and distance.
    */
-  fling(opts: { direction: 'up' | 'down' | 'left' | 'right'; strength?: 'soft' | 'normal' | 'hard' }): Promise<void>
+  fling(opts: { direction: 'up' | 'down' | 'left' | 'right'; strength?: 'soft' | 'normal' | 'hard'; human?: true | HumanGestureOptions }): Promise<void>
   /**
    * M4: `input text` (ASCII-safe); set_text per-elemen = Plan 06. Under the
    * `natural` timing profile (plan 40 §3.2, §4.4) this types one character at

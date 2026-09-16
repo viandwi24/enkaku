@@ -7,6 +7,8 @@ import {
   TimingSettingsSchema,
   type FindOutcome,
   type GestureSample,
+  type HumanGestureOptions,
+  type HumanTapOptions,
   type Inspector,
   type InputSink,
   type InspectorWatch,
@@ -20,6 +22,7 @@ import {
   type UiNode,
 } from '@enkaku/protocol'
 import { createChangeSignal } from './change-signal'
+import { humanTapPoint, makeGestureRng, resolveHumanGesture, resolveHumanTap, varyGesture } from './human-gesture'
 import { SessionError } from './errors'
 import type { InputSource } from './input-arbiter'
 import type { DeviceCall } from './runner/ipc'
@@ -425,6 +428,22 @@ export function createDeviceExecutor(deps: {
   }
 
   /**
+   * `resolveTarget`, but aiming INSIDE the node when the call asked for a human tap (2026-09-17).
+   *
+   * A literal `{ point }` target is left exactly where it was put: the caller has already decided,
+   * and on some screens a measured point is the only one that works — YouTube's upload details
+   * screen is the standing example, where the centre of the title area opens the thumbnail editor
+   * instead. Only a SELECTOR target, whose box this can read, gets a varied landing point.
+   */
+  async function resolveTapPoint(sel: Selector, human?: true | HumanTapOptions): Promise<Point> {
+    if (human === undefined || 'point' in sel) return resolveTarget(sel)
+    const node = await inspectorOrThrow().find(sel)
+    if (!node) throw new SessionError('element_not_found', `element not found: ${JSON.stringify(sel)}`)
+    const resolved = resolveHumanTap(human)
+    return humanTapPoint(node.bounds, resolved, makeGestureRng(resolved.seed))
+  }
+
+  /**
    * Plan 74 §3.4, §4.3 — the executor is where `FindOutcome` is produced:
    * `inspector.findDetailed` when the engine has it (ui-server, the dump
    * bridge), else a plain fallback built from `find()` that can only ever
@@ -472,6 +491,21 @@ export function createDeviceExecutor(deps: {
     await s.swipe(from, to, ms)
   }
 
+  /**
+   * Apply a call's `human` variation, or hand the gesture back untouched (2026-09-17).
+   *
+   * Omitting `human` must leave every existing call byte-for-byte as it was — the same promise
+   * `type()`'s own `human` keeps — so this returns the input unchanged when it is absent.
+   */
+  function humanise(
+    g: { from: Point; to: Point; ms: number; easing?: Easing },
+    human: true | HumanGestureOptions | undefined,
+  ): { from: Point; to: Point; ms: number; easing?: Easing } {
+    if (human === undefined) return g
+    const resolved = resolveHumanGesture(human)
+    return varyGesture(g, resolved, makeGestureRng(resolved.seed), deps.session.frameSize)
+  }
+
   return async function execute(call: DeviceCall): Promise<unknown> {
     // Resolved ONCE per call, not once per executor (plan 94 §4.5, F10) —
     // see `deps.timing`'s own doc comment above `createDeviceExecutor`. A
@@ -486,10 +520,10 @@ export function createDeviceExecutor(deps: {
         if (call.args.via === 'adb') {
           // Android's own injection, in DEVICE pixels — `input tap` never sees
           // the video frame, so this skips `toFrame` (see `InputViaSchema`).
-          await new AdbInput(deps.session.transport).tap(jitterPoint(await resolveTarget(call.args.target), timing))
+          await new AdbInput(deps.session.transport).tap(jitterPoint(await resolveTapPoint(call.args.target, call.args.human), timing))
           return undefined
         }
-        const point = toFrame(jitterPoint(await resolveTarget(call.args.target), timing))
+        const point = toFrame(jitterPoint(await resolveTapPoint(call.args.target, call.args.human), timing))
         // tapJitterMs (spec §9.3, §17): the hold duration is sampled per tap
         // from a range, not fixed — test realism, not evasion. The engine
         // does the actual sampling (so it can stay deterministic under an
@@ -579,7 +613,10 @@ export function createDeviceExecutor(deps: {
         // build their points from `frameSize` already. See `deviceToFrame`.
         const from = toFrame(jitterPoint(call.args.from, timing))
         const to = toFrame(jitterPoint(call.args.to, timing))
-        await runSwipe(from, to, call.args.ms, timing, { curvature: call.args.curvature, easing: call.args.easing })
+        // The endpoints given stay the ANCHOR; `human` wanders them, the reach and the duration
+        // around it (2026-09-17). See `human-gesture.ts` for why this lives under the API.
+        const varied = humanise({ from, to, ms: call.args.ms, easing: call.args.easing }, call.args.human)
+        await runSwipe(varied.from, varied.to, varied.ms, timing, { curvature: call.args.curvature, easing: varied.easing })
         return undefined
       }
       case 'scroll': {
@@ -590,7 +627,8 @@ export function createDeviceExecutor(deps: {
         const distance = call.args.distance ?? Math.round(axis * SCROLL_DEFAULT_FRACTION)
         const anchor = call.args.from ? jitterPoint(call.args.from, timing) : undefined
         const { from, to } = directionalSwipe(call.args.direction, distance, frame, anchor)
-        await runSwipe(from, to, SCROLL_DURATION_MS, timing, { easing: 'easeInOutCubic' })
+        const varied = humanise({ from, to, ms: SCROLL_DURATION_MS, easing: 'easeInOutCubic' }, call.args.human)
+        await runSwipe(varied.from, varied.to, varied.ms, timing, { easing: varied.easing })
         return undefined
       }
       case 'fling': {
@@ -601,7 +639,8 @@ export function createDeviceExecutor(deps: {
         const axis = vertical ? frame.height : frame.width
         const distance = Math.round(axis * profile.distanceFraction)
         const { from, to } = directionalSwipe(call.args.direction, distance, frame)
-        await runSwipe(from, to, profile.durationMs, timing, { easing: 'easeOutQuad' })
+        const varied = humanise({ from, to, ms: profile.durationMs, easing: 'easeOutQuad' }, call.args.human)
+        await runSwipe(varied.from, varied.to, varied.ms, timing, { easing: varied.easing })
         return undefined
       }
       case 'type': {
