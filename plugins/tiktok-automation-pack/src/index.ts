@@ -16,7 +16,7 @@ import liveBrowse from './live-browse'
 import shopBrowse from './shop-browse'
 import notificationActivity from './notification-activity'
 import { ACCOUNTS_KEY } from './accounts'
-import { QUEUE_PREFIX, migrateLegacyQueueEntries } from './queue'
+import { migrateLegacyQueueEntries } from './queue'
 
 /**
  * TikTok automation pack.
@@ -865,6 +865,11 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.47.0 — the "TikTok Posts" screen is gone, at the owner's request (2026-09-16): the Social Media
+  //   Manager posts to every platform from one page, so a TikTok-only post queue screen was a second
+  //   place to do the same job. Its "Add video", "Retry" and "Remove" actions went with it; the queue
+  //   and `enqueue-video` stay (a run with `source: 'queue'` still claims from it), and "Auto-post
+  //   settings" moved onto the TikTok accounts screen so auto-posting can still be turned off.
   // 1.46.1 — the videos this pack pushed onto the phone are cleaned up. Every run left its video in /sdcard/DCIM/Camera and nothing removed it (the owner, 2026-09-16: old video files pile up). Before pushing, `removeStalePushedVideos` deletes this pack's own pushed files older than six hours — never a fresh one an upload may still read, never any other file.
   // 1.46.0 — drafts are cleared AFTER posting, and `clear-drafts` cleans them on its own. The owner's decision
   //   (2026-09-16): clearing first put a profile visit and a folder walk in front of every post, and on production
@@ -1181,7 +1186,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.46.1',
+  version: '1.47.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
@@ -1243,35 +1248,29 @@ export default definePlugin({
   /**
    * The screens this plugin contributes to Studio. `accounts` is plan 108 §4.3's own worked example,
    * built at 108.11 to prove the vocabulary against a real case before it was frozen (§8's first
-   * risk). `content` is plan 113 §5 step 113.10 — the surface that makes the post queue usable by a
-   * human: add a video with a caption, see every item's status and history, retry or remove one.
+   * risk).
+   *
+   * The "TikTok Posts" screen that plan 113 step 113.10 added is GONE since 1.47.0, at the owner's
+   * request (2026-09-16): the Social Media Manager plugin posts to TikTok, YouTube and Instagram from
+   * one page, so a TikTok-only post queue was a second place to do the same job. Its `addVideo`,
+   * `retryItem` and `removeItem` actions went with it. The queue itself (`queue.ts`, `enqueue-video`)
+   * is untouched — `post-video` still claims from it when a run asks for `source: 'queue'` — and
+   * `autoPostSettings` moved onto the accounts screen, so auto-posting can still be turned off by the
+   * operator who turned it on.
    *
    * Nothing below names a control, and nothing below is code: every column that needs formatting
    * states an ordinary JSON Schema node and is drawn by Studio's one `planField`/`formatValue`
    * resolver (§3.3), and every action reads the row (or the submitted form) through the closed
    * `Binding` language (§3.4) rather than through any expression an author could invent.
    *
-   * **`addVideo` is the one action here that could NOT be a plain `kv.set`, and it is worth stating
-   * why.** A `Binding` cannot concatenate — no operators, no string interpolation, no calls
-   * (`binding.ts`'s own evaluator; §3.4) — so nothing declarative can build `queue:<artifactId>` from
-   * a freshly-picked artifact id the way `queueKeyFor` does. `retryItem`/`removeItem` below don't hit
-   * this: a row already read off the queue carries its own exact stored key as `$entry.key` (`kv.list`
-   * echoes it straight back — `rowsFromList` in Studio's own `rows.ts`), so keying a write off a row
-   * needs no computation at all. Only the CREATE path invents a brand-new key, so only `addVideo`
-   * routes through a real script (`enqueue-video.ts`) via `then: { kind: 'job', … }` instead of
-   * `then: { kind: 'kv.set', … }` — see that file's own header for the full reasoning, including the
-   * device-picker consequence of a `job` action always needing a device to run on.
-   *
-   * The KV namespace is deliberately absent from both views — a data source can only ever read this
+   * The KV namespace is deliberately absent from the view — a data source can only ever read this
    * plugin's own, taken from the URL path server-side (§3.7). `accounts`' `key` is `ACCOUNTS_KEY`, the
-   * same constant `list-accounts` writes and `switch-account` reads; `content`'s `prefix` is
-   * `QUEUE_PREFIX`, the same constant `queue.ts` claims and settles against — so the screen and the
-   * scripts can never drift onto two different keys.
+   * same constant `list-accounts` writes and `switch-account` reads, so the screen and the scripts can
+   * never drift onto two different keys.
    */
   surface: {
     nav: [
       { id: 'accounts', label: 'TikTok accounts', icon: 'users', view: 'accounts' },
-      { id: 'content', label: 'TikTok Posts', icon: 'upload', view: 'content' },
     ],
     views: {
       accounts: {
@@ -1304,38 +1303,9 @@ export default definePlugin({
             { field: '$entry.updatedAt', header: 'Last synced', schema: { type: 'number', 'x-enkaku': { kind: 'timestamp' } } },
           ],
         },
-        toolbar: ['sync'],
+        toolbar: ['sync', 'autoPostSettings'],
         rowActions: ['switchTo', 'syncOne'],
         empty: { title: 'No accounts read yet', hint: 'Run “Sync accounts” to read the switch-account sheet on each device.' },
-      },
-      content: {
-        title: 'TikTok Posts',
-        description: 'Videos waiting to be posted, one entry per artifact — add one, watch its status, retry or remove it.',
-        // Every queue entry lives under one prefix in `storage.global` (queue.ts §3.3/§4.4) — a plain
-        // farm-wide list, not a per-device scan, because the queue is not a fact about any one phone.
-        data: { kind: 'kv.list', scope: 'global', prefix: QUEUE_PREFIX },
-        table: {
-          // The entry's OWN id, not `$entry.key` (which carries the `queue:` prefix too) — this is
-          // what an operator actually recognises the video by. `id`/`payload.caption` since plan
-          // 800: the stored entry nests this pack's own fields under `payload`, and the service's
-          // `migrateLegacyQueueEntries` rewrites pre-800 rows so this table never shows a mix.
-          rowKey: 'id',
-          columns: [
-            { field: 'id', header: 'Video', width: 'wide' },
-            { field: 'payload.caption', header: 'Caption', width: 'wide' },
-            { field: 'status', header: 'Status', width: 'narrow' },
-            { field: 'attempts', header: 'Attempts', schema: { type: 'number', 'x-enkaku': { kind: 'count' } }, width: 'narrow' },
-            { field: 'claimedBy', header: 'Claimed by' },
-            // `claimedAt`/`postedAt` are unix seconds or `null` — `planColumn` renders a missing value
-            // as `'—'` under any declared plan (§4.2, `plan.ts`'s own C-cases), so `null` is safe here.
-            { field: 'claimedAt', header: 'Claimed', schema: { type: 'number', 'x-enkaku': { kind: 'timestamp' } } },
-            { field: 'settledAt', header: 'Posted', schema: { type: 'number', 'x-enkaku': { kind: 'timestamp' } } },
-            { field: 'lastError', header: 'Last error', width: 'wide' },
-          ],
-        },
-        toolbar: ['addVideo', 'autoPostSettings'],
-        rowActions: ['retryItem', 'removeItem'],
-        empty: { title: 'The post queue is empty', hint: 'Use “Add video” to queue one with a caption.' },
       },
     },
     actions: {
@@ -1372,46 +1342,6 @@ export default definePlugin({
         // Which account and which device are named by the dialog itself, from
         // the view's own `rowKey` (plan 108 §5 step 108.7).
         confirm: 'Switch this device to the selected account?',
-      },
-
-      // A FORM whose `videoArtifactId` field declares `kind: 'artifact'` (step 113.9) — rendered by
-      // Studio's existing `ArtifactControl`/`ArtifactPicker`, a real "upload a new file or browse a
-      // previously uploaded one" picker, with no bespoke UI written for this step at all. The
-      // declarative route was preferred over a tier-C React view (plan 111) exactly because this one
-      // field is all "add a video" structurally needs — see `enqueue-video.ts` for why `then` is a
-      // `job`, not a `kv.set` (this file's own `surface` doc comment carries the short version).
-      addVideo: {
-        kind: 'form',
-        label: 'Add video',
-        schema: {
-          type: 'object',
-          required: ['videoArtifactId'],
-          properties: {
-            videoArtifactId: {
-              type: 'string',
-              title: 'Video',
-              description: 'Upload a new video or pick a previously uploaded one.',
-              'x-enkaku': { kind: 'artifact' },
-            },
-            caption: {
-              type: 'string',
-              title: 'Caption',
-              maxLength: 2_200,
-              description: 'Left blank, a queued run falls back to the captions file instead.',
-            },
-          },
-        },
-        submitLabel: 'Add to queue',
-        then: {
-          kind: 'job',
-          label: 'Add video',
-          script: 'tiktok/enqueue-video@latest',
-          // No row to bind a device from (this is a toolbar action) — the operator picks any online
-          // device, which the job never actually touches (`enqueue-video.ts`'s own header explains why
-          // a device is unavoidable here regardless).
-          device: 'picker',
-          params: { artifactId: { $form: 'videoArtifactId' }, caption: { $form: 'caption' } },
-        },
       },
 
       // Plain literal key, so this one — unlike `addVideo` — needs no script behind it: `kv.set`'s
@@ -1456,42 +1386,6 @@ export default definePlugin({
           key: { $literal: AUTO_POST_SETTINGS_KEY },
           value: { version: { $literal: 1 }, enabled: { $form: 'enabled' }, intervalMinutes: { $form: 'intervalMinutes' }, label: { $form: 'label' } },
         },
-      },
-
-      // `$entry.key` is the exact stored key (`queue:<artifactId>`, echoed back by `kv.list` — see
-      // this file's own `surface` doc comment) — which is what lets this stay a plain `kv.set` with no
-      // script behind it. History (`settledAt`/`attempts`) is preserved; the claim and any error clear
-      // — the same choice `enqueue-video`'s `keepHistory: true` makes, for the same reason: an
-      // operator needs to see that an item keeps failing rather than looking newly added.
-      //
-      // The value is written in the plan-800 shape (`id`, `payload`), matching what every other
-      // writer stores. A row still in the pre-800 shape reads `$row: 'id'` as undefined, so Retry is
-      // only correct once the service's migration has run — which it does at every plugin start,
-      // before an operator can reach this screen.
-      retryItem: {
-        kind: 'kv.set',
-        label: 'Retry',
-        scope: 'global',
-        key: { $entry: 'key' },
-        value: {
-          version: { $literal: 1 },
-          id: { $row: 'id' },
-          payload: { caption: { $row: 'payload.caption' } },
-          status: { $literal: 'pending' },
-          claimedBy: { $literal: null },
-          claimedAt: { $literal: null },
-          settledAt: { $row: 'settledAt' },
-          attempts: { $row: 'attempts' },
-          lastError: { $literal: null },
-        },
-      },
-
-      removeItem: {
-        kind: 'kv.delete',
-        label: 'Remove',
-        scope: 'global',
-        key: { $entry: 'key' },
-        confirm: 'Remove this video from the post queue?',
       },
     },
   },
