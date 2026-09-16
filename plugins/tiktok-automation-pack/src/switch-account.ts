@@ -147,14 +147,14 @@ function isErrorCode(err: unknown, code: string): boolean {
  *
  * 1. **The own-handle selector gap plan 86 §4.2/§4.5 left open.** Neither section gives a verified
  *    selector for one's OWN profile handle (only for someone else's, reached through search — a
- *    different flow). Read by hand off the live device: `id=sd0 text="dewi_purnama280"` (the DISPLAY
- *    NAME) sits above `id=s_y text="@dewi_purnama280"` (the actual handle, "@"-prefixed). Both ids
+ *    different flow). Read by hand off the live device: `id=sd0 text="owner.tiktok"` (the DISPLAY
+ *    NAME) sits above `id=s_y text="@owner.tiktok"` (the actual handle, "@"-prefixed). Both ids
  *    are obfuscated three-character names this app rotates between builds, so this keys off the
  *    "@"-prefixed TEXT, never either id. Matching the BARE username (no "@") against the whole tree,
- *    as the pre-fix code did, depends on a display name being set at all: `user2578127329501` has
+ *    as the pre-fix code did, depends on a display name being set at all: `owner.tiktok2` has
  *    none (its profile shows "+ Tambah nama" instead), so the bare string never appears anywhere on
  *    that account's own profile screen — only the "@"-prefixed handle does. Reproduced on hardware
- *    (2026-08-09): a switch that plainly landed — the profile screen showed "@user2578127329501" —
+ *    (2026-08-09): a switch that plainly landed — the profile screen showed "@owner.tiktok2" —
  *    was reported `E_SWITCH_NOT_VERIFIED` by the old bare-text check, a false failure on a real
  *    success, not a hypothetical.
  * 2. **A still-open sheet must never read as a landed switch.** The switch-account sheet's own rows

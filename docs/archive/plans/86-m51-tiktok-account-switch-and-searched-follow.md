@@ -40,7 +40,7 @@ Reproduced against the live switch-account sheet, where three rows share
 
 ```
 curl … -d '{"sel":{"id":"l_z"}}'
-→ {"ok":true,"node":{"resourceId":"…l_z","desc":"user2578127329501",
+→ {"ok":true,"node":{"resourceId":"…l_z","desc":"owner.tiktok2",
    "bounds":{"top":1164,…}}}          ← row 1, not an error
 ```
 
@@ -196,13 +196,13 @@ A bare "first id match wins" lookup — the exact §0.1 failure mode this file e
 
 ### 0.10 An account with no display name breaks a bare-username check
 
-`user2578127329501` has no display name set — the profile shows
+`owner.tiktok2` has no display name set — the profile shows
 `+ Tambah nama` — so the bare username appears **nowhere** in that screen's
 tree. Only the `@`-prefixed handle node does:
 
 ```
-id=sd0 text="dewi_purnama280"    [28,172-503,239]    ← display name (absent on some accounts)
-id=s_y text="@dewi_purnama280"   [28,243-239,269]    ← the @handle (always present)
+id=sd0 text="owner.tiktok"    [28,172-503,239]    ← display name (absent on some accounts)
+id=s_y text="@owner.tiktok"   [28,243-239,269]    ← the @handle (always present)
 ```
 
 A verification searching the tree for the bare username therefore reports a
@@ -369,11 +369,11 @@ The sheet, dumped verbatim:
 id=fsz desc="Lembar bawah" [0,1059-720,1556]
   id=p9w text="Beralih akun" desc="Beralih akun" [271,1085-450,1124]
   desc="Tutup" CLICK [636,1066-706,1143]
-  id=l_z desc="user2578127329501" CLICK [0,1164-720,1290]
-    id=mvp text="user2578127329501" [147,1210-416,1245]
+  id=l_z desc="owner.tiktok2" CLICK [0,1164-720,1290]
+    id=mvp text="owner.tiktok2" [147,1210-416,1245]
     id=fef desc="Tanda centang" [650,1206-692,1248]     ← current account
-  id=l_z desc="dewi_purnama280" CLICK [0,1290-720,1416]
-    id=mvp text="dewi_purnama280" [147,1336-390,1371]
+  id=l_z desc="owner.tiktok" CLICK [0,1290-720,1416]
+    id=mvp text="owner.tiktok" [147,1336-390,1371]
     id=ofu desc="9+" [642,1336-692,1369]                ← unread badge, not a position signal
   id=l_z desc="Tambah akun" CLICK [0,1416-720,1542]
 ```
@@ -540,7 +540,7 @@ and tested on hardware before the search work begins.
 2. **`switch-account.ts`** per §4.3. Register it in `definePlugin`. Bump the
    pack to `1.2.0` in both `package.json` and `index.ts`.
 3. **Test on hardware** per §7.2. This is a real account switch; it must land
-   on `dewi_purnama280` and be verified by reading the profile handle.
+   on `owner.tiktok` and be verified by reading the profile handle.
 4. **`search.ts`** per §4.4, exporting `searchFor` and `scrollResults`. Done —
    `plugins/tiktok-automation-pack/src/search.ts`.
 5. **`search-follow.ts`** per §4.6. Done —
@@ -583,7 +583,7 @@ and tested on hardware before the search work begins.
 - `tree.ts`: `rowsById` over a synthetic tree with three same-id rows returns
   all three in order; `within` attributes children to the right row; `textIn`
   does not leak across sibling subtrees.
-- Target parser: `"2"` → position 2, `"dewi_purnama280"` → username,
+- Target parser: `"2"` → position 2, `"owner.tiktok"` → username,
   `"1"` → rejected, `""` → rejected, `"  3 "` → position 3.
 - Row resolution: current-account detection with the checkmark present, and the
   fallback when it is absent; `"Tambah akun"` excluded in both cases.
@@ -593,7 +593,7 @@ and tested on hardware before the search work begins.
 
 ### 7.2 Hardware — switch account
 
-Run the script for `target: "2"`, then for `target: "user2578127329501"` to
+Run the script for `target: "2"`, then for `target: "owner.tiktok2"` to
 switch back. Between runs, read the profile handle independently through the
 cap API to confirm the device really moved. Then run `target: "1"` and confirm
 it fails without touching the device.
@@ -647,7 +647,7 @@ followers, chosen arbitrarily off the first results page):**
    (Message) button once already following, with "Pesan" first in document
    order (§0.10b) — fixed and shipped as pack 1.3.2 (no further hardware run
    against it, to respect the one-follow limit for this exercise; covered by
-   a unit test instead). Device left signed in as `user2578127329501`,
+   a unit test instead). Device left signed in as `owner.tiktok2`,
    nothing else on the device changed.
 
 ### 7.4 What is deliberately not tested

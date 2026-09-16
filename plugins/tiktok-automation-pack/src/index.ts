@@ -865,6 +865,10 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.48.0 — the owner's own TikTok handles are out of this pack's source and tests. They were transcribed
+  //   from the hardware runs of plan 86 and had been sitting in `switch-account.ts`'s comments (which ship in the
+  //   bundle) and four test files ever since; the fixtures and tests now use masked handles, the way the rest of
+  //   this repo's fixtures already do. Nothing about how the pack behaves changed.
   // 1.47.0 — the "TikTok Posts" screen is gone, at the owner's request (2026-09-16): the Social Media
   //   Manager posts to every platform from one page, so a TikTok-only post queue screen was a second
   //   place to do the same job. Its "Add video", "Retry" and "Remove" actions went with it; the queue
@@ -1186,7 +1190,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.47.0',
+  version: '1.48.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

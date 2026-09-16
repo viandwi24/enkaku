@@ -95,8 +95,8 @@ describe('textIn — scoped lookup, does not leak across sibling subtrees', () =
   })
 
   test('prefers text, falls back to desc when text is empty', () => {
-    const withText = mkNode({ text: 'dewi_purnama280', bounds: box(0, 0, 1, 1) })
-    expect(textIn(withText, () => true)).toBe('dewi_purnama280')
+    const withText = mkNode({ text: 'owner.tiktok', bounds: box(0, 0, 1, 1) })
+    expect(textIn(withText, () => true)).toBe('owner.tiktok')
     const descOnly = mkNode({ desc: 'Tanda centang', bounds: box(0, 0, 1, 1) })
     expect(textIn(descOnly, () => true)).toBe('Tanda centang')
   })

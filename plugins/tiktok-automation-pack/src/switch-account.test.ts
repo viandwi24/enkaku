@@ -29,18 +29,18 @@ const box = (left: number, top: number, right: number, bottom: number): Bounds =
  * absence must warn, never fail).
  */
 function buildSheet(opts: { withCheckmark: boolean }): UiNode {
-  const row1Children: UiNode[] = [mkNode({ resourceId: 'app:id/mvp', text: 'user2578127329501', bounds: box(147, 1210, 416, 1245) })]
+  const row1Children: UiNode[] = [mkNode({ resourceId: 'app:id/mvp', text: 'owner.tiktok2', bounds: box(147, 1210, 416, 1245) })]
   if (opts.withCheckmark) {
     row1Children.push(mkNode({ resourceId: 'app:id/fef', desc: 'Tanda centang', bounds: box(650, 1206, 692, 1248) }))
   }
-  const row1 = mkNode({ resourceId: 'app:id/l_z', desc: 'user2578127329501', clickable: true, bounds: box(0, 1164, 720, 1290), children: row1Children })
+  const row1 = mkNode({ resourceId: 'app:id/l_z', desc: 'owner.tiktok2', clickable: true, bounds: box(0, 1164, 720, 1290), children: row1Children })
   const row2 = mkNode({
     resourceId: 'app:id/l_z',
-    desc: 'dewi_purnama280',
+    desc: 'owner.tiktok',
     clickable: true,
     bounds: box(0, 1290, 720, 1416),
     children: [
-      mkNode({ resourceId: 'app:id/mvp', text: 'dewi_purnama280', bounds: box(147, 1336, 390, 1371) }),
+      mkNode({ resourceId: 'app:id/mvp', text: 'owner.tiktok', bounds: box(147, 1336, 390, 1371) }),
       mkNode({ resourceId: 'app:id/ofu', desc: '9+', bounds: box(642, 1336, 692, 1369) }),
     ],
   })
@@ -70,7 +70,7 @@ describe('readSheetSnapshot', () => {
   test('drops "Tambah akun" and keeps the real accounts in visual order', () => {
     const snap = readSheetSnapshot(wrapInScreen(buildSheet({ withCheckmark: true })))
     expect(snap).not.toBeNull()
-    expect(snap?.rows.map((r) => r.desc)).toEqual(['user2578127329501', 'dewi_purnama280'])
+    expect(snap?.rows.map((r) => r.desc)).toEqual(['owner.tiktok2', 'owner.tiktok'])
   })
 
   test('returns null when the sheet anchor is not anywhere in the tree', () => {
@@ -98,18 +98,18 @@ describe('resolveTargetRow', () => {
   const rowsWithoutCheckmark = readSheetSnapshot(wrapInScreen(buildSheet({ withCheckmark: false })))?.rows ?? []
 
   test('position 2 resolves to the second row', () => {
-    expect(resolveTargetRow({ kind: 'position', position: 2 }, rowsWithCheckmark).desc).toBe('dewi_purnama280')
+    expect(resolveTargetRow({ kind: 'position', position: 2 }, rowsWithCheckmark).desc).toBe('owner.tiktok')
   })
 
   test('username resolves case-insensitively', () => {
-    expect(resolveTargetRow({ kind: 'username', username: 'DEWI_purnama280' }, rowsWithCheckmark).desc).toBe('dewi_purnama280')
+    expect(resolveTargetRow({ kind: 'username', username: 'OWNER.TikTok' }, rowsWithCheckmark).desc).toBe('owner.tiktok')
   })
 
   test('targeting the current account by username is refused with E_TARGET_IS_CURRENT, checkmark present or absent', () => {
     for (const rows of [rowsWithCheckmark, rowsWithoutCheckmark]) {
-      expect(() => resolveTargetRow({ kind: 'username', username: 'user2578127329501' }, rows)).toThrow()
+      expect(() => resolveTargetRow({ kind: 'username', username: 'owner.tiktok2' }, rows)).toThrow()
       try {
-        resolveTargetRow({ kind: 'username', username: 'user2578127329501' }, rows)
+        resolveTargetRow({ kind: 'username', username: 'owner.tiktok2' }, rows)
       } catch (err) {
         expect((err as { code: string }).code).toBe('E_TARGET_IS_CURRENT')
       }
@@ -122,7 +122,7 @@ describe('resolveTargetRow', () => {
       throw new Error('expected resolveTargetRow to throw')
     } catch (err) {
       expect((err as { code: string }).code).toBe('E_NO_SUCH_ACCOUNT')
-      expect((err as Error).message).toContain('dewi_purnama280')
+      expect((err as Error).message).toContain('owner.tiktok')
     }
   })
 
@@ -161,26 +161,26 @@ describe('resolving a username through the stored account list (plan 108 step 10
   const stored: StoredAccounts = AccountsSchema.parse({
     version: 1,
     accounts: [
-      { username: 'user2578127329501', position: 1, current: true },
-      { username: 'dewi_purnama280', position: 2, current: false },
+      { username: 'owner.tiktok2', position: 1, current: true },
+      { username: 'owner.tiktok', position: 2, current: false },
     ],
     readAt: 1_776_000_000,
   })
 
   test('the stored list maps a username to its slot, case-insensitively', () => {
-    expect(storedPositionOf(stored, 'dewi_purnama280')).toBe(2)
-    expect(storedPositionOf(stored, 'DEWI_purnama280')).toBe(2)
-    expect(storedPositionOf(stored, '  dewi_purnama280 ')).toBe(2)
+    expect(storedPositionOf(stored, 'owner.tiktok')).toBe(2)
+    expect(storedPositionOf(stored, 'OWNER.TikTok')).toBe(2)
+    expect(storedPositionOf(stored, '  owner.tiktok ')).toBe(2)
   })
 
   test('a username resolves through the stored slot', () => {
-    const position = storedPositionOf(stored, 'dewi_purnama280')
-    expect(resolveTargetRow({ kind: 'username', username: 'dewi_purnama280' }, rows, position).desc).toBe('dewi_purnama280')
+    const position = storedPositionOf(stored, 'owner.tiktok')
+    expect(resolveTargetRow({ kind: 'username', username: 'owner.tiktok' }, rows, position).desc).toBe('owner.tiktok')
   })
 
   test('falls back to the live sheet when there is NO stored list — the pre-108 behaviour, unchanged', () => {
-    expect(storedPositionOf(null, 'dewi_purnama280')).toBeNull()
-    expect(resolveTargetRow({ kind: 'username', username: 'dewi_purnama280' }, rows, null).desc).toBe('dewi_purnama280')
+    expect(storedPositionOf(null, 'owner.tiktok')).toBeNull()
+    expect(resolveTargetRow({ kind: 'username', username: 'owner.tiktok' }, rows, null).desc).toBe('owner.tiktok')
   })
 
   /**
@@ -199,7 +199,7 @@ describe('resolving a username through the stored account list (plan 108 step 10
       expect(AccountsSchema.safeParse(stale).success).toBe(false)
     }
     // Whatever the stored value was, the resolution that follows is the one with no list at all.
-    expect(resolveTargetRow({ kind: 'username', username: 'dewi_purnama280' }, rows, null).desc).toBe('dewi_purnama280')
+    expect(resolveTargetRow({ kind: 'username', username: 'owner.tiktok' }, rows, null).desc).toBe('owner.tiktok')
   })
 
   test('falls back when the username is simply absent from the stored list', () => {
@@ -217,15 +217,15 @@ describe('resolving a username through the stored account list (plan 108 step 10
    * perfectly happily. The username read off the live row is the only ground truth.
    */
   test('a STALE stored slot never wins — the live username decides', () => {
-    // Slot 1 is `user2578127329501` on the live sheet, not `dewi_purnama280`.
-    expect(resolveTargetRow({ kind: 'username', username: 'dewi_purnama280' }, rows, 1).desc).toBe('dewi_purnama280')
+    // Slot 1 is `owner.tiktok2` on the live sheet, not `owner.tiktok`.
+    expect(resolveTargetRow({ kind: 'username', username: 'owner.tiktok' }, rows, 1).desc).toBe('owner.tiktok')
     // A slot past the end of the live sheet is simply ignored.
-    expect(resolveTargetRow({ kind: 'username', username: 'dewi_purnama280' }, rows, 9).desc).toBe('dewi_purnama280')
+    expect(resolveTargetRow({ kind: 'username', username: 'owner.tiktok' }, rows, 9).desc).toBe('owner.tiktok')
   })
 
   test('a stale stored slot cannot smuggle the CURRENT account past the position-1 refusal either', () => {
     try {
-      resolveTargetRow({ kind: 'username', username: 'user2578127329501' }, rows, 2)
+      resolveTargetRow({ kind: 'username', username: 'owner.tiktok2' }, rows, 2)
       throw new Error('expected resolveTargetRow to throw')
     } catch (err) {
       expect((err as { code: string }).code).toBe('E_TARGET_IS_CURRENT')
@@ -233,24 +233,24 @@ describe('resolving a username through the stored account list (plan 108 step 10
   })
 
   test('storedPositionIsStale names exactly the cases where the live sheet takes over', () => {
-    expect(storedPositionIsStale(rows, 'dewi_purnama280', 2)).toBe(false)
-    expect(storedPositionIsStale(rows, 'dewi_purnama280', 1)).toBe(true)
-    expect(storedPositionIsStale(rows, 'dewi_purnama280', 9)).toBe(true)
+    expect(storedPositionIsStale(rows, 'owner.tiktok', 2)).toBe(false)
+    expect(storedPositionIsStale(rows, 'owner.tiktok', 1)).toBe(true)
+    expect(storedPositionIsStale(rows, 'owner.tiktok', 9)).toBe(true)
     // No stored slot is not staleness — there was never a claim to be wrong about.
-    expect(storedPositionIsStale(rows, 'dewi_purnama280', null)).toBe(false)
+    expect(storedPositionIsStale(rows, 'owner.tiktok', null)).toBe(false)
   })
 
   test('a bare position still resolves with no stored list at all — the member\'s original contract', () => {
     expect(parseTarget('2')).toEqual({ kind: 'position', position: 2 })
-    expect(resolveTargetRow({ kind: 'position', position: 2 }, rows, null).desc).toBe('dewi_purnama280')
+    expect(resolveTargetRow({ kind: 'position', position: 2 }, rows, null).desc).toBe('owner.tiktok')
     // And the default target — pressing Run with the field untouched — is unchanged by all of this.
-    expect(resolveTargetRow(parseTarget(''), rows, null).desc).toBe('dewi_purnama280')
+    expect(resolveTargetRow(parseTarget(''), rows, null).desc).toBe('owner.tiktok')
   })
 
   test('a position target ignores the stored list entirely, even when one exists', () => {
     // `storedPosition` is only ever read for a username target; passing one alongside a position
     // must not shift which row is indexed.
-    expect(resolveTargetRow({ kind: 'position', position: 2 }, rows, 1).desc).toBe('dewi_purnama280')
+    expect(resolveTargetRow({ kind: 'position', position: 2 }, rows, 1).desc).toBe('owner.tiktok')
   })
 })
 
@@ -261,7 +261,7 @@ describe('parseTarget — target parser (plan 86 §7.1)', () => {
   })
 
   test('anything non-numeric parses as a username', () => {
-    expect(parseTarget('dewi_purnama280')).toEqual({ kind: 'username', username: 'dewi_purnama280' })
+    expect(parseTarget('owner.tiktok')).toEqual({ kind: 'username', username: 'owner.tiktok' })
   })
 
   test('position 1 is rejected with E_TARGET_IS_CURRENT — it is always the current account', () => {
@@ -292,7 +292,7 @@ describe('parseTarget — target parser (plan 86 §7.1)', () => {
  * set, and reports success on a still-open sheet just because the sheet lists every username too.
  */
 describe('ownProfileShowsHandle — own-profile verification (plan 86 item 3)', () => {
-  /** A profile screen with BOTH a display name (`sd0`-shaped) and the "@"-prefixed handle (`s_y`-shaped) — mirrors the live `dewi_purnama280` dump. */
+  /** A profile screen with BOTH a display name (`sd0`-shaped) and the "@"-prefixed handle (`s_y`-shaped) — mirrors the live `owner.tiktok` dump. */
   function profileWithDisplayName(username: string): UiNode {
     return mkNode({
       bounds: box(0, 0, 720, 1640),
@@ -303,7 +303,7 @@ describe('ownProfileShowsHandle — own-profile verification (plan 86 item 3)', 
     })
   }
 
-  /** A profile screen with NO display name set — only the "@"-prefixed handle exists anywhere in the tree, mirroring the live `user2578127329501` dump ("+ Tambah nama" shown instead of a display name). */
+  /** A profile screen with NO display name set — only the "@"-prefixed handle exists anywhere in the tree, mirroring the live `owner.tiktok2` dump ("+ Tambah nama" shown instead of a display name). */
   function profileWithoutDisplayName(username: string): UiNode {
     return mkNode({
       bounds: box(0, 0, 720, 1640),
@@ -312,22 +312,22 @@ describe('ownProfileShowsHandle — own-profile verification (plan 86 item 3)', 
   }
 
   test('finds the handle when a display name is also set', () => {
-    expect(ownProfileShowsHandle(profileWithDisplayName('dewi_purnama280'), 'dewi_purnama280')).toBe(true)
+    expect(ownProfileShowsHandle(profileWithDisplayName('owner.tiktok'), 'owner.tiktok')).toBe(true)
   })
 
   test('finds the handle when NO display name is set — the bare username appears nowhere in the tree', () => {
     // This is the exact case that produced a false E_SWITCH_NOT_VERIFIED on hardware: matching the
     // bare (non-"@") username against the whole tree finds nothing here, because the bare string
-    // genuinely is not present anywhere — only "@user2578127329501" is.
-    expect(ownProfileShowsHandle(profileWithoutDisplayName('user2578127329501'), 'user2578127329501')).toBe(true)
+    // genuinely is not present anywhere — only "@owner.tiktok2" is.
+    expect(ownProfileShowsHandle(profileWithoutDisplayName('owner.tiktok2'), 'owner.tiktok2')).toBe(true)
   })
 
   test('matches case-insensitively', () => {
-    expect(ownProfileShowsHandle(profileWithDisplayName('dewi_purnama280'), 'DEWI_purnama280')).toBe(true)
+    expect(ownProfileShowsHandle(profileWithDisplayName('owner.tiktok'), 'OWNER.TikTok')).toBe(true)
   })
 
   test('refuses when the handle is not on screen at all', () => {
-    expect(ownProfileShowsHandle(profileWithDisplayName('dewi_purnama280'), 'someone_else')).toBe(false)
+    expect(ownProfileShowsHandle(profileWithDisplayName('owner.tiktok'), 'someone_else')).toBe(false)
   })
 
   test('refuses when the switch-account sheet is still open, even if the handle text is present', () => {
@@ -337,10 +337,10 @@ describe('ownProfileShowsHandle — own-profile verification (plan 86 item 3)', 
     const stillOpen = mkNode({
       bounds: box(0, 0, 720, 1640),
       children: [
-        profileWithDisplayName('dewi_purnama280'),
+        profileWithDisplayName('owner.tiktok'),
         mkNode({ resourceId: 'app:id/fsz', desc: 'Lembar bawah', bounds: box(0, 1059, 720, 1556) }),
       ],
     })
-    expect(ownProfileShowsHandle(stillOpen, 'dewi_purnama280')).toBe(false)
+    expect(ownProfileShowsHandle(stillOpen, 'owner.tiktok')).toBe(false)
   })
 })

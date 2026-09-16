@@ -19,10 +19,10 @@ function row(username: string, index: number, hasCheckmark = false): SheetRow {
 
 describe('parseSheetAccounts — sheet rows into the stored shape', () => {
   test('numbers the slots from 1 in sheet order and marks slot 1 as the signed-in account', () => {
-    const { accounts } = parseSheetAccounts([row('user2578127329501', 0, true), row('dewi_purnama280', 1)])
+    const { accounts } = parseSheetAccounts([row('owner.tiktok2', 0, true), row('owner.tiktok', 1)])
     expect(accounts).toEqual([
-      { username: 'user2578127329501', position: 1, current: true },
-      { username: 'dewi_purnama280', position: 2, current: false },
+      { username: 'owner.tiktok2', position: 1, current: true },
+      { username: 'owner.tiktok', position: 2, current: false },
     ])
   })
 
@@ -71,7 +71,7 @@ describe('parseSheetAccounts — sheet rows into the stored shape', () => {
 
 describe('the stored value — what `ctx.kv.device.set` is handed', () => {
   test('the shape `run()` builds passes the schema `switch-account` reads it back with', () => {
-    const { accounts } = parseSheetAccounts([row('user2578127329501', 0, true), row('dewi_purnama280', 1)])
+    const { accounts } = parseSheetAccounts([row('owner.tiktok2', 0, true), row('owner.tiktok', 1)])
     const value: StoredAccounts = { version: 1, accounts, readAt: 1_776_000_000 }
     expect(AccountsSchema.safeParse(value).success).toBe(true)
   })

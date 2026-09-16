@@ -69,13 +69,13 @@ function wrapInScreen(...children: UiNode[]): UiNode {
 describe('readSheetSnapshot', () => {
   test('reads every row sharing id=l_z, in visual order — the whole point of not using find() here (plan 86 §0.1)', () => {
     const sheet = mkSheet([
-      mkRow({ username: 'user2578127329501', top: 1164, checkmark: true }),
-      mkRow({ username: 'dewi_purnama280', top: 1290, badge: '9+' }),
+      mkRow({ username: 'owner.tiktok2', top: 1164, checkmark: true }),
+      mkRow({ username: 'owner.tiktok', top: 1290, badge: '9+' }),
       mkRow({ username: 'Tambah akun', top: 1416 }),
     ])
     const snap = readSheetSnapshot(wrapInScreen(sheet))
     expect(snap).not.toBeNull()
-    expect(snap?.rows.map((r) => r.desc)).toEqual(['user2578127329501', 'dewi_purnama280'])
+    expect(snap?.rows.map((r) => r.desc)).toEqual(['owner.tiktok2', 'owner.tiktok'])
     expect(snap?.sheetBounds).toEqual(box(0, 1059, 720, 1556))
   })
 
