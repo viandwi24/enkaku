@@ -22,6 +22,7 @@ describe('the stored shape', () => {
       pacing: PACING,
       videoArtifactIds: VIDEOS,
       hashtags: { fixed: [], lines: [], randomLine: false },
+      excludes: { devices: {}, labels: [], groups: [] },
       progress: null,
       summary: null,
     }
@@ -117,7 +118,7 @@ describe('groupProgress and its summary', () => {
 
   test('counts every row exactly once, and keeps "needs a look" apart from "failed"', () => {
     const p = groupProgress(states({ succeeded: 30, failed: 4, partial: 2, dispatched: 3, pending: 1 }))
-    expect(p).toEqual({ total: 40, waiting: 1, running: 3, posted: 30, failed: 4, attention: 2 })
+    expect(p).toEqual({ total: 40, waiting: 1, running: 3, posted: 30, failed: 4, attention: 2, skipped: 0 })
   })
 
   test('a finished group says so plainly', () => {
@@ -172,12 +173,38 @@ describe('withProgress — the counts a group row renders', () => {
   test('the first look writes the counts and the line', () => {
     const next = withProgress(group, ['succeeded', 'pending', 'dispatched', 'failed'])
     expect(next?.summary).toBe('Senin: 1 posted, 1 running, 1 waiting, 1 failed of 4')
-    expect(next?.progress).toEqual({ total: 4, waiting: 1, running: 1, posted: 1, failed: 1, attention: 0 })
+    expect(next?.progress).toEqual({ total: 4, waiting: 1, running: 1, posted: 1, failed: 1, attention: 0, skipped: 0 })
   })
 
   test('nothing changed is nothing written — a quiet farm does not rewrite its groups every tick', () => {
     const first = withProgress(group, ['succeeded', 'pending']) as NonNullable<ReturnType<typeof withProgress>>
     expect(withProgress(first, ['succeeded', 'pending'])).toBeNull()
     expect(withProgress(first, ['succeeded', 'succeeded'])).not.toBeNull()
+  })
+})
+
+describe('a session that skips platforms (0.45.0)', () => {
+  const states = (s: Record<string, number>): RowState[] =>
+    Object.entries(s).flatMap(([k, n]) => Array.from({ length: n }, () => k as RowState))
+
+  test('skipped is counted apart from waiting, failed and needs-a-look', () => {
+    const p = groupProgress(states({ succeeded: 36, skipped: 4 }))
+    expect(p).toEqual({ total: 40, waiting: 0, running: 0, posted: 36, failed: 0, attention: 0, skipped: 4 })
+  })
+
+  test('a session whose every remaining platform was skipped reads as DONE, with the skips named', () => {
+    // The whole reason `skipped` is its own count: folded into `waiting` this line would have read
+    // "36 posted, 4 waiting of 40" forever, on a session with nothing left to do.
+    expect(groupSummary('Senin', groupProgress(states({ succeeded: 36, skipped: 4 })))).toBe('Senin: all 36 posted, 4 skipped')
+  })
+
+  test('a session still running says how many are skipped without hiding what is left', () => {
+    expect(groupSummary('Senin', groupProgress(states({ succeeded: 10, pending: 26, failed: 1, skipped: 3 })))).toBe(
+      'Senin: 10 posted, 26 waiting, 1 failed, 3 skipped of 40',
+    )
+  })
+
+  test('a session with no skips reads exactly as it did before they existed', () => {
+    expect(groupSummary('Senin', groupProgress(states({ succeeded: 40 })))).toBe('Senin: all 40 posted')
   })
 })

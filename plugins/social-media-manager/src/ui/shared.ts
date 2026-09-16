@@ -128,6 +128,8 @@ export const GroupProgressSchema = z.object({
   posted: z.number(),
   failed: z.number(),
   attention: z.number(),
+  /** Platform cells an operator turned off (0.45.0). Defaulted: a session counted before skips existed had none. */
+  skipped: z.number().default(0),
 })
 
 export const GroupSchema = z.object({
@@ -150,10 +152,27 @@ export const GroupSchema = z.object({
   hashtags: z
     .object({ fixed: z.array(z.string()).default([]), lines: z.array(z.string()).default([]), randomLine: z.boolean().default(false) })
     .default({ fixed: [], lines: [], randomLine: false }),
+  /**
+   * The skip rules this session was CREATED with (0.45.0, the service's `excludes.ts`) — by device
+   * group, by label, or by naming a phone. Read only to say what the session asked for: the skips
+   * themselves live on the rows, where they can be undone one at a time.
+   */
+  excludes: z
+    .object({
+      devices: z.record(z.string(), z.array(z.string())).default({}),
+      labels: z.array(z.object({ label: z.string(), platforms: z.array(z.string()) })).default([]),
+      groups: z.array(z.object({ group: z.string(), platforms: z.array(z.string()) })).default([]),
+    })
+    .default({ devices: {}, labels: [], groups: [] }),
   progress: GroupProgressSchema.nullable().default(null),
   summary: z.string().nullable().default(null),
 })
 export type Group = z.infer<typeof GroupSchema>
+
+/** Does this session carry any skip rule at all? What decides whether the page says anything about them. */
+export function hasSkipRules(group: Group): boolean {
+  return group.excludes.labels.length > 0 || group.excludes.groups.length > 0 || Object.keys(group.excludes.devices).length > 0
+}
 
 /** One hand mark on an attempt — `posts.ts` `AttemptResolutionSchema`, read loosely. */
 const AttemptMarkSchema = z.object({
