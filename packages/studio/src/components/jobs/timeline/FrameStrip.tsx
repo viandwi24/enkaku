@@ -6,6 +6,7 @@ import type { JobTraceEvent } from '@enkaku/protocol'
 import { cn } from '@enkaku/ui'
 import { coreBase } from '@/lib/ws'
 import { STRIPE } from '../job-view'
+import { stepLabel } from '@/lib/useJobTrace'
 import { formatOffset } from './lane-math'
 
 /**
@@ -55,7 +56,7 @@ export function FrameStrip({
             <div
               className={cn(
                 'flex aspect-[9/19.5] w-[76px] items-end justify-center overflow-hidden rounded-small border-2 pb-[5px]',
-                i === selected ? 'border-accent' : 'border-line-2',
+                i === selected ? 'border-accent' : e.kind === 'error' ? 'border-danger' : 'border-line-2',
               )}
               style={e.frameHash ? undefined : STRIPE}
             >
@@ -93,8 +94,13 @@ export function FrameStrip({
                 </span>
               )}
             </div>
-            <div className={cn('mt-[5px] truncate text-center text-tip', i === selected ? 'text-accent' : 'text-faint')}>
-              {e.name}
+            <div
+              className={cn(
+                'mt-[5px] truncate text-center text-tip',
+                i === selected ? 'text-accent' : e.kind === 'error' ? 'text-danger' : 'text-faint',
+              )}
+            >
+              {stepLabel(e)}
             </div>
           </button>
         ))}

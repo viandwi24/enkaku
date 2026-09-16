@@ -3,6 +3,7 @@
 import { useMemo, type ReactNode } from 'react'
 import type { JobTraceEvent } from '@enkaku/protocol'
 import { cn } from '@enkaku/ui'
+import { stepLabel } from '@/lib/useJobTrace'
 import { PHASE_FILL, formatOffset, phaseBands } from './lane-math'
 
 /**
@@ -94,12 +95,12 @@ export function Lanes({
           <button
             key={e.id}
             type="button"
-            title={`${e.name} · ${formatOffset(e.atMs, originMs)}`}
-            aria-label={`${e.name} at ${formatOffset(e.atMs, originMs)}`}
+            title={`${stepLabel(e)} · ${formatOffset(e.atMs, originMs)}`}
+            aria-label={`${stepLabel(e)} at ${formatOffset(e.atMs, originMs)}`}
             onClick={() => onSelect(i)}
             className={cn(
               'absolute inset-y-[3px] w-[4px] rounded-pill',
-              i === selected ? 'bg-text' : e.attempt > 1 ? 'bg-warn' : 'bg-accent',
+              i === selected ? 'bg-text' : e.kind === 'error' || e.ok === false ? 'bg-danger' : e.attempt > 1 ? 'bg-warn' : 'bg-accent',
             )}
             style={{ left: `calc(${pct(e.atMs)}% - 2px)` }}
           />

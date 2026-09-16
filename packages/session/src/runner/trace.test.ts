@@ -492,6 +492,8 @@ describe('createTraceTee — the other lanes (plan 128 §4.1)', () => {
     h.advance(50)
     h.tee.closePhase()
 
+    // Synchronously, before any snapshot has settled: the boundaries alone,
+    // in order — `phaseBands` depends on an `end` never being held back.
     expect(h.events.map((e) => `${e.name}:${e.phase}`)).toEqual(['start:prepare', 'end:prepare', 'start:run', 'end:run'])
     expect(h.events[0]?.meta).toEqual({ inspectorEngineId: 'ui-server', framePolicy: 'per-action' })
     expect(h.events[1]?.durationMs).toBe(400)
@@ -516,6 +518,32 @@ describe('createTraceTee — the other lanes (plan 128 §4.1)', () => {
       { inspectorEngineId: 'ui-server', framePolicy: 'per-action' },
       { inspectorEngineId: 'uiautomator-dump', framePolicy: 'on-failure' },
     ])
+  })
+
+  test('the end of prepare and run is photographed as a `snapshot` event, even when the policy is on-failure', async () => {
+    const h = harness({ engineId: 'ui-tree', capture: async () => ({ frameHash: 'end-frame', uiHash: 'end-tree' }) })
+    h.tee.phase('prepare')
+    h.advance(100)
+    h.tee.phase('run')
+    h.advance(200)
+    h.tee.phase('finish')
+    h.advance(50)
+    h.tee.closePhase()
+    await drain()
+
+    const snaps = h.events.filter((e) => e.name === 'snapshot')
+    expect(snaps.map((e) => e.phase)).toEqual(['prepare', 'run'])
+    expect(snaps[1]).toMatchObject({ kind: 'phase', atMs: 1_756_000_000_300, frameHash: 'end-frame', frameStatus: 'ok', uiHash: 'end-tree' })
+    expect(h.captures.every((c) => c.frame === 'capture' && c.uiTree === 'capture')).toBe(true)
+  })
+
+  test('no snapshot is taken when the policy is none', async () => {
+    const h = harness({ engineId: 'ui-tree', capture: async () => ({ frameHash: 'x' }), framePolicy: () => 'off' })
+    h.tee.phase('run')
+    h.tee.phase('finish')
+    await drain()
+    expect(h.captures).toHaveLength(0)
+    expect(h.events.some((e) => e.name === 'snapshot')).toBe(false)
   })
 
   test('closePhase is a no-op when no phase is open', () => {
@@ -601,5 +629,98 @@ describe('reusableTree — the cheap cache (plan 208 §3.7, §4.9)', () => {
   test('null and undefined both return null', () => {
     expect(reusableTree(null, 10_000)).toBeNull()
     expect(reusableTree(undefined, 10_000)).toBeNull()
+  })
+})
+
+describe('createTraceTee — the failure event', () => {
+  test('a run that threw is placed where run ENDED, with the screen captured there — not after finish() cleaned up', async () => {
+    let n = 0
+    const h = harness({ engineId: 'ui-tree', capture: async () => ({ frameHash: `frame-${++n}`, uiHash: `tree-${n}` }) })
+    h.tee.phase('run')
+    h.advance(1_000)
+    h.tee.phase('finish') // run ends here → frame-1
+    h.advance(500)
+    h.tee.end(h.tee.begin({ method: 'app.forceStop', args: { pkg: 'x' } } as DeviceCall), { ok: true, value: null })
+    h.tee.error({ code: 'SCRIPT_ERROR', message: 'the details screen did not open', phase: 'run' })
+    h.tee.closePhase()
+    await drain()
+
+    const error = h.events.find((e) => e.kind === 'error')
+    expect(error).toMatchObject({
+      name: 'SCRIPT_ERROR',
+      ok: false,
+      errorCode: 'SCRIPT_ERROR',
+      phase: 'run',
+      atMs: 1_756_000_001_000,
+      frameHash: 'frame-1',
+      uiHash: 'tree-1',
+      frameStatus: 'ok',
+    })
+    expect(error?.meta).toEqual({ message: 'the details screen did not open', phase: 'run' })
+    // No second picture was taken for the error itself.
+    expect(h.captures).toHaveLength(1)
+  })
+
+  test('a failure inside the phase still open (a timeout) captures the screen now', async () => {
+    const h = harness({ engineId: 'ui-tree', capture: async () => ({ frameHash: 'now', uiHash: 'now-tree' }) })
+    h.tee.phase('run')
+    h.advance(300)
+    h.tee.error({ code: 'E_JOB_TIMEOUT', message: 'timed out', phase: 'timeout' })
+    await drain()
+    expect(h.events.find((e) => e.kind === 'error')).toMatchObject({ phase: 'run', atMs: 1_756_000_000_300, frameHash: 'now', frameStatus: 'ok' })
+    expect(h.captures[0]).toMatchObject({ reason: 'failure', frame: 'capture', uiTree: 'capture' })
+  })
+
+  test('a snapshot from an EARLIER attempt is never reused', async () => {
+    let attempt = 1
+    const events: TraceEventInput[] = []
+    const tee = createTraceTee({
+      runId: 'run-1',
+      attempt: () => attempt,
+      engineId: () => 'ui-tree',
+      emit: (e) => events.push(e),
+      capture: async () => ({ frameHash: `a${attempt}` }),
+    })
+    tee.phase('run')
+    tee.phase('finish')
+    tee.closePhase()
+    attempt = 2
+    tee.phase('prepare')
+    tee.error({ code: 'X', message: 'x', phase: 'run' })
+    await drain()
+    expect(events.find((e) => e.kind === 'error')).toMatchObject({ attempt: 2, phase: 'prepare', frameHash: 'a2' })
+  })
+
+  test('with the policy off, the error is still recorded — without a picture', async () => {
+    const h = harness({ engineId: null })
+    h.tee.phase('run')
+    h.tee.error({ code: 'X', message: 'boom', phase: 'run' })
+    await drain()
+    expect(h.events.find((e) => e.kind === 'error')).toMatchObject({ ok: false, frameStatus: 'skipped-policy', frameHash: null })
+  })
+
+  test('the noop tee accepts an error', () => {
+    expect(() => createNoopTraceTee().error({ code: 'X', message: 'x', phase: 'run' })).not.toThrow()
+  })
+})
+
+describe('createTraceTee — the capture ceiling after captures settle', () => {
+  test('a settled capture frees exactly ONE slot — the ceiling still holds afterwards', async () => {
+    const pending: Array<(r: TraceCaptureResult) => void> = []
+    const h = harness({
+      engineId: 'ui-server',
+      capture: () => new Promise<TraceCaptureResult>((resolve) => pending.push(resolve)),
+    })
+    for (let i = 0; i < 4; i++) h.tee.end(h.tee.begin(tap()), { ok: true, value: null })
+    pending.splice(0).forEach((r) => r({ frameHash: 'f' }))
+    await drain()
+    await drain()
+
+    for (let i = 0; i < 5; i++) h.tee.end(h.tee.begin(tap()), { ok: true, value: null })
+    await drain()
+    // Four fresh captures, and the fifth dropped. When a settle freed two
+    // slots, the counter sat at -4 and all five went to the device.
+    expect(h.captures).toHaveLength(8)
+    expect(h.events.at(-1)?.frameStatus).toBe('skipped-busy')
   })
 })

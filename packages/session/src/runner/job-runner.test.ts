@@ -2446,10 +2446,53 @@ describe('createJobRunner — the job trace tee (plan 128 §3.1, §3.4, step 128
     const actions = events.filter((e) => e.kind === 'action')
     expect(actions.map((e) => e.name)).toEqual(['tap', 'dump'])
     for (const a of actions) expect(a.frameStatus).toBe('skipped-policy')
-    // Not one screenshot was taken off the running script's adb queue (§0.3).
-    expect(store.frames).toBe(0)
+    // Not one screenshot was taken beside a running script's action (§0.3).
+    // The only pictures are the phase-end snapshots, taken once a script
+    // phase is over — the one screen a failure can be shown against.
+    const snapshots = events.filter((e) => e.kind === 'phase' && e.name === 'snapshot')
+    expect(snapshots.length).toBeGreaterThanOrEqual(1)
+    expect(store.frames).toBe(snapshots.length)
     const phaseStart = events.find((e) => e.kind === 'phase' && e.name === 'start')
     expect(phaseStart?.meta).toEqual({ inspectorEngineId: 'uiautomator-dump', framePolicy: 'on-failure' })
+  })
+
+  test('a script that throws puts ONE error event on the axis, at the end of run, with the screen from there', async () => {
+    const events: TraceEventInput[] = []
+    const { isolation } = fakeIsolation([
+      {
+        ready: { t: 'ready', scriptId: 's', version: '1.0.0' },
+        onInit: (_init, emit) => {
+          emit({ t: 'phase', phase: 'run' })
+          emit({ t: 'device.call', callId: 'c1', method: 'dump', args: {} } as never)
+          setTimeout(() => emit({ t: 'phase', phase: 'finish' }), 30)
+          setTimeout(() => emit({ t: 'result', ok: false, error: { code: 'SCRIPT_ERROR', message: 'the details screen did not open', phase: 'run' }, finishRan: true }), 60)
+        },
+      },
+    ])
+    const store = traceStore()
+    const runner = createJobRunner({
+      isolation,
+      logDir: `/tmp/enkaku-test-${crypto.randomUUID()}`,
+      sessions: fakeSessions(fakeSessionWithInspector({ engineId: 'ui-tree' })),
+      artifacts: () => ({ save: async () => ({ id: 'artifact-x', path: 'x', sizeBytes: 0 }) }),
+      log: silentLog(),
+      onLog: () => {},
+      onArtifact: () => {},
+      onPhase: () => {},
+      heartbeat: () => {},
+      resetPolicy: () => ({ ...HOME_SETTINGS, resetPolicy: 'none' }),
+      timing: () => NO_TIMING,
+      onTraceEvent: (_jobId, event) => events.push(event),
+      traceStore: store.store,
+    })
+
+    expect((await runner.execute(JOB)).ok).toBe(false)
+    await Bun.sleep(20)
+
+    const errors = events.filter((e) => e.kind === 'error')
+    expect(errors).toHaveLength(1)
+    const runEnd = events.find((e) => e.kind === 'phase' && e.name === 'end' && e.phase === 'run')
+    expect(errors[0]).toMatchObject({ name: 'SCRIPT_ERROR', ok: false, phase: 'run', atMs: runEnd?.atMs, frameHash: 'frame-hash', frameStatus: 'ok' })
   })
 
   test('a capture that rejects does not fail the job — it becomes a frameStatus and nothing more', async () => {

@@ -265,6 +265,9 @@ function timelineLine(item: ResolvedEvent, originMs: number): string {
   if (event.phase) parts.push(`phase=${event.phase}`)
   if (event.kind === 'log' && typeof event.meta?.msg === 'string') parts.push(JSON.stringify(event.meta.msg))
   if (event.kind === 'action' && event.meta?.args !== undefined) parts.push(`args=${JSON.stringify(event.meta.args)}`)
+  // The run's failure, in its own words — the first line an agent reading
+  // `timeline.md` needs, and the one the Timeline's playhead opens on.
+  if ((event.kind === 'error' || event.kind === 'action') && typeof event.meta?.message === 'string') parts.push(JSON.stringify(event.meta.message))
   if (item.framePath) parts.push(`→ ${item.framePath}`)
   else {
     const note = frameNote(event)

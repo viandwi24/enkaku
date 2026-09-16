@@ -9,6 +9,7 @@ import {
   explainEmptyActionLane,
   failingEventIndex,
   frameEventAt,
+  isTimelineStep,
   nearestEventIndex,
   previousFrameEventAt,
   useJobTrace,
@@ -24,11 +25,11 @@ import { useTracePlayback } from './useTracePlayback'
  * stacked cards (`border: 1px solid var(--line-2)`, `border-radius: 12px`)"
  * — Transport, Lanes, Frames, Frame + Event.
  *
- * The playback axis is the ACTION events, not every recorded event: the
- * handoff's own readout is "event 10 of 18" beside a Frames card that says
- * "18 events · frames captured per action", and a trace of the same run holds
- * several times that many phase, log and artifact rows. The full list is
- * still what the Lanes card draws (its Logs lane is log density) and what the
+ * The playback axis is the run's STEPS (`isTimelineStep`), not every
+ * recorded event: the device actions, the failure, and every event that
+ * carries a picture. Log and progress rows, and phase boundaries without a
+ * frame, are several times as many and stay off it. The full list is still
+ * what the Lanes card draws (its Logs lane is log density) and what the
  * capture policy is read from; only the thing the playhead STEPS through is
  * narrowed.
  *
@@ -39,7 +40,7 @@ import { useTracePlayback } from './useTracePlayback'
  */
 export function Timeline({ jobId, runId, runStatus }: { jobId: string; runId: string; runStatus: JobStatus }) {
   const { events, loading, error, truncated, reload } = useJobTrace(jobId, runId)
-  const actions = useMemo(() => events.filter((e) => e.kind === 'action'), [events])
+  const actions = useMemo(() => events.filter(isTimelineStep), [events])
 
   const defaultIndex = useMemo(() => {
     if (actions.length === 0) return 0

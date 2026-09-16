@@ -172,6 +172,15 @@ const SELF_FRAMING_METHODS = new Set<string>(['screenshot'])
 
 export type TracePhase = NonNullable<JobTraceEvent['phase']>
 
+const TRACE_PHASES = new Set<string>(['reset', 'prepare', 'run', 'finish'])
+
+/**
+ * The phases whose end is photographed (`snapshotPhase`): the two in which a
+ * script does its work. `reset` is the farm's own housekeeping, and `finish`
+ * ends with the app already closed.
+ */
+const SNAPSHOT_PHASES = new Set<TracePhase>(['prepare', 'run'])
+
 export type TraceOutcome = { ok: true; value: unknown } | { ok: false; code: string; message: string }
 
 /** Opaque to the caller: the clock reading, the phase, and the capture verdict fixed at `begin()`. */
@@ -208,6 +217,23 @@ export interface TraceTee {
   phase(phase: TracePhase): void
   /** Closes whatever phase is open, if any — called once per attempt when it settles. */
   closePhase(): void
+  /**
+   * The attempt failed. Records ONE `error` event — the thing the Timeline's
+   * playhead lands on — carrying the failure's code and message. Call it
+   * BEFORE `closePhase()`.
+   *
+   * A script's own throw is not a failing device call (a `find` that comes
+   * back empty is `ok: true`), so without this event a failed run had no
+   * failure anywhere on its time axis and the playhead opened on the last
+   * cleanup action instead (owner, 2026-09-16).
+   *
+   * When the failure belongs to a phase that has ALREADY ended — a `run`
+   * throw arrives only after `finish()` has cleaned up — the event is placed
+   * at that phase's end and reuses the screen captured there
+   * (`phaseSnapshot`), because a picture taken now would show the app
+   * `finish()` already closed.
+   */
+  error(e: { code: string; message: string; phase: string }): void
   /** One job-log line. Already secret-redacted by `job-logger.ts` before it reaches here (plan 79 §4.7). */
   log(entry: { ts: number; level: string; source: string; msg: string; fields?: Record<string, unknown> }): void
   /** One artifact. `frameBytes` is the artifact's own bytes for a screenshot (§3.2) — never a second capture. */
@@ -349,6 +375,7 @@ export function createNoopTraceTee(): TraceTee {
     end: () => {},
     phase: () => {},
     closePhase: () => {},
+    error: () => {},
     log: () => {},
     artifact: () => {},
     progress: () => {},
@@ -398,6 +425,14 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
   let capturesInFlight = 0
   let currentPhase: TracePhase | null = null
   let phaseStartedAtMs = 0
+  /**
+   * The screen as it was when a script phase ended (see `SNAPSHOT_PHASES`),
+   * keyed by phase and stamped with its attempt, so `error()` can reuse the
+   * picture of the moment the failure happened rather than the moment it was
+   * reported. A retry overwrites its own attempt's entries; an entry from an
+   * earlier attempt is never matched.
+   */
+  const snapshots = new Map<TracePhase, { attempt: number; atMs: number; result: Promise<TraceCaptureResult> }>()
 
   const policy = (): FramePolicy => (deps.capture ? resolveFramePolicy(deps.engineId(), deps.framePolicy?.() ?? 'auto') : 'none')
 
@@ -487,7 +522,6 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
     }
     void result
       .then((res) => {
-        if (holdsSlot) capturesInFlight -= 1
         safeEmit(
           build({
             ...event,
@@ -498,14 +532,61 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
         )
       })
       .catch((err: unknown) => {
-        if (holdsSlot) capturesInFlight -= 1
         // §3.4: "Neither can fail the job" — the capture promise is caught at
         // its origin and its only consequence is a `frameStatus` on a trace row.
         safeEmit(build({ ...event, frameStatus: 'failed', meta: { ...(event.meta ?? {}), captureError: messageOf(err) } }))
       })
+      // The ONE place an asynchronous capture releases its slot. `.then` and
+      // `.catch` used to release it too, so every settled capture freed two
+      // slots, the counter went negative, and the ceiling never held again.
       .finally(() => {
         if (holdsSlot) capturesInFlight -= 1
       })
+  }
+
+  /**
+   * Photographs the screen at the end of a script phase and records it as a
+   * `phase` `snapshot` event (never `end` — `phaseBands` reads `start`/`end`
+   * in display order, and an `end` held back behind a screenshot would close
+   * the NEXT phase's band).
+   *
+   * Taken under every policy except `none`, including `on-failure`: it is at
+   * most one screenshot per script phase, and it is the only picture that can
+   * exist of the moment a script threw — by the time the attempt reports the
+   * failure, `finish()` has already run. On a run that succeeded it is the
+   * final screen, which is what a reviewer checks first.
+   */
+  function snapshotPhase(phase: TracePhase, atMs: number): void {
+    const capture = deps.capture
+    if (!capture || !SNAPSHOT_PHASES.has(phase) || policy() === 'none') return
+    const attempt = deps.attempt()
+    let result: Promise<TraceCaptureResult>
+    try {
+      result = capture({ method: 'phase', reason: 'action', frame: 'capture', uiTree: 'capture' })
+    } catch (err) {
+      result = Promise.reject(err)
+    }
+    const settled = result.then(
+      (res) => res,
+      (err: unknown): TraceCaptureResult & { error: string } => ({ frameHash: null, uiHash: null, error: messageOf(err) }),
+    )
+    snapshots.set(phase, { attempt, atMs, result: settled })
+    void settled.then((res) => {
+      const captureError = 'error' in res ? (res as { error: string }).error : null
+      safeEmit(
+        build({
+          atMs,
+          attempt,
+          phase,
+          kind: 'phase',
+          name: 'snapshot',
+          meta: { phase, ...(captureError ? { captureError } : {}) },
+          frameHash: res.frameHash ?? null,
+          frameStatus: res.frameHash ? 'ok' : 'failed',
+          uiHash: res.uiHash ?? null,
+        }),
+      )
+    })
   }
 
   return {
@@ -621,6 +702,7 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
         const at = now()
         if (currentPhase !== null) {
           emitInstant('phase', 'end', { atMs: at, durationMs: at - phaseStartedAtMs, meta: { phase: currentPhase } })
+          snapshotPhase(currentPhase, at)
         }
         currentPhase = phase
         phaseStartedAtMs = at
@@ -640,7 +722,51 @@ export function createTraceTee(deps: TraceTeeDeps): TraceTee {
         if (currentPhase === null) return
         const at = now()
         emitInstant('phase', 'end', { atMs: at, durationMs: at - phaseStartedAtMs, meta: { phase: currentPhase } })
+        snapshotPhase(currentPhase, at)
         currentPhase = null
+      } catch {
+        // observe, never alter
+      }
+    },
+
+    error(e) {
+      try {
+        const attempt = deps.attempt()
+        const base = {
+          attempt,
+          kind: 'error' as const,
+          name: e.code,
+          ok: false,
+          errorCode: e.code,
+          meta: { message: e.message, phase: e.phase } as Record<string, unknown>,
+        }
+        const failedPhase = TRACE_PHASES.has(e.phase) ? (e.phase as TracePhase) : null
+        const snap = failedPhase ? snapshots.get(failedPhase) : undefined
+        if (snap && snap.attempt === attempt && failedPhase !== currentPhase) {
+          // The failing phase is over: place the error where it ended and
+          // show the screen as it was then (see the interface doc).
+          void snap.result.then((res) => {
+            safeEmit(
+              build({
+                ...base,
+                atMs: snap.atMs,
+                phase: failedPhase,
+                frameHash: res.frameHash ?? null,
+                frameStatus: res.frameHash ? 'ok' : 'failed',
+                uiHash: res.uiHash ?? null,
+              }),
+            )
+          })
+          return
+        }
+        // Still inside the failing phase (a timeout, a crash, a kill): the
+        // screen right now IS the screen at the failure.
+        const event = { ...base, atMs: now(), phase: currentPhase }
+        if (policy() === 'none') {
+          safeEmit(build({ ...event, frameStatus: 'skipped-policy' }))
+          return
+        }
+        captureThenEmit({ method: 'error', reason: 'failure', frame: 'capture', uiTree: 'capture' }, event, false)
       } catch {
         // observe, never alter
       }

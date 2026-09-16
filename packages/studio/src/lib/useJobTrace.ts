@@ -106,6 +106,29 @@ export function explainEmptyActionLane(events: readonly JobTraceEvent[], policy:
 }
 
 /**
+ * Whether an event is a STEP the Timeline's playhead moves through: every
+ * device action, the run's failure, and anything else that carries a
+ * picture — a script's saved screenshot (`artifact`) and the screen at the
+ * end of a script phase (`phase` `snapshot`).
+ *
+ * This used to be `kind === 'action'` alone, and that single filter is why
+ * most timelines showed no screenshots at all (owner, 2026-09-16): on any
+ * engine but `ui-server` a successful action carries no frame by policy, so
+ * the pictures a run DID have — the `yt-08-details` a script saved right
+ * before it threw — lived on artifact events the strip never looked at.
+ */
+export function isTimelineStep(e: JobTraceEvent): boolean {
+  return e.kind === 'action' || e.kind === 'error' || e.frameHash !== null
+}
+
+/** A step's caption on the strip, the lane tooltip and the transport readout. */
+export function stepLabel(e: JobTraceEvent): string {
+  if (e.kind === 'phase' && e.name === 'snapshot') return `end of ${e.phase ?? 'phase'}`
+  if (e.kind === 'error') return `error · ${e.name}`
+  return e.name
+}
+
+/**
  * The event nearest `atMs` on the time axis — what a scrubber drag resolves
  * to. Ties go to the EARLIER event (the lower display index), so dragging
  * left and right across a tie is stable rather than flickering.
@@ -152,7 +175,11 @@ export function previousFrameEventAt(events: readonly JobTraceEvent[], index: nu
  * at the end (the most recent thing that happened).
  */
 export function failingEventIndex(events: readonly JobTraceEvent[]): number | null {
-  const at = events.findIndex((e) => e.ok === false || e.kind === 'error')
+  // The run's own failure first: a script routinely tolerates a failing
+  // `waitFor` long before the thing that actually stopped it.
+  const error = events.findIndex((e) => e.kind === 'error')
+  if (error !== -1) return error
+  const at = events.findIndex((e) => e.ok === false)
   return at === -1 ? null : at
 }
 

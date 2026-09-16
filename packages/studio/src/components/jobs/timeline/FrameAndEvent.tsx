@@ -6,6 +6,7 @@ import type { JobTraceEvent } from '@enkaku/protocol'
 import { cn } from '@enkaku/ui'
 import { coreBase } from '@/lib/ws'
 import { STRIPE } from '../job-view'
+import { stepLabel } from '@/lib/useJobTrace'
 import { formatOffset } from './lane-math'
 
 /**
@@ -43,6 +44,9 @@ export function FrameAndEvent({
   const failed = shown?.frameHash != null && failedHash === shown.frameHash
   const setFailed = () => setFailedHash(shown?.frameHash ?? null)
   const retry = (event?.attempt ?? 1) > 1
+  const failedStep = event?.ok === false || event?.kind === 'error'
+  const badge = failedStep ? 'failed' : event?.kind === 'artifact' ? 'screenshot' : event?.kind === 'phase' ? 'snapshot' : retry ? 'retry' : 'ok'
+  const message = typeof event?.meta?.message === 'string' ? event.meta.message : null
   return (
     <div className="flex items-stretch gap-[10px]">
       <div className="w-[168px] flex-none rounded-inner border border-line-2 p-[10px]">
@@ -75,14 +79,14 @@ export function FrameAndEvent({
         ) : (
           <>
             <div className="flex items-center gap-[9px] pb-2">
-              <span className="truncate font-mono text-[13px] font-medium">{event.name}</span>
+              <span className="truncate font-mono text-[13px] font-medium">{stepLabel(event)}</span>
               <span
                 className={cn(
                   'flex-none rounded-pill px-2 py-[3px] text-tip font-semibold',
-                  event.ok === false ? 'bg-danger-soft text-danger' : retry ? 'bg-warn-soft text-warn' : 'bg-accent-soft text-accent',
+                  failedStep ? 'bg-danger-soft text-danger' : retry ? 'bg-warn-soft text-warn' : 'bg-accent-soft text-accent',
                 )}
               >
-                {event.ok === false ? 'failed' : retry ? 'retry' : 'ok'}
+                {badge}
               </span>
               <span className="flex-none font-mono text-meta text-faint">{formatOffset(event.atMs, originMs)}</span>
             </div>
@@ -96,10 +100,15 @@ export function FrameAndEvent({
               href={event.uiHash ? `${coreBase()}/api/jobs/${jobId}/runs/${runId}/trace/ui/${event.uiHash}` : undefined}
             />
             {event.errorCode && <Row label="error code" value={event.errorCode} />}
-            <div className="pt-[10px] pb-[6px] text-label text-faint">Arguments</div>
-            <p className="font-mono text-meta leading-[1.7] text-text-3">
-              Recorded already redacted &mdash; typed text and clipboard writes store only a length.
-            </p>
+            {message && <p className="pt-[10px] font-mono text-meta leading-[1.6] break-words text-danger">{message}</p>}
+            {event.kind === 'action' && (
+              <>
+                <div className="pt-[10px] pb-[6px] text-label text-faint">Arguments</div>
+                <p className="font-mono text-meta leading-[1.7] text-text-3">
+                  Recorded already redacted &mdash; typed text and clipboard writes store only a length.
+                </p>
+              </>
+            )}
           </>
         )}
       </div>

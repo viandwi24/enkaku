@@ -737,6 +737,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
         // Plan 128 §4.1 — close whatever phase this attempt was in, so the
         // phase lane has an end for every start rather than one open band
         // running to the right edge of the timeline.
+        //
+        // The failure goes on the time axis first, while the phase it may
+        // still be in is open — it is what the Timeline's playhead opens on.
+        if (!outcome.ok && outcome.error) tee.error(outcome.error)
         tee.closePhase()
         for (const t of [killTimer, timeoutTimer, startupTimer, graceTimer, silenceTimer]) if (t) clearTimeout(t)
         opts.aborter.current = null

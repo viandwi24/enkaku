@@ -3,7 +3,7 @@
 import { useRef } from 'react'
 import type { JobTraceEvent } from '@enkaku/protocol'
 import { PauseIcon, PlayIcon, cn } from '@enkaku/ui'
-import { nearestEventIndex } from '@/lib/useJobTrace'
+import { nearestEventIndex, stepLabel } from '@/lib/useJobTrace'
 import { formatOffset } from './lane-math'
 import type { PlaybackSpeed } from './useTracePlayback'
 
@@ -87,7 +87,7 @@ export function Transport({
         </div>
         <div className="min-w-0 flex-1 truncate text-center text-meta text-dim">
           <span className="font-mono text-text">{formatOffset(playheadMs, originMs)}</span>
-          {current ? ` · ${current.phase ?? 'unknown'} · ${current.name}` : ''}
+          {current ? ` · ${current.phase ?? 'unknown'} · ${stepLabel(current)}` : ''}
         </div>
         <span className="flex-none text-meta text-faint">
           event {actions.length === 0 ? 0 : selected + 1} of {actions.length}
