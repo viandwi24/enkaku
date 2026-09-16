@@ -42,6 +42,16 @@ export function Cast({
   // "Reconnecting" in the other.
   const status = castStatusOf(stats)
   const live = status.kind === 'live'
+  /**
+   * The cast surface's width ceiling, and — divided by the ratio — its height
+   * ceiling. Both are needed, or the box stops being the device's shape.
+   *
+   * `maxWidth` alone caps the width while the height stays at the full column,
+   * so the moment the cap binds the box is no longer at `ratio` and the canvas
+   * letterboxes itself inside it. Capping the height by the same formula keeps
+   * the aspect instead: the box shrinks in both axes together.
+   */
+  const maxWidth = castWidthPx(ratio, height) - 36
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-muted">
@@ -96,7 +106,31 @@ export function Cast({
             (see its `ratio`); this reads the one number so the surface, the
             column and the window can never be sized from different answers.
           */
-          style={{ aspectRatio: String(ratio), maxWidth: castWidthPx(ratio, height) - 36, maxHeight: '100%' }}
+          /*
+            A DEFINITE height, so the box is never sized from the picture
+            inside it (owner, 2026-09-16: the cast opens small and blurry and
+            "suddenly jumps to full size" a second or two later).
+
+            `aspectRatio` with `maxWidth`/`maxHeight` and no definite size of
+            its own leaves this box shrink-to-fit, and its only in-flow content
+            was the canvas — whose INTRINSIC size is the bitmap the renderer
+            last painted (`h264-decoder.ts` sets `canvas.width/height` to the
+            frame's own size, and the PNG path in `use-cast.ts` does the same).
+            So while the always-on wall encoder stood in for the control one,
+            the surface was literally 216x480 CSS pixels, and the switch to the
+            720x1600 control stream resized the box under the operator's mouse.
+            `DeviceControl` had already frozen the WINDOW's geometry against
+            exactly this (its `ratio`); the jump that survived was inside the
+            column, one element down.
+
+            With the height definite the geometry is the DEVICE's at every
+            moment and the stand-in is simply upscaled into the same box, so
+            the only thing the switch changes is sharpness — which is the one
+            thing it is for. No transition: a fade would put an animation on
+            top of a change of sharpness and make the sharp picture arrive
+            later, which is the opposite of the ask.
+          */
+          style={{ aspectRatio: String(ratio), height: '100%', maxWidth, maxHeight: maxWidth / ratio }}
         >
           {!live && (
             <div
@@ -104,7 +138,15 @@ export function Cast({
               style={{ backgroundImage: 'repeating-linear-gradient(135deg, var(--muted-2) 0 3px, var(--panel-2) 3px 6px)' }}
             />
           )}
-          <canvas ref={canvasRef} {...canvasProps} className={cn('h-full w-full bg-black object-contain outline-none', focused && 'ring-2 ring-accent')} />
+          {/*
+            Absolutely positioned, so the canvas can never contribute its
+            bitmap size back to the box above — the box decides, the picture
+            fills it. `object-contain` stays as the safety net for the frames
+            whose ratio does not match `ratio` exactly (scrcpy rounds both
+            encoders to multiples of 8): better a hairline of black than a
+            stretched phone.
+          */}
+          <canvas ref={canvasRef} {...canvasProps} className={cn('absolute inset-0 h-full w-full bg-black object-contain outline-none', focused && 'ring-2 ring-accent')} />
           {!live && (
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5">
               {status.busy && <Spinner className="size-4 text-accent" />}
