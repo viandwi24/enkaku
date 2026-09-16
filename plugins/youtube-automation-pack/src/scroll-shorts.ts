@@ -4,11 +4,16 @@ import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { YOUTUBE_PACKAGE, relaunch, sleep, tapNode, waitForTree } from './youtube'
 import { flatten } from './tree'
-import { advanceFeedVerified, browseComments, frameOf, makeRng, between, pickWatchMs, pressLike, keywordBoost, readableStrings } from './behavior'
+import { advanceFeedVerified, browseComments, frameOf, makeRng, between, pickWatchMs, pressLike, keywordBoost, readableStrings, swipeDownRandomised } from './behavior'
 import { dismissPopups } from './popups'
 
 /** How long to wait for the Shorts rail after tapping its tab. */
 const SHORTS_ENTER_TIMEOUT_MS = 20_000
+
+/** How often a Short is scrolled back over and re-watched — the TikTok pack's own measured 5%. */
+const BACK_SCROLL_CHANCE = 0.05
+/** How often the phone is simply put down for a while. Same 3% as TikTok's auto-scroll. */
+const IDLE_CHANCE = 0.03
 
 /**
  * `scroll-shorts` — browse the Shorts feed like a person browsing it.
@@ -183,6 +188,28 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
       if (i === ctx.params.videos - 1) {
         steps.push(`video ${i + 1} (${dwell.label})`)
         break
+      }
+
+      /*
+        Going back, and going away (0.39.8).
+
+        `swipeDownRandomised` has been in `behavior.ts` since this pack was written — fully
+        randomised, unit-testable, and never once called. A survey against the TikTok pack found why
+        it mattered: that pack scrolls back over a Short it just passed and takes a real break, this
+        one only ever advanced, and a feed that never goes back is a pattern no person produces.
+
+        Both probabilities are constants rather than params: they are behaviour, not an operator's
+        choice, and they match the numbers the TikTok pack measured for itself.
+      */
+      if (i > 0 && rng() < BACK_SCROLL_CHANCE) {
+        await swipeDownRandomised(ctx, frame, rng)
+        await sleep(between(rng, 1_800, 5_000))
+        steps.push('looked back')
+      }
+      if (rng() < IDLE_CHANCE) {
+        const idleMs = Math.round(between(rng, 25_000, 75_000))
+        steps.push(`idle ${Math.round(idleMs / 1_000)}s`)
+        await sleep(idleMs)
       }
 
       const turned = await advanceFeedVerified(ctx, frame, rng)

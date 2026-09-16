@@ -1,6 +1,6 @@
 {
   "name": "@enkaku/plugin-instagram",
-  "version": "0.10.6",
+  "version": "0.10.7",
   "private": true,
   "type": "module",
   "description": "Instagram automation \u2014 Reels, feed, stories, Explore, inbox, notifications, profile, search, and posting Reels.",

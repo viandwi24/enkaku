@@ -84,7 +84,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     const inbox = all(home, (n) => n.clickable && n.desc.trim() === 'Kotak Masuk' && n.bounds.top > 1_400)[0]
     if (!inbox) throw new Error('the Kotak Masuk tab was not on the bottom navigation — see the first artifact')
     const badge = all(home, (n) => /^\d+\+?$/.test(n.text.trim()) && n.bounds.top >= inbox.bounds.top && n.bounds.bottom <= inbox.bounds.bottom + 2 && n.bounds.left >= inbox.bounds.left - 2 && n.bounds.right <= inbox.bounds.right + 2)[0]?.text.trim() ?? ''
-    await ctx.device.tap({ point: jitteredPoint(inbox) })
+    await ctx.device.tap({ point: jitteredPoint(inbox, rng) })
     await sleep(between(rng, 2_500, 4_000))
 
     // The "Simpan info login" sheet and anything else standing in the way: closed-allowlist
@@ -112,7 +112,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     let activityOpened = false
     if (activity) {
       const before = await snapshot(ctx)
-      await ctx.device.tap({ point: jitteredPoint(activity) })
+      await ctx.device.tap({ point: jitteredPoint(activity, rng) })
       for (let i = 0; i < 6 && !activityOpened; i++) {
         await sleep(800)
         const now = await snapshot(ctx)

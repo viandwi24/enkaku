@@ -1,22 +1,22 @@
 import type { ScriptContext } from '@enkaku/sdk'
+import { aimInside } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { flatten } from './tree'
 
-/* ── Jittered tap (inlined — cross-pack imports forbidden) ─────────────── */
+/* ── Jittered tap ───────────────────────────────────────────────────────── */
 
-function jitterPoint(node: UiNode): { x: number; y: number } {
-  const { left, top, right, bottom } = node.bounds
-  const w = right - left, h = bottom - top
-  if (w <= 0 || h <= 0) return { x: Math.round((left + right) / 2), y: Math.round((top + bottom) / 2) }
-  const fx = w < 24 ? 0 : 0.15, fy = h < 24 ? 0 : 0.15
-  return {
-    x: Math.round(left + w * (fx + Math.random() * (1 - 2 * fx))),
-    y: Math.round(top + h * (fy + Math.random() * (1 - 2 * fy))),
-  }
-}
-
-export async function tapNodeJittered(ctx: ScriptContext<unknown>, node: UiNode): Promise<void> {
-  await ctx.device.tap({ point: jitterPoint(node) })
+/**
+ * The aim now comes from the SDK (2026-09-17): `aimInside` is the same rule this pack had inlined —
+ * a uniform point in the middle 70% of the node, the plain centre on an axis under 24px — and it is
+ * the same one the TikTok and YouTube packs each carried their own copy of. Three copies is how the
+ * behaviour drifted apart in the first place, so the copy is gone and the rule has one home.
+ *
+ * `rng` is optional here for the same reason it is optional there: most callers of this helper hold
+ * no rng at all (`likeFeedPost`, the story-tray tap, the whole of `search-keyword`). A member that
+ * HAS a seeded rng should pass it, and its taps then replay with the rest of the run.
+ */
+export async function tapNodeJittered(ctx: ScriptContext<unknown>, node: UiNode, rng?: () => number): Promise<void> {
+  await ctx.device.tap({ point: aimInside(node.bounds, rng) })
 }
 
 /**

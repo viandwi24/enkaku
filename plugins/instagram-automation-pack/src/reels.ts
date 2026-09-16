@@ -16,6 +16,11 @@ import { between, frameOf, keywordBoost, pickDwell, readableStrings, sleep, tapN
 
 export type LikeOutcome = 'liked' | 'already-liked' | 'no-button' | 'not-confirmed' | 'sponsored'
 
+/** How often a reel is scrolled back over and re-read — measured against the TikTok pack's own 5%. */
+const BACK_SCROLL_CHANCE = 0.05
+/** How often the phone is simply put down for a while. TikTok's auto-scroll uses 3% for the same reason. */
+const IDLE_CHANCE = 0.03
+
 /** Is the Reels viewer on screen? Its rail's like and comment buttons appear nowhere else. */
 export function inReelsViewer(tree: UiNode): boolean {
   return rowsById(tree, 'like_button').length > 0 && rowsById(tree, 'comment_button').length > 0
@@ -104,6 +109,33 @@ export async function watchReels(ctx: ScriptContext<unknown>, opts: WatchReelsOp
         steps.push(`comments${matched ? ':kw' : ''}`)
       }
     }
+    /*
+      Going back, and going away (2026-09-17).
+
+      A survey of this pack against TikTok's found the two behaviours missing here entirely: TikTok
+      scrolls back over a reel it just passed (5%) and takes a real break (3%), and this loop did
+      neither — it advanced, every time, forever. That regularity is a pattern of its own, and it was
+      the single biggest difference between the two packs.
+
+      The back-scroll is the first thing in this pack to use the API's own human gesture: `scroll`
+      with `human` draws its corridor, reach, duration and easing per call, so nothing here computes
+      geometry. Both probabilities are constants rather than parameters on purpose — they are
+      behaviour, not an operator's choice, and adding two params would change the contract of both
+      members that share this loop.
+    */
+    if (i > 0 && rng() < BACK_SCROLL_CHANCE) {
+      await ctx.device.scroll({ direction: 'down', human: true })
+      await sleep(between(rng, 1_800, 5_000))
+      await ctx.device.scroll({ direction: 'up', human: true })
+      await sleep(between(rng, 700, 1_400))
+      steps.push('looked back')
+    }
+    if (rng() < IDLE_CHANCE) {
+      const idleMs = Math.round(between(rng, 25_000, 75_000))
+      steps.push(`idle ${Math.round(idleMs / 1_000)}s`)
+      await sleep(idleMs)
+    }
+
     if (i < opts.count - 1) {
       if (await verifiedSwipeUp(ctx, frame, rng)) out.advanced += 1
       else {

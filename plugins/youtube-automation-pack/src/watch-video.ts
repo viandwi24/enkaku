@@ -100,7 +100,13 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     if (!field) fail('type-query', 'the search screen opened with no text field — see artifact 02-search-open')
     await tapNode(ctx, field!)
     await sleep(between(rng, 400, 800))
-    await ctx.device.type(ctx.params.query)
+    await ctx.device.type(ctx.params.query, {
+      // Typed the way a person does (0.39.8): the `natural` profile already paced this
+      // per-character, but `human` adds the beat at the end of a word and the occasional pause to
+      // think. Typos stay off — YouTube's search box edits its suggestion list under the cursor,
+      // and a backspace there can commit a suggestion instead of what was typed.
+      human: { typo: { probability: 0 } },
+    })
     await ctx.device.key('ENTER')
 
     const loaded = await waitForTree(ctx, hasResultRows, { budgetMs: 30_000 })

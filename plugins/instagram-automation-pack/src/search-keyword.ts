@@ -57,7 +57,13 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     }
     await tapNodeJittered(ctx, input)
     await sleep(800)
-    const typed = await ctx.device.type(ctx.params.query)
+    /*
+      Typed the way a person does (0.10.7). The plain call was already per-character — the farm's
+      `natural` profile paces it — but a person also lingers at the end of a word and stops to think
+      every few words, which is what `human` adds. Typos stay off: Explore edits its suggestion list
+      under the cursor, and a backspace there can commit a suggestion rather than the typed text.
+    */
+    const typed = await ctx.device.type(ctx.params.query, { human: { typo: { probability: 0 } } })
     steps.push(`typed via ${typed.via}`)
     await sleep(1_000)
     await ctx.device.key('ENTER')

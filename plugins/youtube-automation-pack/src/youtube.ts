@@ -1,4 +1,5 @@
 import type { ScriptContext } from '@enkaku/sdk'
+import { aimInside } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { dismissPopups } from './popups'
 import { all, flatten } from './tree'
@@ -61,19 +62,11 @@ export function centre(node: UiNode): { x: number; y: number } {
  * control next door. Nodes thinner than 24px on an axis keep the plain
  * centre there — insetting a rail icon would risk the gap beside it.
  */
-export function insetPoint(node: UiNode): { x: number; y: number } {
-  const { left, top, right, bottom } = node.bounds
-  const w = right - left
-  const h = bottom - top
-  const cx = Math.round((left + right) / 2)
-  const cy = Math.round((top + bottom) / 2)
-  if (w <= 0 || h <= 0) return { x: cx, y: cy }
-  const fx = w < 24 ? 0 : 0.15
-  const fy = h < 24 ? 0 : 0.15
-  return {
-    x: Math.round(left + w * (fx + Math.random() * (1 - 2 * fx))),
-    y: Math.round(top + h * (fy + Math.random() * (1 - 2 * fy))),
-  }
+export function insetPoint(node: UiNode, rng?: () => number): { x: number; y: number } {
+  // The rule moved to the SDK (2026-09-17) — `aimInside` is this function, and the identical one
+  // the TikTok and Instagram packs each carried. Passing `rng` puts the tap in the run's seeded
+  // sequence; omitting it keeps today's `Math.random` behaviour for the callers that hold none.
+  return aimInside(node.bounds, rng)
 }
 
 /**
@@ -92,8 +85,8 @@ export function insetPoint(node: UiNode): { x: number; y: number } {
  * nothing has to be normalised and un-normalised on the way. The point itself
  * comes from {@link insetPoint}: inside the node, never pixel-identical twice.
  */
-export async function tapNode(ctx: ScriptContext<unknown>, node: UiNode): Promise<void> {
-  await ctx.device.tap({ point: insetPoint(node) })
+export async function tapNode(ctx: ScriptContext<unknown>, node: UiNode, rng?: () => number): Promise<void> {
+  await ctx.device.tap({ point: insetPoint(node, rng) })
 }
 
 /** A node big enough to be a real target and not a zero-sized placeholder. RecyclerViews are full of the latter. */

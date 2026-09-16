@@ -730,7 +730,13 @@ const searchChannelScript: PluginMemberScript<typeof paramsSchema, typeof result
     // "usually" is what makes a run flaky at 3am.
     await tapNode(ctx, field!.node)
     await sleep(500)
-    await ctx.device.type(ctx.params.query)
+    await ctx.device.type(ctx.params.query, {
+      // Typed the way a person does (0.39.8): the `natural` profile already paced this
+      // per-character, but `human` adds the beat at the end of a word and the occasional pause to
+      // think. Typos stay off — YouTube's search box edits its suggestion list under the cursor,
+      // and a backspace there can commit a suggestion instead of what was typed.
+      human: { typo: { probability: 0 } },
+    })
     await sleep(UI_SETTLE_MS)
     await capture(ctx, '03-typed')
     steps.push('typed')

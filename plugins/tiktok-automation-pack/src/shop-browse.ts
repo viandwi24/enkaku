@@ -96,7 +96,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     const nav = await ctx.device.dump()
     const tab = all(nav, (n) => n.clickable && n.desc.trim() === 'Toko' && n.bounds.top > 1_400)[0]
     if (!tab) throw new Error('the Toko tab was not on the bottom navigation — see the first artifact')
-    await ctx.device.tap({ point: jitteredPoint(tab) })
+    await ctx.device.tap({ point: jitteredPoint(tab, rng) })
 
     /*
       Poll for the shop, do not sleep a guess at it.
@@ -120,7 +120,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     const lanjutkan = all(gate, (n) => n.clickable && /^(Lanjutkan|Continue)$/.test((n.text || n.desc).trim()))[0]
     if (lanjutkan) {
       consentPassed = true
-      await ctx.device.tap({ point: jitteredPoint(lanjutkan) })
+      await ctx.device.tap({ point: jitteredPoint(lanjutkan, rng) })
       await sleep(between(rng, 5_000, 8_000))
       gate = await ctx.device.dump()
       steps.push('consent-gate passed (Lanjutkan)')
@@ -139,7 +139,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     if (ctx.params.category.trim() !== '') {
       const chip = categoryChip(gate, ctx.params.category)
       if (chip) {
-        await ctx.device.tap({ point: jitteredPoint(chip) })
+        await ctx.device.tap({ point: jitteredPoint(chip, rng) })
         await sleep(between(rng, 3_000, 5_000))
         categoryOpened = ctx.params.category.trim()
         steps.push(`category:${categoryOpened}`)

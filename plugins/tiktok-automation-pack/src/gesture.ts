@@ -1,4 +1,5 @@
 import type { ScriptContext } from '@enkaku/sdk'
+import { aimInside } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { between, sleep, pngSize } from './human'
 import { flatten } from './tree'
@@ -54,19 +55,11 @@ export async function frameOf(ctx: ScriptContext<unknown>): Promise<Frame> {
  * 70% of the node, so it can never leave the node onto whatever sits beside
  * it. Rails narrower than 24px on an axis keep the plain centre there.
  */
-export function jitteredPoint(node: UiNode): { x: number; y: number } {
-  const { left, top, right, bottom } = node.bounds
-  const w = right - left
-  const h = bottom - top
-  const cx = Math.round((left + right) / 2)
-  const cy = Math.round((top + bottom) / 2)
-  if (w <= 0 || h <= 0) return { x: cx, y: cy }
-  const fx = w < 24 ? 0 : 0.15
-  const fy = h < 24 ? 0 : 0.15
-  return {
-    x: Math.round(left + w * (fx + Math.random() * (1 - 2 * fx))),
-    y: Math.round(top + h * (fy + Math.random() * (1 - 2 * fy))),
-  }
+export function jitteredPoint(node: UiNode, rng?: () => number): { x: number; y: number } {
+  // The rule moved to the SDK (2026-09-17): `aimInside` is this function, and the identical copies
+  // the Instagram and YouTube packs carried. Three copies is how these packs drifted apart, so the
+  // copy is gone. Callers with a seeded rng pass it and their taps replay with the run.
+  return aimInside(node.bounds, rng)
 }
 
 /**

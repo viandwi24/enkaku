@@ -52,7 +52,7 @@ import clearDrafts from './clear-drafts'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.10.6',
+  version: '0.10.7',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -61,6 +61,20 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.10.7 — this pack stops only ever going forwards.** A survey against the
+   * TikTok and YouTube packs (2026-09-17) found two behaviours missing here
+   * entirely: TikTok scrolls back over a reel it just passed (5%) and takes a
+   * real break (3%), and the reels loop here did neither — it advanced, every
+   * time, forever. Both are now in, with the same constants, and the back-scroll
+   * is the first thing in this pack to use the API's own human gesture:
+   * `scroll({ direction, human: true })` draws its corridor, reach, duration and
+   * easing per call, so the loop computes no geometry at all. The inlined jitter
+   * helper is gone too — `aimInside` from `@enkaku/sdk` is the same rule all
+   * three packs had copied, and it takes the run's rng, so a seeded run finally
+   * replays its taps. `search-keyword` types through the SDK's `human` mode,
+   * typos off: Explore edits its suggestion list under the cursor, and a
+   * backspace there can commit a suggestion rather than what was typed.
    *
    * **0.10.6 — the phone-number wall is a wall of its own.** Six phones in one
    * production session (#41, #46, #50, #51, #72, #73 on 2026-09-16) failed with

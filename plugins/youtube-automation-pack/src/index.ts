@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.7',
+  version: '0.39.8',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,21 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.8 — the back-scroll this pack already had is finally called.**
+   * `swipeDownRandomised` has been in `behavior.ts` since the pack was written:
+   * fully randomised, unit-testable, and never once invoked — a survey against
+   * the TikTok pack (2026-09-17) is what found it. `scroll-shorts` now uses it to
+   * go back over a Short it just passed (5%) and takes a real break (3%), both
+   * matching the numbers TikTok measured for itself, because a feed that only
+   * ever advances is a pattern no person produces. `insetPoint` is now the SDK's
+   * `aimInside` — the same rule all three packs had copied, each from
+   * `Math.random`, which is why a seeded run replayed everything except where it
+   * tapped; it takes an rng now. And all four search members
+   * (`search-channel`, `search-play`, `watch-video`, `scroll-live`) type through
+   * the SDK's `human` mode instead of a flat per-character cadence. Typos stay
+   * off there: YouTube's search box edits its suggestion list under the cursor,
+   * so a backspace can commit a suggestion instead of the typed text.
    *
    * **0.39.7 — a details screen that never stops loading is judged by the band
    * Upload sits in, and a launch covered by a Google account page says so.** Two

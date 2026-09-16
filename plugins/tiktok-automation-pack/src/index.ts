@@ -976,6 +976,16 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.49.5 — the aim comes from the SDK now, and a search is typed like a person types. A survey of
+  //   this pack against the Instagram and YouTube packs (2026-09-17) found all three carrying their own
+  //   copy of the same jitter helper, each drawing from `Math.random` — so a seeded run replayed every
+  //   decision it made except where it tapped. `jitteredPoint` is now `aimInside` from `@enkaku/sdk`,
+  //   one home for the rule, and the five call sites in `notification-activity` and `shop-browse` pass
+  //   the run's own rng, so their taps replay with everything else. `search.ts` also stops typing at a
+  //   flat cadence: the SDK's `human` mode adds the beat at the end of a word and the occasional pause
+  //   to think, the same thing the caption path has done since 1.46. Typos stay OFF in search — a
+  //   backspace edits TikTok's suggestion list under the cursor, and what gets committed is then not
+  //   what was typed. The caption keeps its 4% because that field has no such list.
   // 1.49.4 — the emoji diagnosis wins on the second round too. Production #27 (2026-09-16) lost exactly one
   //   character of its caption — a 📊 the `scrcpy-text` path cannot carry, because that phone's active keyboard
   //   is its own and not the guest agent's — and because the mismatch was noticed on round 2, the run reported
@@ -1336,7 +1346,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.49.4',
+  version: '1.49.5',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

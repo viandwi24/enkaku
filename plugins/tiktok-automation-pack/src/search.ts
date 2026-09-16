@@ -133,9 +133,19 @@ export async function searchFor(ctx: ScriptContext<unknown>, query: string, tab:
   await ctx.device.tap({ point: centerOf(input.bounds) })
   await sleep(300)
 
-  // 4. Type with the SDK's own per-character human cadence (the `natural` timing profile's
-  //    `perCharMs`) — never a hand-rolled per-character loop.
-  await ctx.device.type(query)
+  /*
+    4. Type it the way a person does (2026-09-17).
+
+    The plain call was already per-character — the `natural` profile's `perCharMs` — but that is only
+    speed. What a person also produces is a longer beat at the end of a word and, every few words, a
+    real pause; the caption path in `post-video` has used `human` for that since 1.46, while every
+    search in this pack still typed at a flat cadence.
+
+    Typos stay OFF here, and that is deliberate rather than timid: a backspace in TikTok's search box
+    edits the suggestion list under the cursor, and the suggestion that gets committed is not always
+    the text that was typed. The caption field has no such list, which is why it keeps its 4%.
+  */
+  await ctx.device.type(query, { human: { typo: { probability: 0 } } })
   await sleep(400)
 
   // 5. Submit. `id:"tv_search_textview"` first, falling back to a bounds-filtered `text:"Cari"`
