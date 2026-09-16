@@ -976,6 +976,21 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.49.10 — three videos opened, and the run reported that none of them had.
+  //   `keyword-videos`' `playerUp` was Indonesian-only: it required two of `Sukai video`, `Baca atau
+  //   tambahkan komentar`, `Bagikan video`. On the owner's en-US moto the rail reads `Like video.
+  //   1,778 likes`, `Read or add comments. 105 comments`, `Share video. 57 shares` — measured from a
+  //   live dump of this phone, not translated — so the check saw nothing and the member reported
+  //   `cell 2,1 opened no readable player` three times before `maxMisses` ended the run.
+  //   The `miss-1` screenshot saved beside that message shows the video PLAYING: author, 2,703
+  //   likes, 112 comments, the share rail, the comment bar. The taps were never the problem, and
+  //   nothing in the result said so — `played: 0, misses: 3` reads as "the grid is broken" when the
+  //   grid was fine.
+  //   This is the eighth member this locale work has touched, and the third distinct failure SHAPE:
+  //   an anchor that could not be found (1.49.8), a control that could not be found (1.49.9), and
+  //   now a PROOF that could not be read. The first two failed loudly at the right place; this one
+  //   blamed the wrong thing, which is the more expensive kind.
+  //   Two rail controls are still required, unchanged: one alone can be drawn over a grid.
   // 1.49.9 — the rest of the English phone: the Switch account row, the results tab strip, and the
   //   Shop and Inbox tabs.
   //   1.49.8 was fixed from dumps; this one was fixed from a RUN. The whole pack was driven on the
@@ -1426,7 +1441,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.49.9',
+  version: '1.49.10',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

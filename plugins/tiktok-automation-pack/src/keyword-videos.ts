@@ -66,8 +66,24 @@ const resultSchema = z.object({
   keywordMatches: z.number().int().describe('Videos whose caption/author text matched a keyword and got the dwell tilt.').meta(ui({ title: 'Keyword matches', summary: true })),
 })
 
+/*
+  The opened player's own rail, in both languages TikTok ships (1.49.10).
+
+  This was Indonesian-only, and on the owner's en-US moto it failed in the worst way available: it
+  reported "cell 2,1 opened no readable player" for THREE taps that had each opened a player. The
+  `miss-1` screenshot saved beside that message shows the video playing — author, 2,703 likes, 112
+  comments, the share rail, the "Add comment..." bar. The taps were fine; the proof was blind, and
+  `maxMisses` then ended the run as if the grid were broken.
+
+  The en spellings are measured, not translated — read off a live dump of this phone's feed on
+  2026-09-17: `Like video. 1,778 likes`, `Read or add comments. 105 comments`, `Share video. 57
+  shares`. The `\b` after each keeps the count suffix out of the match.
+
+  Two of the three are still required, as before: one rail control alone can be drawn over a grid.
+*/
 function playerUp(tree: UiNode): boolean {
-  return all(tree, (n) => /^(Sukai video|Baca atau tambahkan komentar|Bagikan video)\b/i.test(n.desc.trim())).length >= 2
+  const RAIL = /^(Sukai video|Like video|Baca atau tambahkan komentar|Read or add comments|Bagikan video|Share video)\b/i
+  return all(tree, (n) => RAIL.test(n.desc.trim())).length >= 2
 }
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {

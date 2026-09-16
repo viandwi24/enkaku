@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.11',
+  version: '0.39.12',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,25 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.12 — the cast button is not a player.**
+   * `playerEvidence`'s transport rung matched `/^(jeda|pause|putar|play|
+   * mainkan)/`, and YouTube's CAST control reads "Putar di perangkat lain" —
+   * "play on another device". It begins with `putar`, and it is drawn on the
+   * RESULTS page too, not only on a player.
+   * Measured the same day as 0.39.11 and on the run that was meant to prove it:
+   * `watch-video` returned `played: true` with
+   * `playEvidence: "transport:putar di perangkat lain"` and
+   * `videoTitle: "Menu tindakan"` — the row's overflow button, not a video.
+   * So the false pass 0.39.11 was written to kill had not died; it had changed
+   * shape, from `id:reel_recycler` to a cast control, and the suite could not
+   * see either. `search-play` on the same run returned
+   * `id:watch_player (after advert)` and a real title, which is what a healthy
+   * result looks like and why the difference was worth chasing rather than
+   * banking as 2 of 2.
+   * A rung that proves a player must not match a control offering to play
+   * somewhere ELSE. This one narrows the evidence; it does not add another
+   * rung, which is what the previous three repairs to this function all did.
    *
    * **0.39.11 — a search result was the bottom navigation, and one member
    * reported success for tapping Shorts.**

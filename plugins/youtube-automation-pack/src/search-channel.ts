@@ -640,9 +640,22 @@ export function playerEvidence(tree: UiNode): { playing: boolean; via: string } 
   const byId = nodes.find((n) => hasId(n, 'player_view') || hasId(n, 'watch_player') || hasId(n, 'player_control_play_pause_replay_button') || hasId(n, 'time_bar_current_time') || hasId(n, 'reel_watch_player') || hasId(n, 'reel_recycler'))
   if (byId) return { playing: true, via: `id:${byId.resourceId.split('/').pop() ?? ''}` }
 
-  // The transport control, in both languages this farm might be in. A player
-  // shows exactly one of pause/play at a time.
-  const transport = nodes.find((n) => /^(jeda|pause|putar|play|mainkan)\b/.test(label(n)))
+  /*
+    The transport control, in both languages this farm might be in. A player shows exactly one of
+    pause/play at a time.
+
+    The exclusion is not cosmetic (0.39.12). "Putar di perangkat lain" — YouTube's CAST button —
+    begins with `putar` and matched this rung, and that button is drawn on the results page too, not
+    only on a player. Measured on the owner's moto g06, 2026-09-17: `watch-video` returned
+    `played: true` with `playEvidence: "transport:putar di perangkat lain"` and
+    `videoTitle: "Menu tindakan"` (the row overflow button, not a video) — a false pass that
+    survived the `resultRowsOf` repair earlier the same day by simply changing shape, from
+    `id:reel_recycler` to a cast control.
+
+    A rung that proves a player must not match a control offering to play somewhere ELSE.
+  */
+  const CAST = /\b(perangkat lain|another device|chromecast|cast)\b/i
+  const transport = nodes.find((n) => /^(jeda|pause|putar|play|mainkan)\b/.test(label(n)) && !CAST.test(rawLabel(n)))
   if (transport) return { playing: true, via: `transport:${label(transport).slice(0, 24)}` }
 
   // A timestamp pair like "0:12 / 11:10" only ever appears on a player.
