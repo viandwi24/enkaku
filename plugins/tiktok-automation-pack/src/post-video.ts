@@ -603,6 +603,24 @@ async function enterScreen(
     if (round > 0) await sleep(2_000)
     const swept = await sweepModals(ctx, policies)
     for (const id of swept.cleared) if (!cleared.includes(id)) cleared.push(id)
+    /*
+      The modal register is not the only register (1.49.1). `interruptions.ts` carries the sheets that
+      cover a screen without being one of the upload flow's own modals — the viewer-history sheet most
+      of all — and nothing here ever consulted it: production #34 (2026-09-16, tiktok@1.49.0) sat under
+      "Riwayat penonton diaktifkan" and failed `expected the "camera" screen … (no modal matched)`,
+      naming the camera for a sheet the farm already knows how to close. Swept only when the modal
+      register found nothing, so the two can never fight over the same tap, and never fatal: an
+      inspector that will not answer leaves the round exactly as it was.
+    */
+    if (swept.cleared.length === 0) {
+      try {
+        const { dismissed } = await dismissInterruptions(ctx)
+        for (const id of dismissed) if (!cleared.includes(id)) cleared.push(id)
+        if (dismissed.length > 0) ctx.log.info('closed an interruption that was covering the screen', { dismissed: dismissed.join(', ') })
+      } catch {
+        // The inspector is not dependable on this app; the settle loop is the fallback it always was.
+      }
+    }
     const read = await ctx.device.dump()
     tree = read
     screen = detectScreen(read)

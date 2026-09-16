@@ -936,6 +936,11 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.49.1 — a screen wait also closes what the INTERRUPTIONS register knows. Production #34 (2026-09-16, on
+  //   1.49.0) failed "expected the camera screen but the dump reads unknown (no modal matched)" while TikTok's
+  //   "Riwayat penonton diaktifkan" sheet covered it — a sheet `interruptions.ts` has known since 1.44.0, which
+  //   `enterScreen` never consulted because it swept the MODAL register alone. It now sweeps interruptions too,
+  //   but only in a round the modal register cleared nothing, and never fatally.
   // 1.49.0 — the comment sheet is left properly, and a keyboard over the feed is closed. The owner found a phone
   //   parked in TikTok's comments during a warm-up, the farm's own keyboard flickering under it: a swipe inside the
   //   sheet ended on "Tambahkan komentar…", the field took focus, and the single BACK that followed closed the
@@ -1267,7 +1272,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.49.0',
+  version: '1.49.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
