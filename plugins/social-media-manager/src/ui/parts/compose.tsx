@@ -46,7 +46,6 @@ import {
 import {
   DevicePicker,
   newPick,
-  normaliseLabel,
   pickRefusal,
   resolvePick,
   type DevicePick,
@@ -81,11 +80,12 @@ import {
  *
  * ## The two sentences this screen exists to say
  *
- * - **"goes to 38 phones"** — the fleet the choice above resolves to, worked
- *   out the same way `planDispatch` works it out on the service side: with no
- *   phones chosen, every phone carrying a chosen platform's label; with phones
- *   chosen (by name or by label), exactly those phones. A screen whose count
- *   disagreed with the router would promise phones and send to none.
+ * - **"goes to 38 phones"** — the fleet the choice above resolves to. Since
+ *   0.40.0 every choice is an EXPLICIT list of phones, and `planDispatch` sends
+ *   a row carrying one to exactly those phones, labelled for the platform or
+ *   not — so this count and the router's are the same list by construction. A
+ *   screen whose count disagreed with the router would promise phones and send
+ *   to none.
  * - **"about 20 to 59 minutes from Start"** — the span `planSchedule` will
  *   actually produce: it draws a gap BETWEEN successive turns, so forty videos
  *   have thirty-nine gaps, not forty. Concurrency is a cap on how many may be
@@ -95,21 +95,6 @@ import {
  * Both are estimates and both say so with the word "about". Nothing on this
  * panel words a thing that has not happened yet as done.
  */
-
-// ---------------------------------------------------------------------------
-// Resolving a fleet — the same rule the service side applies
-// ---------------------------------------------------------------------------
-
-function carriesPlatform(device: Device, platform: PlatformId): boolean {
-  const want = normaliseLabel(platformLabel(platform))
-  return device.labels.some((l) => normaliseLabel(l.name) === want)
-}
-
-/** Which phones this screen is about to reach, for the platforms chosen. */
-function resolveFleet(pool: readonly Device[], platforms: readonly PlatformId[]): Device[] {
-  if (platforms.length === 0) return []
-  return pool.filter((d) => platforms.some((p) => carriesPlatform(d, p)))
-}
 
 // ---------------------------------------------------------------------------
 // The pacing sentence
@@ -272,9 +257,10 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
   */
   const [platforms, setPlatforms] = useState<ReadonlySet<PlatformId>>(() => new Set<PlatformId>())
   /*
-    One pick, the shared five options (0.39.0). `labelled` is still the default
-    and still the only mode that sends no ids at all, which is what keeps every
-    session created without touching this control meaning exactly what it did.
+    One pick, the shared four options (0.40.0). Every one of them resolves to an
+    explicit list of phones, so a session created here never routes by a
+    platform's label again — the picker says that under itself, and the refusals
+    below stop a pick that resolves to nobody from ever becoming a session.
   */
   const [pick, setPick] = useState<DevicePick>(() => newPick())
   const [assignment, setAssignment] = useState<'one-per-phone' | 'every-phone'>('one-per-phone')
@@ -359,38 +345,33 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
   const pool = useMemo(() => resolvePick(pick, fleet), [pick, fleet])
 
   /*
-    The router's own rule (`posts.ts` `planDispatch`): phones the operator
-    CHOSE are eligible for the chosen platforms as they are; only the default
-    mode, where nothing is chosen, lets the platform label pick the fleet. A
-    count that applied the label to a chosen pool would promise nothing and
-    deliver nothing — the owner's production session of 2026-09-14 was
-    exactly that.
+    The router's own rule (`posts.ts` `planDispatch`): phones the operator CHOSE
+    are eligible for the chosen platforms as they are. Every mode chooses phones
+    now, so the pool IS the answer — a count that narrowed it by the platform's
+    label on top would promise phones the router will not filter, and the owner's
+    production session of 2026-09-14 was the same mistake in the other direction.
+    The platforms still gate it: with none picked nothing has anywhere to go.
   */
-  const resolved = useMemo(
-    () => (pick.mode === 'labelled' ? resolveFleet(pool, chosenPlatforms) : chosenPlatforms.length === 0 ? [] : pool),
-    [pick.mode, pool, chosenPlatforms],
-  )
+  const resolved = useMemo(() => (chosenPlatforms.length === 0 ? [] : pool), [pool, chosenPlatforms])
   const onlineResolved = useMemo(() => resolved.filter((d) => d.status === 'online').length, [resolved])
 
   /**
-   * What actually goes in `deviceIds`.
+   * What actually goes in `deviceIds` — always a list, never empty (0.40.0).
    *
-   * Empty for the default mode, because an empty array means *any phone
-   * carrying the platform's label* to `newPost`, which is exactly what the
-   * default says. In the other two modes the pool is sent BEFORE the platform
-   * filter: narrowing it here to the phones that already carry the label would
-   * silently drop a phone the operator labels an hour from now, and this list
-   * is stored on the row for as long as the session lives.
+   * An EMPTY `deviceIds` still means "any phone carrying the platform's label"
+   * to `newPost`, and sessions written before 0.40.0 carry one and still route
+   * that way. This screen can no longer produce that shape: every mode names
+   * phones, and a mode that names none is refused above rather than submitted
+   * as an empty list that would silently mean something else entirely.
+   *
+   * One video per phone sends the RESOLVED phones (0.12.0), so `add-group` can
+   * pair each video with a phone when the session is created — the pairing the
+   * owner expects to be fixed from the moment the spread is drawn. Every-phone
+   * sessions send the pool itself, which is the same list.
    */
-  /*
-    One video per phone sends the RESOLVED phones in every mode (0.12.0), so `add-group` can pair
-    each video with a phone when the session is created — the pairing the owner expects to be fixed
-    from the moment the spread is drawn. Every-phone sessions keep the older meaning: empty = any
-    phone carrying the platform's label.
-  */
   const deviceIds = useMemo(
-    () => (assignment === 'one-per-phone' ? resolved.map((d) => d.id) : pick.mode === 'labelled' ? [] : pool.map((d) => d.id)),
-    [assignment, resolved, pick.mode, pool],
+    () => (assignment === 'one-per-phone' ? resolved.map((d) => d.id) : pool.map((d) => d.id)),
+    [assignment, resolved, pool],
   )
 
   // --- videos ---------------------------------------------------------------
@@ -537,11 +518,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
       is not something this page may create.
     */
     if (chosenPlatforms.length > 0 && resolved.length === 0) {
-      out.push(
-        pick.mode === 'labelled'
-          ? `No phone carries the ${chosenPlatforms.map((p) => `“${platformLabel(p)}”`).join(' or ')} label, so nothing would ever be sent. Label the phones that post to it on the Devices screen, or choose phones by name below.`
-          : 'The phones you chose resolve to none, so nothing would ever be sent. Choose at least one phone.',
-      )
+      out.push('The phones you chose resolve to none, so nothing would ever be sent. Choose at least one phone.')
     }
     if (host === null) {
       out.push('No phone is online. The farm runs this session’s bookkeeping as a job on a phone, so one has to be reachable — nothing is posted by that job.')
@@ -873,7 +850,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
         <Step
           n={4}
           title="Which phones"
-          hint="The first option lets each platform’s own label pick the phones. Every other option names the phones itself, and the label is then no longer checked."
+          hint="Every option names the phones itself, so the platform’s label no longer decides anything here. Tick a platform’s own label under “Phones with the labels I choose” to reach exactly the phones it used to."
         >
           {/* The one chooser, shared with Cleanup and Accounts sync (0.39.0) — same options, same words, same refusals. */}
           <DevicePicker fleet={fleet} loading={devices.loading} error={devices.error} onRetry={devices.reload} value={pick} onChange={setPick} />
@@ -889,11 +866,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
             ) : devices.loading && devices.data === null ? (
               <span className="text-dim">Counting the fleet…</span>
             ) : resolved.length === 0 ? (
-              <span className="text-warn">
-                {pick.mode === 'labelled'
-                  ? `Goes to no phone: nothing in this farm carries the ${chosenPlatforms.map((p) => `“${platformLabel(p)}”`).join(' or ')} label.`
-                  : 'Goes to no phone: the phones you chose resolve to none.'}
-              </span>
+              <span className="text-warn">Goes to no phone: the phones you chose resolve to none.</span>
             ) : (
               <>
                 <span className="font-medium">
@@ -901,8 +874,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
                 </span>
                 <span className="text-dim">
                   {' '}
-                  ({onlineResolved} online right now
-                  {pick.mode === 'labelled' ? '' : `, narrowed from ${fleet.length}`})
+                  ({onlineResolved} online right now, out of {fleet.length})
                 </span>
               </>
             )}

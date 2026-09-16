@@ -30,36 +30,40 @@ import { deviceName, type Device } from '../shared'
  * disagreed in wording as well as in content, so the same sentence meant
  * different things one tab apart.
  *
- * ## Five options, not four, and why the fifth is first
+ * ## Four options, and what every one of them costs
  *
- * The four the owner asked for are here under their own names. The fifth,
- * **Any phone carrying the platform's label**, is the DEFAULT and is kept on
- * purpose: it is the only mode that stores nothing, and storing nothing is
- * what `add-group` reads as "any phone carrying that platform's label"
- * (`posts.ts` `planDispatch`: an empty `deviceIds` keeps the label check, a
- * non-empty one SKIPS it). Folding it into "All devices" would have turned
- * every existing session's meaning into "the whole fleet, label or not" — a
- * widening nobody asked for, discovered only when a phone with no TikTok
- * account failed a TikTok post.
+ * 0.39.0 kept a fifth — *Any phone carrying the platform's label* — as the
+ * default, because it is the only shape that stores NO ids, and an empty
+ * `deviceIds` is exactly what `add-group` reads as "any phone carrying that
+ * platform's label" (`posts.ts` `planDispatch`: an empty list keeps the label
+ * check, a non-empty one SKIPS it). The owner dropped it (2026-09-16): four
+ * options, the four they asked for, and no fifth thing to explain.
  *
- * So "All devices" means exactly what it says: **every phone in the farm**,
- * sent as an explicit list, with the platform's label no longer consulted.
- * That is a real consequence and the control says so under itself, in one
- * line, every time it is chosen — the one place an operator can read it
- * before pressing the button rather than after the post fails.
+ * So every pick this control can make now resolves to an EXPLICIT list of
+ * phones, and the platform's label decides nothing about what a new session
+ * sends. That is a real widening, and the control states it under itself every
+ * time rather than leaving an operator to meet it as a post that failed on a
+ * phone nobody was signed in on.
+ *
+ * The default is **Phones with the labels I choose**, because ticking a
+ * platform's own label (`tiktok`, `youtube`, `instagram`) reaches exactly the
+ * phones the old default reached: the behaviour that went away is one tick
+ * away rather than gone, and the consequence line under the control says so.
+ *
+ * Sessions created BEFORE this change still carry an empty `deviceIds` and
+ * still route by label. Nothing here rewrites a stored row and the member is
+ * untouched — this is a change to what the SCREEN offers, not to what the farm
+ * already agreed to do.
  *
  * ## What it reports
  *
- * `resolvePick` turns a pick and the fleet into the phones it means. It
- * resolves `labelled` to the WHOLE fleet — the pool, not the answer: the
- * platform's label is applied by the caller, which is the only side that
- * knows which platforms are ticked. Every other mode resolves to its final
- * list. Callers branch on `pick.mode` for that one difference and on nothing
- * else.
+ * `resolvePick` turns a pick and the fleet into the phones it means — the
+ * final list, in every mode. Callers pass those ids and count them; none of
+ * them branches on the mode any more.
  */
 
-/** The five ways to say which phones. `labelled` is the default and the only one that stores no ids. */
-export type DeviceMode = 'labelled' | 'all' | 'devices' | 'labels' | 'groups'
+/** The four ways to say which phones. Every one of them resolves to an explicit list. */
+export type DeviceMode = 'all' | 'devices' | 'labels' | 'groups'
 
 export interface DevicePick {
   mode: DeviceMode
@@ -76,12 +80,12 @@ export interface DevicePick {
  *
  * A phone with no group is still a phone somebody has to be able to reach, and
  * leaving it out of a group-shaped choice would hide part of the fleet behind
- * a control that looks complete. The NUL prefix is what keeps it from ever
- * colliding with a real group id, which never contains one.
+ * a control that looks complete. A farm group id is a farm-issued id, never
+ * this literal.
  */
 export const NO_GROUP = '__ungrouped__'
 
-export function newPick(mode: DeviceMode = 'labelled'): DevicePick {
+export function newPick(mode: DeviceMode = 'labels'): DevicePick {
   return { mode, deviceIds: new Set<string>(), labelNames: new Set<string>(), groupIds: new Set<string>() }
 }
 
@@ -100,15 +104,9 @@ export function deviceMatches(d: Device, query: string): boolean {
   return haystack.some((h) => h.toLowerCase().includes(q))
 }
 
-/**
- * The phones a pick means, out of the fleet as it was read.
- *
- * `labelled` answers the whole fleet — the POOL the caller then narrows by the
- * platform's own label. Every other mode answers the final list.
- */
+/** The phones a pick means, out of the fleet as it was read — the final list, in every mode. */
 export function resolvePick(pick: DevicePick, fleet: readonly Device[]): Device[] {
   switch (pick.mode) {
-    case 'labelled':
     case 'all':
       return [...fleet]
     case 'devices':
@@ -125,29 +123,31 @@ export function resolvePick(pick: DevicePick, fleet: readonly Device[]): Device[
 /**
  * Why this pick cannot be used yet, in the operator's own terms — or `null`.
  *
- * An explicit mode with nothing ticked is the one shape that reads as harmless
- * and is not: it would quietly fall back to meaning the whole fleet, which is
- * the opposite of what the operator just chose.
+ * A mode with nothing ticked resolves to NO phone. Since every mode is an
+ * explicit list, that is not a harmless empty choice that falls back to
+ * something sensible — it is a session, a cleaning or a sync that would be
+ * created and could never reach anybody. The panels refuse it here rather than
+ * letting it be discovered as a batch that sits and sends nothing.
  */
 export function pickRefusal(pick: DevicePick): string | null {
   if (pick.mode === 'devices' && pick.deviceIds.size === 0) {
-    return '“Only the phones I choose” is chosen and no phone is ticked — an empty choice would quietly mean every labelled phone, which is not what it says.'
+    return '“Only the phones I choose” is chosen and no phone is ticked — this would reach no phone at all.'
   }
   if (pick.mode === 'labels' && pick.labelNames.size === 0) {
-    return '“Phones with the labels I choose” is chosen and no label is ticked — an empty choice would quietly mean every labelled phone, which is not what it says.'
+    return '“Phones with the labels I choose” is chosen and no label is ticked — this would reach no phone at all.'
   }
   if (pick.mode === 'groups' && pick.groupIds.size === 0) {
-    return '“Phones in the groups I choose” is chosen and no group is ticked — an empty choice would quietly mean every labelled phone, which is not what it says.'
+    return '“Phones in the groups I choose” is chosen and no group is ticked — this would reach no phone at all.'
   }
   return null
 }
 
 /** What each mode does to the platform's own label, said once, under the control that does it. */
 const CONSEQUENCE: Record<DeviceMode, string> = {
-  labelled: 'Each platform goes only to the phones carrying its own label — a phone without it is never sent to.',
   all: 'Every phone in the farm, and the platform’s label is no longer checked: a phone not signed in to that platform fails its own job by name rather than being skipped.',
   devices: 'Exactly the phones ticked, and the platform’s label is no longer checked — a phone not signed in to it fails its own job by name.',
-  labels: 'Every phone carrying one of these labels, and the platform’s label is no longer checked on top of them.',
+  labels:
+    'Every phone carrying one of these labels. Tick a platform’s own label — “tiktok”, “youtube”, “instagram” — to reach exactly the phones that platform used to reach on its own; nothing checks the label a second time.',
   groups: 'Every phone in these groups, and the platform’s label is no longer checked on top of them.',
 }
 
@@ -216,7 +216,6 @@ export function DevicePicker({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="labelled">Any phone carrying the platform’s label</SelectItem>
           <SelectItem value="all">All phones in the farm</SelectItem>
           <SelectItem value="devices">Only the phones I choose</SelectItem>
           <SelectItem value="labels">Phones with the labels I choose</SelectItem>

@@ -30,12 +30,11 @@ import {
   deviceName,
   listAccountRows,
   listDevices,
-  platformLabel,
   type AccountRow,
   type Device,
   type PlatformId,
 } from '../shared'
-import { DevicePicker, newPick, normaliseLabel, pickRefusal, resolvePick, type DevicePick } from './device-picker'
+import { DevicePicker, newPick, pickRefusal, resolvePick, type DevicePick } from './device-picker'
 
 /**
  * The Accounts tab (0.37.0).
@@ -64,13 +63,13 @@ import { DevicePicker, newPick, normaliseLabel, pickRefusal, resolvePick, type D
  * draft cleaning can, and inventing a second way to report that would be a
  * second vocabulary for one farm.
  *
- * Which phones is asked by the shared `DevicePicker` (0.39.0), in the same five
- * options and the same words as New session and Cleanup. The label-driven
- * default keeps this tab's own refinement — a phone is asked only about the
- * platforms it carries — because sending `instagram` to a phone labelled
- * `tiktok` only buys a job that opens an app nobody signed into. Every other
- * mode is the operator naming the phones while looking at them, so every
- * platform they ticked is sent to every phone they picked.
+ * Which phones is asked by the shared `DevicePicker` (0.40.0), in the same four
+ * options and the same words as New session and Cleanup. Every option names the
+ * phones explicitly, so every platform ticked is read on every phone picked —
+ * the operator is looking at both lists as they choose them. The refinement
+ * this tab used to apply (asking a phone only about the platforms it carries)
+ * went with the label-driven mode that fed it; picking "Phones with the labels
+ * I choose" and ticking that platform's own label asks exactly those phones.
  */
 
 /** The platforms a sync can read. All three are label-routed the same way the rest of this page routes. */
@@ -170,22 +169,16 @@ export function AccountsPanel(): ReactElement {
   /**
    * Which phones are asked about which platforms.
    *
-   * By label, a phone is asked only about the platforms it actually carries:
-   * sending `instagram` to a phone labelled `tiktok` only buys a job that opens
-   * an app nobody signed into. By hand, the operator's list wins for every
-   * platform they picked — they are looking at the phones as they choose them.
+   * Every phone the pick resolves to is asked about every platform ticked: a
+   * pick is an explicit list now, and the operator is looking at both lists
+   * while they make them. A phone asked about a platform nobody signed into on
+   * it answers "no account signed in", which is a fact worth storing rather
+   * than a failure — untick the platform to skip the trip entirely.
    */
   const targets = useMemo((): { deviceId: string; platforms: PlatformId[] }[] => {
     const picked = SYNCABLE.filter((p) => platforms.has(p.id)).map((p) => p.id)
     if (picked.length === 0) return []
-    if (pick.mode !== 'labelled') return resolvePick(pick, fleet).map((d) => ({ deviceId: d.id, platforms: picked }))
-    const out: { deviceId: string; platforms: PlatformId[] }[] = []
-    for (const device of fleet) {
-      const names = new Set(device.labels.map((l) => normaliseLabel(l.name)))
-      const mine = picked.filter((id) => names.has(normaliseLabel(platformLabel(id))))
-      if (mine.length > 0) out.push({ deviceId: device.id, platforms: mine })
-    }
-    return out
+    return resolvePick(pick, fleet).map((d) => ({ deviceId: d.id, platforms: picked }))
   }, [platforms, pick, fleet])
 
   /** One `run-script` call per distinct platform set, so a phone is never sent a platform it does not carry. */

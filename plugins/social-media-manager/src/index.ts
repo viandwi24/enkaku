@@ -77,6 +77,21 @@ import {
  *
  * ## Changelog
  *
+ * - **0.40.0 — four options, and this screen stops routing by label.** The owner
+ *   (2026-09-16) dropped the fifth option 0.39.0 had kept. The picker now offers
+ *   exactly four, everywhere: all phones in the farm, only the phones I choose,
+ *   phones with the labels I choose (the default), phones in the groups I choose.
+ *   Ticking a platform's own label under that default reaches exactly the phones
+ *   the old label-driven option reached, which is where that behaviour lives now.
+ *   Every option resolves to an EXPLICIT list of phones, so `planDispatch` no
+ *   longer checks a platform's label for anything a NEW session sends: a phone
+ *   not signed in to it fails its own job by name rather than being skipped. The
+ *   control says that under itself, and New session refuses a pick that resolves
+ *   to nobody rather than writing a session that could never send. **Sessions
+ *   created before this still carry an empty `deviceIds` and still route by
+ *   label** — no stored row was migrated and `smm/add-group` is unchanged.
+ *   Cleanup and Accounts sync send every platform ticked to every phone picked;
+ *   the per-phone refinement Accounts sync applied went with the mode that fed it.
  * - **0.39.0 — one phone chooser, the same five options everywhere.** The owner
  *   (2026-09-16) asked why the manager only offered a label choice, and they were
  *   right about the cause: the three panels that ask "which phones" had each
@@ -1309,7 +1324,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.39.0',
+  version: '0.40.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

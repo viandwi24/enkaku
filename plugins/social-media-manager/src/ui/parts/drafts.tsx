@@ -14,8 +14,8 @@ import {
   cn,
   describeApiError,
 } from '@enkaku/ui'
-import { CORE, deviceName, listDevices, platformLabel, type Device, type PlatformId } from '../shared'
-import { DevicePicker, newPick, normaliseLabel, pickRefusal, resolvePick, type DevicePick } from './device-picker'
+import { CORE, deviceName, listDevices, type Device, type PlatformId } from '../shared'
+import { DevicePicker, newPick, pickRefusal, resolvePick, type DevicePick } from './device-picker'
 
 /**
  * The drafts cleaner (0.32.0).
@@ -27,9 +27,9 @@ import { DevicePicker, newPick, normaliseLabel, pickRefusal, resolvePick, type D
  *
  * Deleting a draft is permanent, so a real run asks first; a dry run only opens the lists and counts.
  *
- * Which phones is asked by the shared `DevicePicker` (0.39.0) — the same five options in the same words as New session
- * and Accounts sync. This tab dispatches straight to `/api/actions/run-script` with device ids, so every mode but the
- * default is simply a filter over the fleet; nothing here goes through `add-group`'s empty-list meaning.
+ * Which phones is asked by the shared `DevicePicker` (0.40.0) — the same four options in the same words as New session
+ * and Accounts sync. This tab dispatches straight to `/api/actions/run-script` with device ids, so a pick is simply a
+ * filter over the fleet: every platform ticked is cleaned on every phone the pick resolves to.
  */
 
 /** The platforms whose pack has a `clear-drafts` member — all three since 0.33.0 (YouTube 0.39.0). */
@@ -91,19 +91,15 @@ export function DraftsPanel(): ReactElement {
   const fleet = devices ?? []
   const byId = useMemo(() => new Map(fleet.map((d) => [d.id, d])), [fleet])
 
-  /** The phones the picker's own mode resolves to — the whole fleet on the default, where the label decides instead. */
+  /** The phones the pick resolves to — an explicit list, in every mode. */
   const picked = useMemo(() => resolvePick(pick, fleet), [pick, fleet])
 
-  /** Per platform, the phones it goes to: the platform's label on the default, or exactly the phones the pick resolved to. */
+  /** Per platform, the phones it goes to: every platform ticked is cleaned on every phone picked. */
   const targets = useMemo(() => {
     const out = new Map<PlatformId, Device[]>()
-    for (const id of platforms) {
-      const want = normaliseLabel(platformLabel(id))
-      const phones = pick.mode === 'labelled' ? fleet.filter((d) => d.labels.some((l) => normaliseLabel(l.name) === want)) : picked
-      out.set(id, phones)
-    }
+    for (const id of platforms) out.set(id, picked)
     return out
-  }, [platforms, pick.mode, picked, fleet])
+  }, [platforms, picked])
   /** The videos sweep goes to every phone any picked platform reaches — each phone once. */
   const videoPhones = useMemo(() => {
     const seen = new Map<string, Device>()
