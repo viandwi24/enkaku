@@ -684,8 +684,15 @@ describe('createSession — one wake per session start (plan 125 §3.7, §5 step
     return { client, calls }
   }
 
-  /** How many times `wakeDevice` ran, read off the wire rather than a spy. */
-  const wakeCount = (calls: string[]): number => calls.filter((c) => c === 'input keyevent 224').length
+  /**
+   * How many times `wakeDevice` ran, read off the wire rather than a spy.
+   *
+   * The wake nudge, counted however `wake.ts` sent it: on its own down an open
+   * control socket, or — the shell rung, which is what a session build with no
+   * `injectKey` takes — batched with the keyguard probe into one adb round
+   * trip (plan 228 §3.3).
+   */
+  const wakeCount = (calls: string[]): number => calls.filter((c) => c === 'input keyevent 224' || c.startsWith('input keyevent 224;')).length
 
   test('the baseline: a device nothing is holding awake gets EXACTLY ONE wake, never zero', async () => {
     const { client, calls } = recordingClient()
@@ -754,6 +761,42 @@ describe('createSession — one wake per session start (plan 125 §3.7, §5 step
     expect(wakeCount(calls)).toBe(0)
     await session.close()
     expect(calls).not.toContain('svc power stayon false')
+  })
+
+  /**
+   * Plan 228 §3.4 — the shutdown's own skip.
+   *
+   * `daemon.stop()` runs the wake-release sweep (`readiness.releaseAll()`)
+   * immediately BEFORE closing the sessions, and that sweep already drops
+   * every device's `stay_on_while_plugged_in` and presses sleep. Without this
+   * flag the close below writes the identical value to every phone in the farm
+   * a second time, and adb is serialised per device, so it is a full round trip
+   * each — on the one path where an operator is watching a progress banner.
+   */
+  test('skipPowerRevert: the shutdown path does not write a stayon release the release sweep already made', async () => {
+    const { client, calls } = recordingClient()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', keepAwake: 'always' },
+      { client, log: silentLog() },
+    )
+    const before = calls.length
+    await session.close({ skipPowerRevert: true })
+    const afterClose = calls.slice(before)
+    expect(afterClose.some((c) => c.startsWith('svc power stayon'))).toBe(false)
+    expect(afterClose.some((c) => c.startsWith('settings put global stay_on_while_plugged_in'))).toBe(false)
+    // The rest of the teardown is untouched — this skips the POWER write only,
+    // never the device-scoped state that has nobody else to put it back.
+    expect(afterClose).toContain(`setprop ${FARM_TAG_PROPERTY} ''`)
+  })
+
+  test('skipPowerRevert is opt-in per call: a close with no options releases as it always did', async () => {
+    const { client, calls } = recordingClient()
+    const session = await createSession(
+      { deviceId: 'dev-1', serial: 'SER1', stableId: 'STABLE1', keepAwake: 'always' },
+      { client, log: silentLog() },
+    )
+    await session.close({})
+    expect(calls).toContain('svc power stayon false')
   })
 
   test('keepAwake: "off" is still opted out entirely, with or without skipWake', async () => {

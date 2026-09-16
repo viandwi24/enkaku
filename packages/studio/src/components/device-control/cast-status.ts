@@ -42,6 +42,13 @@ export interface CastStatus {
  * scrcpy repeats the previous frame about ten times a second even on a
  * completely static screen, so silence this long is a real stall, not an
  * idle phone.
+ *
+ * It must stay ABOVE `use-cast.ts`'s `STALE_KEYFRAME_AFTER_SEC` (plan 228
+ * §3.7): the recovery a frozen stream needs is a keyframe nudge, and the
+ * ordering is what decides whether the operator is shown a word about it
+ * before or after the attempt. With the nudge at 6 s and this at 5 s, a tile
+ * read "No frames" for a full second before anything had even tried; with the
+ * nudge at 3 s, most stalls resolve without the operator seeing a label at all.
  */
 export const LIVE_STALE_SEC = 5
 

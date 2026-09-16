@@ -14,11 +14,24 @@ import type { UseCast } from './use-cast'
 export function Cast({
   cast,
   ratio,
+  height,
   latencyOverlay,
   onStartDrag,
 }: {
   cast: UseCast
   ratio: number
+  /**
+   * The window's own height, the one size the operator drags (plan 228 §3.6).
+   *
+   * `castWidthPx` was called here with no height at all, so it fell back to
+   * `DEFAULT_WINDOW_HEIGHT_PX` and the cast surface was capped at the width
+   * that suits a 640px window however tall the operator had actually made it.
+   * A resized window therefore letterboxed its own picture: the column had
+   * the room, and the `maxWidth` would not let the phone grow into it. The
+   * window's width already comes from this height through `windowWidthPx`, so
+   * passing it keeps the two halves of the same formula in agreement.
+   */
+  height: number
   latencyOverlay: boolean
   onStartDrag: (e: React.MouseEvent) => void
 }) {
@@ -70,7 +83,20 @@ export function Cast({
       <div className="flex flex-1 items-center justify-center overflow-hidden p-4">
         <div
           className="relative overflow-hidden rounded-window border border-border-2 shadow-cast"
-          style={{ aspectRatio: `${stats.width || 9} / ${stats.height || 19.5}`, maxWidth: castWidthPx(ratio) - 36, maxHeight: '100%' }}
+          /*
+            `ratio`, not `stats.width / stats.height` (plan 228 §3.6).
+
+            The two used to disagree, and that disagreement was visible: the
+            aspect ratio came from whatever stream was on screen while the
+            `maxWidth` beside it came from `ratio`, which the window itself is
+            sized from. So while the always-on wall stream stood in for the
+            control encoder, the surface was shaped for the stand-in inside a
+            column shaped for the device — and the picture moved when the two
+            reconciled at the switch. `DeviceControl` owns that decision now
+            (see its `ratio`); this reads the one number so the surface, the
+            column and the window can never be sized from different answers.
+          */
+          style={{ aspectRatio: String(ratio), maxWidth: castWidthPx(ratio, height) - 36, maxHeight: '100%' }}
         >
           {!live && (
             <div
