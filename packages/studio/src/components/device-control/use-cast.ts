@@ -205,7 +205,14 @@ export interface ClipboardEntry {
 const CLIPBOARD_HISTORY_MAX = 50
 
 function metaOf(e: { shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean }) {
-  return { shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey }
+  /*
+    `meta` is deliberately never passed on (2026-09-16). On Android the Meta key IS the system
+    shortcut modifier — META_ON plus H or Enter is Home, plus Tab is Recents, plus Backspace is Back —
+    so a held Cmd on a Mac (or the Windows key) turned ordinary typing into "the app I was in just
+    closed", which is exactly what the owner reported. Nothing in Studio asks for an Android system
+    shortcut, so the flag is dropped at the one place every key event is built.
+  */
+  return { shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: false }
 }
 
 /** How often the fps readout may re-render Device Control. The value behind it is a 3-second rolling average, so anything faster is noise. */
@@ -860,6 +867,14 @@ export function useCast(opts: UseCastOptions): UseCast {
     }
   }
 
+  /** Lift every key this window is holding on the device — used when a chord takes over, and on blur. */
+  function releaseHeldKeys() {
+    for (const code of downKeysRef.current) {
+      sendInput((id) => ({ type: 'input.keyEvent', payload: { deviceId: id, action: 'up', code, meta: { shift: false, ctrl: false, alt: false, meta: false } } }))
+    }
+    downKeysRef.current.clear()
+  }
+
   function onKeyDown(e: React.KeyboardEvent<HTMLCanvasElement>) {
     if (!interactive) return
     if ((e.metaKey || e.ctrlKey) && e.code === 'KeyV') {
@@ -870,13 +885,26 @@ export function useCast(opts: UseCastOptions): UseCast {
     }
     e.preventDefault()
     e.stopPropagation()
+    /*
+      A held Cmd (or Windows key) reaches the phone as Android's own system-shortcut modifier, and the
+      phone acts on it: Meta+H and Meta+Enter go Home, Meta+Tab opens Recents, Meta+Backspace goes
+      Back. The owner met it as "holding Cmd suddenly closed the app I had open" (2026-09-16). Cmd+V
+      is answered above as paste; anything else held under Cmd is not sent at all, and whatever was
+      already down is released first so no key can stick on the device.
+    */
+    if (e.metaKey) {
+      releaseHeldKeys()
+      return
+    }
     if (e.repeat) return
     const hk = hotkeyFor({ code: e.code, altKey: e.altKey, shiftKey: e.shiftKey })
     if (hk) {
       runHotkey(hk.id)
       return
     }
-    if (!isDomCode(e.code)) return
+    // The modifier itself is never forwarded either: `MetaLeft`/`MetaRight` are Android 117/118, and a
+    // phone that receives one holds the system-shortcut modifier down until a key-up it may never see.
+    if (!isDomCode(e.code) || e.code === 'MetaLeft' || e.code === 'MetaRight') return
     downKeysRef.current.add(e.code)
     sendInput((id) => ({ type: 'input.keyEvent', payload: { deviceId: id, action: 'down', code: e.code as DomCode, meta: metaOf(e) } }))
   }
@@ -885,7 +913,7 @@ export function useCast(opts: UseCastOptions): UseCast {
     if (!interactive) return
     e.preventDefault()
     e.stopPropagation()
-    if (!isDomCode(e.code)) return
+    if (!isDomCode(e.code) || e.code === 'MetaLeft' || e.code === 'MetaRight') return
     if (!downKeysRef.current.delete(e.code)) return
     sendInput((id) => ({ type: 'input.keyEvent', payload: { deviceId: id, action: 'up', code: e.code as DomCode, meta: metaOf(e) } }))
   }
