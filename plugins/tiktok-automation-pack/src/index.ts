@@ -976,6 +976,18 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.49.4 — the emoji diagnosis wins on the second round too. Production #27 (2026-09-16) lost exactly one
+  //   character of its caption — a 📊 the `scrcpy-text` path cannot carry, because that phone's active keyboard
+  //   is its own and not the guest agent's — and because the mismatch was noticed on round 2, the run reported
+  //   the generic "the field holds X but the caption to post is Y" and asked the operator to spot the difference
+  //   between two nearly identical strings. The round a mismatch is seen on says nothing about its cause: when
+  //   the ONLY difference is characters the typing path cannot carry, that is the answer either time, and the
+  //   answer names the fix (make the guest agent keyboard active on that phone).
+  //   Also in 1.49.4: when the camera's gallery button cannot be found, the failure now carries where the
+  //   capture-mode strip sits and which clickables share its row. Production #73 (2026-09-16) hit that
+  //   branch on a build with neither `upload_hot_area` nor anything clickable left of "POST", and the
+  //   message named only the two things that were missing — nothing a third anchor could be built from,
+  //   on a farm that was hours from being switched off. This reports what it saw; it guesses no new tap.
   // 1.49.3 — a caption that put TikTok back on the editor is walked forward again, once. Production #24
   //   (2026-09-16) typed its caption through the agent IME and the next read found the EDITOR — the saved
   //   screenshot is that screen plainly, and its dump carries `prf` "Berikutnya", the button this flow
@@ -1324,7 +1336,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.49.3',
+  version: '1.49.4',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

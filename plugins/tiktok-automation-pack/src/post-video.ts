@@ -1918,8 +1918,18 @@ async function enterCaption(ctx: ScriptContext<unknown>, frame: { width: number;
     const now = onScreenCaptionField(tree, frame.width)
     if (now && captionLanded(now, caption)) return captionTextToClear(now)
     const holds = now ? captionTextToClear(now) : '(no caption field on screen)'
-    if (round === 1 && via !== 'agent-ime' && now && captionLanded(now, withoutUntypeable(caption))) {
-      // Everything landed except the emoji and accents (1.43.0): typing it again the same way can only lose them again.
+    if (via !== 'agent-ime' && now && captionLanded(now, withoutUntypeable(caption))) {
+      /*
+        Everything landed except the emoji and accents (1.43.0): typing it again the same way can only lose
+        them again.
+
+        This used to be gated on `round === 1`, and that gate cost the operator the diagnosis (1.49.4).
+        Production #27 (2026-09-16) typed a caption whose only loss was a 📊, reached round 2, and fell
+        through to the generic "the caption field holds X but the caption to post is Y" — which asks the
+        operator to go and compare two nearly identical strings for a difference the run already knows.
+        The round a mismatch is noticed on says nothing about its cause: when the ONLY difference is
+        characters this typing path cannot carry, that is the answer on round 2 as much as on round 1.
+      */
       await capture(ctx, 'caption-mismatch', tree)
       throw Object.assign(
         new Error(
@@ -2585,9 +2595,29 @@ const postVideo: PluginMemberScript<typeof params, typeof result> = {
     const uploadButton = findNode(cameraTree, (n) => hasShortId(n, 'upload_hot_area')) ?? galleryButtonBesideModes(cameraTree, frame.width)
     if (!uploadButton) {
       await capture(ctx, 'missing-upload-hot-area', camera.tree)
+      /*
+        Say what WAS there (1.49.4). Production #73 (2026-09-16) hit this on a build carrying neither the
+        id nor a clickable left of the strip, and the message named only the two things that were absent
+        — so the dump had to be opened by hand to learn anything at all, and on a farm about to be shut
+        down that is a class nobody can diagnose afterwards. A third anchor for such a build would be
+        built from where the strip sits and what shares its row, so the failure now carries exactly that.
+        No anchor is guessed here: this reports, it does not tap.
+      */
+      const strip = all(cameraTree, (n) => CAMERA_LOWER_MODE_LABELS.includes(n.text.trim()) && insideFrame(n, frame.width)).sort((a, b) => b.bounds.bottom - a.bounds.bottom)[0]
+      const middleOf = (n: UiNode): number => (n.bounds.top + n.bounds.bottom) / 2
+      const band = strip
+        ? all(cameraTree, (n) => n.clickable && insideFrame(n, frame.width) && middleOf(n) >= strip.bounds.top && middleOf(n) <= strip.bounds.bottom)
+        : []
+      const seen = band
+        .sort((a, b) => a.bounds.left - b.bounds.left)
+        .map((n) => `${n.resourceId.split('/').pop() || n.className.split('.').pop()}[${n.bounds.left},${n.bounds.top}][${n.bounds.right},${n.bounds.bottom}]`)
+        .join(', ')
       throw Object.assign(
         new Error(
-          `the camera screen's gallery button was not found in the dump — not by its id "upload_hot_area" (this TikTok build's ids are obfuscated), and no clickable sits left of the capture-mode strip's "POST" in its row`,
+          `the camera screen's gallery button was not found in the dump — not by its id "upload_hot_area" (this TikTok build's ids are obfuscated), and no clickable sits left of the capture-mode strip's "POST" in its row. ` +
+            (strip
+              ? `The strip label "${strip.text.trim()}" is at [${strip.bounds.left},${strip.bounds.top}][${strip.bounds.right},${strip.bounds.bottom}], and the clickables sharing its row are: ${seen === '' ? '(none)' : seen}.`
+              : 'No capture-mode label was found on the screen at all, so the strip itself could not be located.'),
         ),
         { code: 'E_ANCHOR_NOT_FOUND' },
       )
