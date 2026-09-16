@@ -2,6 +2,7 @@ import type { ScriptContext, WaitForOptions } from '@enkaku/sdk'
 import type { Bounds, Selector, UiNode } from '@enkaku/protocol'
 import { sleep } from './human'
 import { clearBlockingDialog } from './dialogs'
+import { captureSafe } from './gesture'
 import { all, centerOf, rowsById, within } from './tree'
 
 /**
@@ -184,7 +185,13 @@ export async function waitForAnchor(
       return await ctx.device.waitFor(sel, opts)
     } catch {
       const artifactLabel = `${artifactPrefix}-missing-${label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`
-      await ctx.artifact.screenshot(artifactLabel)
+      // The TREE as well as the picture (1.49.13). A screenshot of a Compose screen says what a
+      // person would see; it cannot say what this walk could READ, and those differ constantly here.
+      // Measured on 2026-09-17: two consecutive runs of `list-accounts` died at two DIFFERENT steps,
+      // and the only step that saved a dump was the last one — so the screen that actually broke the
+      // walk was never captured. `captureSafe` never throws, so a dead inspector cannot replace this
+      // error with one about the inspector.
+      await captureSafe(ctx, artifactLabel)
       throw Object.assign(
         new Error(`the "${label}" anchor never appeared, even after a dialog sweep — cannot confirm where the device actually is`),
         { code: 'E_ANCHOR_NOT_FOUND' },
@@ -226,7 +233,7 @@ export async function waitForAnyAnchor(
     }
   }
   const artifactLabel = `${artifactPrefix}-missing-${label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`
-  await ctx.artifact.screenshot(artifactLabel)
+  await captureSafe(ctx, artifactLabel)
   throw Object.assign(
     new Error(`the "${label}" anchor never appeared in any known spelling (${sels.map((s) => JSON.stringify(s)).join(', ')}), even after a dialog sweep — cannot confirm where the device actually is`),
     { code: 'E_ANCHOR_NOT_FOUND' },

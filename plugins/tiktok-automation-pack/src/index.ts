@@ -976,6 +976,24 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.49.13 — the tree is saved at the step that actually broke, not only at the end.
+  //   1.49.12 captured a dump in `list-accounts`' own failure paths, and it paid immediately — but it
+  //   revealed the gap it did not close. `openSwitchAccountSheet` fails through `sheet.ts`'s
+  //   `waitForAnchor`/`waitForAnyAnchor`, which saved a SCREENSHOT alone, so the screen that broke a
+  //   five-screen walk was recorded as a picture while only the final `finish` artifact carried a
+  //   tree. Both now save the dump beside the picture, through `captureSafe` so a dead inspector
+  //   cannot replace a real error with one about the inspector.
+  //   What 1.49.12's dump already established, and why this matters: on a clean PACK-DRIVEN run —
+  //   no manual taps — `list-accounts-failed` was TikTok's video editor (Music, "Moss Burial", Your
+  //   Story, Next, AutoCut, Effects, Filters, Stickers, Text, Video templates). I had previously
+  //   blamed that editor on my own stray tap while walking the phone by hand. It is not mine. On a
+  //   profile holding 10 drafts, the step that should open the settings drawer lands in a draft
+  //   editor, which is exactly why the run then reports "profile drawer (Settings and privacy)
+  //   never appeared".
+  //   And the walk is NOT deterministic: two consecutive runs of the same version on the same phone
+  //   died at different steps — once with the sheet reached but read empty, once with the editor in
+  //   front. One wrong selector cannot produce both, so this is not being guessed at; the next
+  //   failure will carry the dump of whichever step actually broke.
   // 1.49.12 — `list-accounts` saves the TREE when it fails, not just a picture.
   //   Not a behaviour fix: an instrumentation one, and it is here because its absence cost a
   //   diagnosis today. On 2026-09-17 the member failed with "the switch-account sheet listed no
@@ -1477,7 +1495,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.49.12',
+  version: '1.49.13',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
