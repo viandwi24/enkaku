@@ -584,16 +584,16 @@ describe('tree — cascading cancellation is depth-first and releases every devi
 describe('tree — a parent killed by maxRunSeconds cancels its still-running children (plan 67 §3.5, criterion 13)', () => {
   test('two detached children keep running until the parent hits its own wall-clock budget, then both are cancelled', async () => {
     const releases = new Map<string, () => void>()
-    const env = setUp([holdDeviceCapability(releases), slowCapability(1_200)])
+    const env = setUp([holdDeviceCapability(releases), slowCapability(6_000)])
 
     const parent = env.createAgent(
       'expiring-parent',
       [
         toolTurn('c1', 'agent_spawn', { agent: 'expiring-child-a', prompt: 'go', waitFor: false }),
         toolTurn('c2', 'agent_spawn', { agent: 'expiring-child-b', prompt: 'go', waitFor: false }),
-        // A deliberately slow third call so real wall-clock time crosses the 1-second budget below
-        // BEFORE the loop's next top-of-iteration check — deterministic, rather than racing a tiny
-        // timeout against however long spawning two children happens to take.
+        // A deliberately slow third call so real wall-clock time crosses the budget below BEFORE the
+        // loop's next top-of-iteration check — deterministic, rather than racing a tiny timeout
+        // against however long spawning two children happens to take.
         toolTurn('c3', 'test_slow', {}),
       ],
       // Includes `test.device.hold`/`device.control` even though the parent never calls it itself —
@@ -605,8 +605,30 @@ describe('tree — a parent killed by maxRunSeconds cancels its still-running ch
     env.treeStore.grantSpawn(parent.id, env.agentsStore.getBySlug('expiring-child-a')!.id)
     env.treeStore.grantSpawn(parent.id, env.agentsStore.getBySlug('expiring-child-b')!.id)
 
-    // A short wall-clock budget — comfortably crossed once the slow third call resolves.
-    const runner = env.makeRunner({ maxRunSeconds: 1 })
+    /*
+      The budget has to outlast the SPAWNS, not just be small (2026-09-16).
+
+      It was 1 second against a 1.2 s slow call, and that second is the thing
+      the two `agent_spawn` calls above are racing: the deadline is only ever
+      noticed at the run loop's top of iteration
+      (`agent/harness/run.ts:638`), so a parent whose budget expires while it
+      is still spawning trips `max-seconds` having started NEITHER child. The
+      first wait below then passes immediately and the second — `releases.size
+      === 2` — waits out its full 15 s for children that were never born.
+
+      That is what CI kept hitting: 15090.93 ms on run 35057644648, and the
+      same shape reproduced here at 15150.20 ms by forcing the budget to trip
+      before the spawns. It is also why the two previous fixes did not hold —
+      2026-09-06 and 2026-09-08 both raised the `waitUntil` budgets, which are
+      not the quantity in the race. The wait was never the problem; the
+      parent's own second was.
+
+      So the budget is now 5 s and the slow call 6 s. The slow call still
+      crosses it deterministically, and the spawns would have to take five
+      seconds — not one — before the race returns. The test costs about six
+      seconds of wall clock for that, inside its declared 60.
+    */
+    const runner = env.makeRunner({ maxRunSeconds: 5 })
     const thread = runner.createThread({ agentId: parent.id })
     const parentRun = runner.postMessage(thread.id, 'go', 'user:u1')
 
@@ -625,20 +647,12 @@ describe('tree — a parent killed by maxRunSeconds cancels its still-running ch
     }, 15_000)
     expect(env.agentHolderOf('d1')).toBeNull()
     expect(env.agentHolderOf('d2')).toBeNull()
-    // Same reason as the 12s above, and the arithmetic is worse here: this
-    // test deliberately burns 1.2s inside `test_slow` to cross the 1s budget,
-    // and then has to wait for a wall-clock deadline to be NOTICED — which
-    // happens at the loop's next top-of-iteration check, after two child
-    // spawns, on whatever CPU share is left over from 397 other test files.
-    //
-    // The 2026-09-06 fix raised the outer timeout to 20s but left the three
-    // inner budgets at 6s + 6s + the 4s default, so the FIRST wait was still
-    // the tightest thing in the test: it timed out at 6.1s on CI while the
-    // whole file passes locally in about 8s (observed on CI, 2026-09-08).
-    // All three now get 15s inside a 60s test, so the internal budget fits
-    // the declared one with room to spare. Nothing here waits longer than it
-    // needs to — a `waitUntil` returns the moment its predicate holds, and on
-    // an unloaded machine this still finishes in about a second and a half.
+    // The three 15s inner waits stay as they are. They were raised twice
+    // (2026-09-06, 2026-09-08) trying to cure this test's flakiness and twice
+    // failed to, because the race was never in them — see the budget comment
+    // above. They are kept generous anyway: a `waitUntil` returns the moment
+    // its predicate holds, so a healthy run never spends them, and 3 × 15s
+    // still fits the declared 60s with the slow call's 6s on top.
   }, 60_000)
 })
 

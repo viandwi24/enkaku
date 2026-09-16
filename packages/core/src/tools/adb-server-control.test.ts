@@ -357,6 +357,33 @@ describe('workspace-wide guard — adb kill-server has exactly one implementatio
     return out
   }
 
+  /**
+   * Files that NAME `kill-server` without ever running it, each with the shape
+   * its occurrences are allowed to take.
+   *
+   * The guard searches for a literal, so it cannot by itself tell a call site
+   * from a refusal. `packages/protocol/src/command/adb-command.ts` is the
+   * refusal: `kill-server` is a KEY in `NOT_A_SHELL_COMMAND`, the table that
+   * tells an operator who pastes `adb kill-server` into the command box to use
+   * the Tools page instead. It is the guard's ally, and the guard flagged it
+   * (`main` at v0.2.46, run 35046558064: 6503 pass, 1 fail, this test).
+   *
+   * An entry here is NOT a blanket exemption — that would let a real
+   * `hostAdb(['kill-server'])` land in the same file unnoticed, which is
+   * exactly what this guard exists to catch. Every occurrence in the file must
+   * match `shape`, so a mention stays permitted and a call site still fails.
+   */
+  const MENTIONS_NEVER_RUNS: Array<{ file: string; shape: RegExp; why: string }> = [
+    {
+      file: 'packages/protocol/src/command/adb-command.ts',
+      // A quoted key followed by `:` — an entry in a lookup table, never an
+      // argument to anything. `spawnAdb(bin, ['kill-server'])` has no colon
+      // after the string and is rejected.
+      shape: /^\s*'kill-server':/,
+      why: "a key in NOT_A_SHELL_COMMAND, the table that refuses `adb kill-server` from the command box and points at the Tools page",
+    },
+  ]
+
   test('the literal "kill-server", outside comments, appears in exactly one non-test .ts file across every package', () => {
     // `import.meta.dir` is packages/core/src/tools — four levels up is the repo root.
     const repoRoot = join(import.meta.dir, '..', '..', '..', '..')
@@ -372,11 +399,25 @@ describe('workspace-wide guard — adb kill-server has exactly one implementatio
       for (const file of listImplementationFiles(srcDir)) {
         const code = stripComments(readFileSync(file, 'utf8'))
         if (code.toLowerCase().includes('kill' + '-server')) {
+          const rel = relative(repoRoot, file).split(sep).join('/')
+          const mention = MENTIONS_NEVER_RUNS.find((m) => m.file === rel)
+          if (mention) {
+            /*
+              A named mention is allowed only while EVERY one of its
+              occurrences still has the declared shape. The moment one does
+              not, the file is an offender again and the assertion below names
+              it — so this is a narrowing of the guard, not a hole in it.
+            */
+            const lines = code.split('\n').filter((l) => l.toLowerCase().includes('kill' + '-server'))
+            const wrong = lines.filter((l) => !mention.shape.test(l))
+            expect(wrong, `${rel} is allowed to NAME kill-server (${mention.why}), but these lines are not that shape`).toEqual([])
+            continue
+          }
           // `relative()` answers in the platform's own separator, so on
           // Windows this reads `packages\\core\\src\\...` and never matches the
           // expectation below — the guard failed on `check-windows` for the
           // shape of its path, not for anything it was written to catch.
-          offenders.push(relative(repoRoot, file).split(sep).join('/'))
+          offenders.push(rel)
         }
       }
     }
