@@ -77,7 +77,20 @@ import {
  *
  * ## Changelog
  *
- * - **0.42.0 — the Accounts sync gets past a leftover TikTok edit.** 0.41.0's
+ * - **0.43.0 — each step of the TikTok walk saves the screen IT was looking at,
+ *   and 0.42.0's claim is corrected.** Re-run on the moto with a leftover edit
+ *   deliberately left behind: 0.42.0's BACK recovery **never fired**, and the run
+ *   failed at the third step ("the profile menu did not open") while the capture
+ *   taken afterwards showed the video editor. So the editor is not there at launch
+ *   — TikTok restores it DURING the walk — and a single picture at the end cannot
+ *   tell that apart from "the walk began in the editor". Those two need opposite
+ *   fixes, so rather than guess a second time, every step now saves the tree it
+ *   was actually looking at when it gave up (`accounts-tiktok-no-navigation`,
+ *   `-no-profile`, `-no-profile-menu`, `-no-settings`). The launch-time BACK from
+ *   0.42.0 stays — it is cheap and harmless — but it is not the fix for this.
+ *
+ * - **0.42.0 — the Accounts sync presses BACK at launch (NOT the fix it was
+ *   written to be — see 0.43.0).** 0.41.0's
  *   evidence fix paid for itself on its first run: the capture it saved is
  *   TikTok's VIDEO EDITOR — "Add sound", "Your Story", "Next", "Video templates",
  *   "AutoCut" — not its feed. TikTok had come up on an edit left behind by an
@@ -1351,7 +1364,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.42.0',
+  version: '0.43.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

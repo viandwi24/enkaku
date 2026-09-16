@@ -104,11 +104,18 @@ async function tapLabel(ctx: ScriptContext<unknown>, tree: UiNode, labels: reado
  * Neither failure here is fatal: a capture that cannot be taken must not turn a readable platform into
  * an unreadable one.
  */
-async function capture(ctx: ScriptContext<unknown>, label: string): Promise<void> {
+async function capture(ctx: ScriptContext<unknown>, label: string, tree?: UiNode | null): Promise<void> {
   await ctx.artifact.screenshot(label).catch((err: unknown) => ctx.log.warn(`could not save the ${label} screenshot`, { error: String(err) }))
   try {
-    const tree = await ctx.device.dump()
-    await ctx.artifact.file(label, JSON.stringify(tree, null, 2), { ext: 'json' })
+    /*
+      The tree the STEP used, when the caller has one (0.43.0). A fresh dump is the wrong picture for a
+      walk like TikTok's: the moto's 0.42.0 run failed at "the profile menu did not open" and the dump
+      taken afterwards was the video editor — a screen TikTok restored while the step was waiting. That
+      reads as "the walk was in the editor all along", which is not what happened and sent the previous
+      fix at the wrong step. A step that hands over what it was looking at cannot mislead that way.
+    */
+    const read = tree ?? (await ctx.device.dump())
+    await ctx.artifact.file(label, JSON.stringify(read, null, 2), { ext: 'json' })
   } catch (err) {
     ctx.log.warn(`could not save the ${label} tree`, { error: String(err) })
   }
@@ -150,13 +157,35 @@ async function readTikTok(ctx: ScriptContext<unknown>): Promise<Reading> {
     await sleep(1_500)
     home = await waitFor(ctx, (t) => labelled(t, ['Profile', 'Profil']) !== null, 8_000)
   }
-  if (!home.ok || !home.tree) throw new Error('TikTok did not show its bottom navigation')
+  /*
+    Every step saves the screen it was LOOKING AT when it gave up (0.43.0).
+
+    The 0.42.0 run on the moto is why. It failed "the TikTok profile menu did not open" — the third step
+    — and the single capture taken afterwards was the video editor, which is a screen TikTok restored
+    from a leftover edit while that step was waiting. One picture at the end cannot tell "the walk began
+    in the editor" apart from "the editor arrived mid-walk", and those need opposite fixes: the first
+    wants a BACK before the walk (what 0.42.0 added, and it never fired), the second wants the walk
+    itself to notice and start again. Until a run says which, nothing here should be changed further.
+  */
+  if (!home.ok || !home.tree) {
+    await capture(ctx, 'accounts-tiktok-no-navigation', home.tree)
+    throw new Error('TikTok did not show its bottom navigation')
+  }
   const profile = await tapLabel(ctx, home.tree, ['Profile', 'Profil'], (t) => labelled(t, ['Profile menu', 'Menu profil']) !== null, 15_000)
-  if (!profile) throw new Error('the TikTok profile did not open')
+  if (!profile) {
+    await capture(ctx, 'accounts-tiktok-no-profile', home.tree)
+    throw new Error('the TikTok profile did not open')
+  }
   const drawer = await tapLabel(ctx, profile, ['Profile menu', 'Menu profil'], (t) => labelled(t, ['Settings and privacy', 'Pengaturan dan privasi']) !== null, 12_000)
-  if (!drawer) throw new Error('the TikTok profile menu did not open')
+  if (!drawer) {
+    await capture(ctx, 'accounts-tiktok-no-profile-menu', profile)
+    throw new Error('the TikTok profile menu did not open')
+  }
   const settings = await tapLabel(ctx, drawer, ['Settings and privacy', 'Pengaturan dan privasi'], (t) => flatten(t).some((n) => onScreen(n) && n.desc.trim() !== ''), 12_000)
-  if (!settings) throw new Error('TikTok settings did not open')
+  if (!settings) {
+    await capture(ctx, 'accounts-tiktok-no-settings', drawer)
+    throw new Error('TikTok settings did not open')
+  }
 
   // "Switch account" sits at the very bottom of settings, under "Login" — measured at four swipes on
   // the moto. Each swipe is followed by a read, so a shorter list stops as soon as the row shows.
