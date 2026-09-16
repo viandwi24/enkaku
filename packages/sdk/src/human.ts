@@ -25,6 +25,55 @@
  * than switching to a different distribution.
  */
 
+/** Just the corners — spelled out rather than imported, so this module stays free of every dependency. */
+export interface AimBox {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+/** How much of each edge an aim keeps clear by default: the middle 70% of the box. */
+const DEFAULT_INSET = 0.15
+/** Below this, an axis keeps its centre — see `aimInside`. */
+const MIN_SPAN_PX = 24
+
+/**
+ * A point inside a node's box, rather than its exact centre.
+ *
+ * This is the pure twin of the API's own `tap(…, { human: true })`, and it exists because a pack
+ * usually has the NODE, not a selector: it dumped the tree itself, walked it, and holds the box. The
+ * API deliberately never moves a `{ point }` target — on some screens a measured point is the only
+ * one that works — so a pack that aims from bounds needs the aim, not the flag.
+ *
+ * All three packs had written this already (`jitteredPoint`, `jitterPoint`, `insetPoint`), each
+ * drawing from `Math.random`, which is why their seeded runs never replayed their taps.
+ *
+ * `rng` is therefore OPTIONAL, and that is a deliberate migration decision rather than laziness: the
+ * three helpers this replaces take a node and nothing else, and most of their call sites — Instagram's
+ * `likeFeedPost` and its story-tray tap, the whole of `search-keyword` — hold no rng at all. Demanding
+ * one would turn a mechanical swap into eleven signature changes through functions that never needed
+ * randomness of their own. Omitted, it draws from `Math.random`, which is exactly what those packs do
+ * today; passed, the tap joins the run's seeded sequence and replays with it. A member that already
+ * has an rng should pass it.
+ *
+ * A box under 24 px on an axis keeps its centre on that axis: on a thin rail the "middle 70%" is a
+ * target small enough to miss, and missing is a real failure while the realism gained is nothing.
+ */
+export function aimInside(box: AimBox, rng: () => number = Math.random, opts?: { inset?: number }): { x: number; y: number } {
+  const w = box.right - box.left
+  const h = box.bottom - box.top
+  const centre = { x: Math.round((box.left + box.right) / 2), y: Math.round((box.top + box.bottom) / 2) }
+  if (w <= 0 || h <= 0) return centre
+  const inset = Math.max(0, Math.min(0.45, opts?.inset ?? DEFAULT_INSET))
+  const fx = w < MIN_SPAN_PX ? 0 : inset
+  const fy = h < MIN_SPAN_PX ? 0 : inset
+  return {
+    x: Math.round(box.left + w * (fx + rng() * (1 - 2 * fx))),
+    y: Math.round(box.top + h * (fy + rng() * (1 - 2 * fy))),
+  }
+}
+
 /** A seeded xorshift32. Same seed, same sequence — so a run can be replayed exactly. */
 export function makeRng(seed: number): () => number {
   let s = seed >>> 0 || 0x9e3779b9

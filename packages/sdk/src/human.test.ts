@@ -1,5 +1,59 @@
 import { describe, expect, test } from 'bun:test'
-import { between, DWELL_BUCKETS, makeRng, MAX_REFRESHES_IN_A_ROW, pauseBetweenWordsMs, pick, pickDwellMs, planRevisitStep, type RevisitMove } from './human'
+import { aimInside, between, DWELL_BUCKETS, makeRng, MAX_REFRESHES_IN_A_ROW, pauseBetweenWordsMs, pick, pickDwellMs, planRevisitStep, type RevisitMove } from './human'
+
+describe('aimInside — the aim three packs had each written for themselves', () => {
+  const box = { left: 100, top: 200, right: 400, bottom: 320 }
+
+  test('the point is always inside the box', () => {
+    const rng = makeRng(5)
+    for (let i = 0; i < 500; i++) {
+      const p = aimInside(box, rng)
+      expect(p.x).toBeGreaterThanOrEqual(box.left)
+      expect(p.x).toBeLessThanOrEqual(box.right)
+      expect(p.y).toBeGreaterThanOrEqual(box.top)
+      expect(p.y).toBeLessThanOrEqual(box.bottom)
+    }
+  })
+
+  test('it moves — 50 taps are not one pixel', () => {
+    const rng = makeRng(6)
+    const seen = new Set<string>()
+    for (let i = 0; i < 50; i++) {
+      const p = aimInside(box, rng)
+      seen.add(`${p.x},${p.y}`)
+    }
+    expect(seen.size).toBeGreaterThan(40)
+  })
+
+  test('seeded: the same run replays the same taps — the whole reason the rng is an argument', () => {
+    const a = makeRng(77)
+    const b = makeRng(77)
+    expect([aimInside(box, a), aimInside(box, a)]).toEqual([aimInside(box, b), aimInside(box, b)])
+  })
+
+  test('an axis under 24px keeps its centre there', () => {
+    const rail = { left: 100, top: 200, right: 118, bottom: 320 }
+    const rng = makeRng(8)
+    for (let i = 0; i < 40; i++) {
+      const p = aimInside(rail, rng)
+      expect(p.x).toBeGreaterThanOrEqual(rail.left)
+      expect(p.x).toBeLessThanOrEqual(rail.right)
+    }
+  })
+
+  test('a degenerate box answers its centre rather than NaN', () => {
+    expect(aimInside({ left: 50, top: 60, right: 50, bottom: 60 }, makeRng(1))).toEqual({ x: 50, y: 60 })
+  })
+
+  test('the inset is clamped, so a silly value cannot invert the box', () => {
+    const rng = makeRng(2)
+    for (let i = 0; i < 50; i++) {
+      const p = aimInside(box, rng, { inset: 5 })
+      expect(p.x).toBeGreaterThanOrEqual(box.left)
+      expect(p.x).toBeLessThanOrEqual(box.right)
+    }
+  })
+})
 
 describe('makeRng / between / pick', () => {
   test('the same seed replays exactly, a different one does not', () => {

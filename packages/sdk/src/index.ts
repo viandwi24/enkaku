@@ -36,6 +36,7 @@ export type {
  * `scroll({ …, human: true })`.
  */
 export {
+  aimInside,
   makeRng,
   between,
   pick,
@@ -45,7 +46,7 @@ export {
   DWELL_BUCKETS,
   MAX_REFRESHES_IN_A_ROW,
 } from './human'
-export type { DwellBucket, RevisitMove, RevisitStep, RevisitPlan } from './human'
+export type { AimBox, DwellBucket, RevisitMove, RevisitStep, RevisitPlan } from './human'
 export { definePlugin, isPlugin } from './plugin'
 export type { PluginDefinition, PluginMemberScript, Plugin } from './plugin'
 /**
