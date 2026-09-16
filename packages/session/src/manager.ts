@@ -208,6 +208,24 @@ export interface SessionManager {
   /** Viewer attach (ws-handlers only). Throws `device_not_ready` with `details: { state }` when there is no base entry. */
   attachViewer(deviceId: string, quality: Quality, onFrame: FrameSink, hooks?: ViewerHooks): Promise<ViewerAttach>
   detachViewer(onFrame: FrameSink): void
+  /**
+   * Start this device's `control` encoder now, for an operator who has just
+   * asked to open Device Control — before any viewer has subscribed.
+   *
+   * `attachViewer` is what used to start it, so the build could not begin
+   * until the browser had mounted the window and its `stream.start` had made
+   * the round trip. This is the same build, asked for at the gesture instead,
+   * so it overlaps all of that: nothing about the eventual attach changes, it
+   * simply finds the entry further along (or already live).
+   *
+   * Safe to call repeatedly and on a device with no base session: it no-ops
+   * when there is no base entry to hang a control build off, when the device
+   * cannot run a second encoder at all (`attachViewer`'s own two conditions),
+   * and when the control entry already exists or its build is in flight.
+   * Never throws, never reports — a prewarm that could not happen costs the
+   * caller nothing, because `attachViewer` still does the whole job.
+   */
+  prepareControl?(deviceId: string): void
   /** Build the base entry. Called by the always-on builder (and the node's `startSession`); coalesced per device. */
   build(deviceId: string, opts: { requireScrcpy: boolean; onStep?: (step: PrepStep) => void }): Promise<void>
   /** Resolves with the base session once a build in flight finishes; rejects `device_not_ready` when none is in flight and none exists. */
@@ -924,6 +942,23 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           entry.lingerTimer = timers.set(() => void closeEntry(key, 'control_linger'), CONTROL_LINGER_MS)
         }
       }
+    },
+
+    /**
+     * The same three guards `attachViewer` applies before it calls
+     * `ensureControlBuilding`, in the same order — deliberately duplicated
+     * rather than factored out, because a prewarm that silently returns and an
+     * attach that must answer the viewer honestly do opposite things with the
+     * same facts: no base entry is a `device_not_ready` there and a no-op
+     * here, and `control_encoder_unavailable` is a degraded attach there and a
+     * no-op here.
+     */
+    prepareControl(deviceId) {
+      const base = entries.get(entryKey(deviceId, 'wall'))
+      if (!base) return
+      const row = deps.devices.get(deviceId)
+      if (base.session.displayEngineId !== 'scrcpy' || row?.display === 'screencap-loop') return
+      ensureControlBuilding(deviceId)
     },
 
     build,

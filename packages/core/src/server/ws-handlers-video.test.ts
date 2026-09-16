@@ -266,6 +266,63 @@ describe('stream.start never resets a cold encoder (plan 17 §3.6)', () => {
 })
 
 /**
+ * `stream.prepare` — the control encoder started at the OPEN GESTURE rather
+ * than when the viewer's `stream.start` arrives.
+ *
+ * What is worth a test here is not the forwarding but the GATE: a prewarm
+ * puts a second scrcpy encoder on the phone, so it must pass the same
+ * `admit(deviceId, state, 'control')` door as every other control-path
+ * message (spec §10.1, plan 205 §4.8). A prewarm that skipped it would be a
+ * way to start an encoder on a device the policy has already refused, from a
+ * browser that simply sent the message.
+ */
+describe('stream.prepare — the control-encoder prewarm', () => {
+  function setUpPrepare(status: 'online' | 'offline' = 'online', seed = true) {
+    const db = setUpDb()
+    if (seed) seedDevice(db, 'dev-1', status)
+    const fake = fakeSession('dev-1', { config: null, keyframe: null })
+    const prepared: string[] = []
+    const manager: SessionManager = {
+      ...fakeSessionManager(fake.session),
+      prepareControl: (deviceId: string) => void prepared.push(deviceId),
+    }
+    return { handler: setUpHandler(db, fake.session, manager), prepared, conn: fakeConn() }
+  }
+
+  test('an online device: the request reaches SessionManager.prepareControl', async () => {
+    const { handler, prepared, conn } = setUpPrepare()
+    await handler.handleMessage(conn.ws, JSON.stringify({ type: 'stream.prepare', payload: { deviceId: 'dev-1' } }))
+    expect(prepared).toEqual(['dev-1'])
+  })
+
+  test('an offline device is refused by the gate — no encoder is started', async () => {
+    const { handler, prepared, conn } = setUpPrepare('offline')
+    await handler.handleMessage(conn.ws, JSON.stringify({ type: 'stream.prepare', payload: { deviceId: 'dev-1' } }))
+    expect(prepared).toEqual([])
+  })
+
+  test('an unknown device is refused too', async () => {
+    const { handler, prepared, conn } = setUpPrepare('online', false)
+    await handler.handleMessage(conn.ws, JSON.stringify({ type: 'stream.prepare', payload: { deviceId: 'dev-1' } }))
+    expect(prepared).toEqual([])
+  })
+
+  test('a refusal sends no error: the stream.start behind it is what the client is waiting on', async () => {
+    const { handler, conn } = setUpPrepare('offline')
+    await handler.handleMessage(conn.ws, JSON.stringify({ type: 'stream.prepare', payload: { deviceId: 'dev-1' } }))
+    expect(conn.sent.filter((m) => m.type === 'error')).toEqual([])
+  })
+
+  test('repeated opens are forwarded every time — coalescing is the manager’s job, not the socket’s', async () => {
+    const { handler, prepared, conn } = setUpPrepare()
+    const raw = JSON.stringify({ type: 'stream.prepare', payload: { deviceId: 'dev-1' } })
+    await handler.handleMessage(conn.ws, raw)
+    await handler.handleMessage(conn.ws, raw)
+    expect(prepared).toEqual(['dev-1', 'dev-1'])
+  })
+})
+
+/**
  * Plan 206 §3.4, §4.3, §4.8 — `stream.start`'s response to `SessionManager.attachViewer`:
  * a `control` request served by the wall entry while the control entry
  * builds (`substitute: 'wall'`), the switch once the control entry's first

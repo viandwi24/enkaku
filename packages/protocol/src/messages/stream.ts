@@ -51,6 +51,29 @@ export const StreamStopMessage = z.object({
 })
 
 /**
+ * "An operator is opening Device Control on this device — start its control
+ * encoder now."
+ *
+ * Fire-and-forget, the same shape as `stream.stop`, and it starts nothing the
+ * `stream.start` behind it would not have started anyway: the control encoder
+ * used to begin building only when the viewer's `stream.start` reached
+ * `SessionManager.attachViewer`, so the whole window mount, the device fetch,
+ * the decoder construction and one WS round-trip were spent before the build
+ * had even been asked for. Sending this on the OPEN GESTURE instead overlaps
+ * all of that with the build, and the sharp picture replaces the wall stand-in
+ * that much sooner.
+ *
+ * Deliberately not sent on hover, and never for a wall tile: a control encoder
+ * is a second scrcpy process on the phone, so it is started for an explicit
+ * "open this device" and nothing else. Safe to repeat — the server-side path
+ * no-ops when the entry exists or its build is already in flight.
+ */
+export const StreamPrepareMessage = z.object({
+  type: z.literal('stream.prepare'),
+  payload: z.object({ deviceId: z.string() }),
+})
+
+/**
  * Ask the encoder for a fresh IDR without restarting the stream (Plan 42
  * §4.1) — sent when a hidden `<video>` becomes visible again: browsers may
  * throttle a hidden canvas/video, so the first frame after unhiding can be

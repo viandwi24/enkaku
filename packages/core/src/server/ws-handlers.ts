@@ -1247,6 +1247,35 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             return
           }
 
+          case 'stream.prepare': {
+            // An operator opened Device Control on this device: start the
+            // control encoder now rather than when their `stream.start`
+            // arrives (see the schema's own comment for what that buys).
+            const { deviceId } = msg.payload
+            // The SAME admission gate every other control-path message goes
+            // through — a prewarm puts a second scrcpy encoder on the phone,
+            // which is a control action whoever else holds the device is
+            // entitled to be protected from, whether or not a button was
+            // disabled in some browser (spec §10.1, plan 205 §4.8).
+            const gate = admit(deviceId, state, 'control')
+            if (!gate.ok) return
+            if (gate.warning) warnOnce(ws, state, deviceId, gate.warning)
+            // A refusal is deliberately NOT sent back. This message carries no
+            // `id`, so nothing on the client is waiting on it, and the
+            // `stream.start` right behind it hits the same gate and reports
+            // the same refusal to a caller that IS waiting — one cause, one
+            // error, rather than a second copy arriving first with nothing to
+            // correlate it to.
+            //
+            // Node-owned devices have no local encoder to prepare: the tunnel
+            // carries no quality profile at all (Plan 42 §9), so their
+            // `stream.start` goes through `deps.remote` and never reaches a
+            // `SessionManager`.
+            if (deps.remote?.nodeIdFor(deviceId)) return
+            deps.sessions?.prepareControl?.(deviceId)
+            return
+          }
+
           case 'device.readiness.set': {
             // Server-authoritative (spec §10.1, plan 43 §3.4, acceptance #7):
             // `readiness.set` itself enforces the whole permission matrix —

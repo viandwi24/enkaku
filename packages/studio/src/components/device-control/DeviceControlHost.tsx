@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation'
 import { DeviceControl } from './DeviceControl'
 import { useActionDialogs } from '@/components/actions/ActionDialogHost'
 import { isPipFrame } from '@/components/shell/pip-frame'
+import { ws } from '@/lib/ws'
 
 /**
  * Device Control, mounted ONCE by the root layout.
@@ -47,7 +48,32 @@ export interface DeviceControlApi {
 
 export function useDeviceControl(): DeviceControlApi {
   return {
-    open: (deviceId, selectedIds) => setCurrent({ deviceId, selectedIds: selectedIds ?? [deviceId] }),
+    open: (deviceId, selectedIds) => {
+      /**
+       * Before the window exists, not after (owner, 2026-09-16).
+       *
+       * Device Control opens on the always-on WALL stream — small and soft —
+       * while the `control` encoder builds behind it (plan 206), and the
+       * encoder's build used to be triggered by the viewer's own
+       * `stream.start`. So the build could not even begin until this window
+       * had mounted, fetched the device, built a decoder and made a WS round
+       * trip. Every one of those now runs WHILE the encoder builds.
+       *
+       * This is the one gesture that opens the window — the action registry's
+       * "Open Device Control", the double-click on a tile or a row, the
+       * context menu and the bulk pill all route here — so it is also the
+       * only place this message is sent. Never on hover, never per wall tile:
+       * a control encoder is a second scrcpy process on a phone.
+       *
+       * Fire-and-forget on purpose: `ws.send` queues and connects when the
+       * socket is not up yet, the server ignores it for a device that cannot
+       * use it, and a lost prewarm costs nothing — `stream.start` still
+       * starts the encoder exactly as it always did. Only the HOST is
+       * prepared; the mirror members are acted on, not cast.
+       */
+      ws.send({ type: 'stream.prepare', payload: { deviceId } })
+      setCurrent({ deviceId, selectedIds: selectedIds ?? [deviceId] })
+    },
     close: () => setCurrent(null),
   }
 }

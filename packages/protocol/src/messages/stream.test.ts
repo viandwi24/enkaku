@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { StreamMetaMessage, StreamStartedMessage } from './stream'
+import { StreamMetaMessage, StreamPrepareMessage, StreamStartedMessage } from './stream'
 import * as protocol from '../index'
 
 /** Plan 206 §4.5: the encoder-split additions to `stream.started`/`stream.meta`, and the deletion of the phase-progress message. */
@@ -66,5 +66,29 @@ describe('the old phase-progress message is deleted (plan 206 §10)', () => {
 
   test('its message type is not a member of ServerMessageSchema', () => {
     expect(protocol.SERVER_MESSAGE_TYPES).not.toContain(deletedMessageType)
+  })
+})
+
+describe('StreamPrepareMessage — the control-encoder prewarm', () => {
+  test('carries a deviceId and nothing else', () => {
+    const msg = { type: 'stream.prepare' as const, payload: { deviceId: 'dev-1' } }
+    expect(StreamPrepareMessage.parse(msg).payload.deviceId).toBe('dev-1')
+  })
+
+  test('rejects a payload with no deviceId — there is no "the current device" on this socket', () => {
+    expect(() => StreamPrepareMessage.parse({ type: 'stream.prepare', payload: {} })).toThrow()
+  })
+
+  test('takes no correlation id: it is fire-and-forget, like stream.stop', () => {
+    // Nothing on the client waits for an answer, so the server never has one
+    // to correlate — see the schema's own comment, and the ws handler's
+    // reason for staying silent on a refused gate.
+    const parsed = StreamPrepareMessage.parse({ type: 'stream.prepare', payload: { deviceId: 'dev-1' }, id: 'req-1' })
+    expect('id' in parsed).toBe(false)
+  })
+
+  test('is a member of ClientMessageSchema — a message the union does not carry reaches no handler', () => {
+    const parsed = protocol.ClientMessageSchema.parse({ type: 'stream.prepare', payload: { deviceId: 'dev-1' } })
+    expect(parsed.type).toBe('stream.prepare')
   })
 })

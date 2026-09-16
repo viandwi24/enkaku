@@ -379,6 +379,72 @@ describe('SessionManager.attachViewer (plan 206 §3.4, §4.3)', () => {
   })
 })
 
+/**
+ * `prepareControl` — the control build started by the operator's open gesture
+ * instead of by the viewer's `attachViewer`.
+ *
+ * It is called from a fire-and-forget WS message, so the only things it may
+ * ever do are start ONE build or nothing at all: it must not throw on a
+ * device the farm has no base session for, and it must not start a second
+ * build for a device it was already asked about.
+ */
+describe('SessionManager.prepareControl', () => {
+  test('no base entry: a no-op, not a throw and not a build', async () => {
+    let calls = 0
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      makeScrcpy: async () => {
+        calls++
+        return fakeScrcpy()
+      },
+    })
+    manager.prepareControl?.(DEVICE_ID)
+    await Bun.sleep(10)
+    expect(calls).toBe(0)
+    expect(manager.getByQuality(DEVICE_ID, 'control')).toBeNull()
+  })
+
+  test('starts the control build once, however many times it is called', async () => {
+    let calls = 0
+    const manager = createSessionManager({
+      client: fakeClient(),
+      devices,
+      log: silentLog(),
+      makeScrcpy: async () => {
+        calls++
+        return fakeScrcpy()
+      },
+    })
+    await manager.build(DEVICE_ID, { requireScrcpy: true })
+    expect(calls).toBe(1) // the base entry
+
+    // Two opens in a row, and a third once the entry is live: one build.
+    manager.prepareControl?.(DEVICE_ID)
+    manager.prepareControl?.(DEVICE_ID)
+    await Bun.sleep(10)
+    manager.prepareControl?.(DEVICE_ID)
+    await Bun.sleep(10)
+    expect(calls).toBe(2)
+    expect(manager.getByQuality(DEVICE_ID, 'control')).not.toBeNull()
+    await manager.closeAll()
+  })
+
+  test('a device that cannot run a second encoder is left alone', async () => {
+    const screencapSnapshot = { ...snapshot, display: 'screencap-loop' }
+    const screencapDevices: DeviceSnapshotSource = { get: (id) => (id === DEVICE_ID ? screencapSnapshot : null) }
+    const manager = createSessionManager({ client: fakeClient(), devices: screencapDevices, log: silentLog() })
+    await manager.build(DEVICE_ID, { requireScrcpy: false })
+    manager.prepareControl?.(DEVICE_ID)
+    await Bun.sleep(10)
+    // The same answer `attachViewer` gives this device, reached without a
+    // viewer: `control_encoder_unavailable` there, silence here.
+    expect(manager.getByQuality(DEVICE_ID, 'control')).toBeNull()
+    await manager.closeAll()
+  })
+})
+
 describe('SessionManager — encoder split (plan 206 §3.4, §4.3)', () => {
   test('a device never holds more than two entries (wall and control)', async () => {
     const wall = fakeScrcpy()
