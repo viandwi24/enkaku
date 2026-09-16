@@ -43,8 +43,25 @@ describe('hasResultRows — the readiness test that three earlier versions got w
   test('a page carrying four thumbnails and no readable text is NOT ready', () => {
     // Thumbnails render before their labels. Waiting on them declared this page
     // ready in 0 ms, and the channel search then ran against a blank screen.
-    expect(resultRowsOf(loading).length).toBeGreaterThan(0)
     expect(hasResultRows(loading)).toBe(false)
+  })
+
+  test('and those four thumbnails are not rows either — they are the bottom navigation (0.39.11)', () => {
+    /*
+      This assertion used to read `expect(resultRowsOf(loading).length).toBeGreaterThan(0)`, i.e. it
+      recorded that the nav bar COUNTED as search results. That was the bug, not a property.
+
+      Measured on the owner's moto g06, 2026-09-17: a "trading" search reported `resultCount: 4`, and
+      all four were 42x42 px boxes at y 1480-1522 carrying no label — Beranda, Shorts, Buat,
+      Subscription. `search-play` drew row 0, tapped **Home**, and failed with "nothing that looks
+      like a player appeared" while standing on the home screen. `watch-video` drew row 1, tapped
+      **Shorts**, watched a random Short for 10.8s and reported SUCCESS — a false pass in a member
+      the warm-up rotation runs daily.
+
+      The test below is the same fixture the sibling test uses to prove the nav bar is "clickable and
+      captioned", so the two now agree: the bottom navigation is neither readiness nor a result.
+    */
+    expect(resultRowsOf(loading).length).toBe(0)
   })
 
   test("the bottom navigation alone is not results — it is clickable and captioned, and that is what fooled 0.1.3", () => {

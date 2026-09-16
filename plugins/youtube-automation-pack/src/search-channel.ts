@@ -337,7 +337,30 @@ export function isSponsoredRow(row: UiNode): boolean {
  * rows, with the rows YouTube sold dropped either way (0.39.2, `isSponsoredRow`).
  */
 export function resultRowsOf(tree: UiNode): UiNode[] {
-  const thumbs = flatten(tree).filter((n) => isVisible(n) && hasId(n, 'thumbnail_layout'))
+  /*
+    The thumbnail branch is filtered like the other one (0.39.11), and without that it was picking
+    the BOTTOM NAVIGATION.
+
+    Measured on the owner's moto g06, 2026-09-17. A "trading" search returned `resultCount: 4`, and
+    all four "rows" were 42x42 px boxes at y 1480-1522 with no label at all — Beranda, Shorts, Buat,
+    Subscription, i.e. the nav bar, which carries `thumbnail_layout` on this build. `search-play`
+    drew row 0 and tapped **Home**, then failed with "nothing that looks like a player appeared"
+    while sitting on the home screen. `watch-video` drew row 1, tapped **Shorts**, watched a random
+    Short for 10.8s and reported SUCCESS with `playEvidence: id:reel_recycler` — a false pass, in a
+    member the warm-up rotation runs every day.
+
+    `contentNodes` (the fallback branch) had always applied `!isChrome` and `inContentBand`; the
+    preferred branch applied neither, so it won and dragged the nav bar in with it. `hasResultRows`'s
+    own comment two functions below says the same thing about this id — "matched the bottom
+    navigation instead" — which is why that function stopped trusting `thumbnail_layout` for
+    readiness. This one never got the same treatment.
+
+    Note what this also repairs: 0.39.2 added `isSponsoredRow` for the production symptom "a result
+    was tapped but nothing that looks like a player appeared". That filter is correct, but it could
+    never fire here, because the rows it was handed were nav icons rather than cards. The symptom
+    survived the fix.
+  */
+  const thumbs = flatten(tree).filter((n) => isVisible(n) && !isChrome(n) && inContentBand(n, tree) && hasId(n, 'thumbnail_layout'))
   const rows = thumbs.length > 0 ? thumbs : contentNodes(tree)
   const organic = rows.filter((n) => !isSponsoredRow(n))
   // Never an empty page because everything on it was an advert: a caller that has nothing to pick

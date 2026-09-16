@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.10',
+  version: '0.39.11',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,33 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.11 — a search result was the bottom navigation, and one member
+   * reported success for tapping Shorts.**
+   * Measured on the owner's moto g06, 2026-09-17. A "trading" search reported
+   * `resultCount: 4` and all four "rows" were 42x42 px boxes at y 1480-1522
+   * carrying no label at all — Beranda, Shorts, Buat, Subscription. The nav bar.
+   * `search-play` drew row 0, tapped **Home**, and failed with "a result was
+   * tapped but nothing that looks like a player appeared" while standing on the
+   * home screen; the `01-home` and `04-player` trees it saved are identical
+   * apart from the clock. `watch-video` drew row 1, tapped **Shorts**, watched a
+   * random Short for 10.8s and reported SUCCESS with
+   * `playEvidence: id:reel_recycler` — a false pass, in a member the warm-up
+   * rotation runs every day. It never played a search result at all.
+   * `resultRowsOf` preferred `thumbnail_layout` nodes and applied neither
+   * `isChrome` nor `inContentBand`, while its own fallback branch
+   * (`contentNodes`) applied both. `hasResultRows`'s comment two functions below
+   * had already written down this exact trap — "matched the bottom navigation
+   * instead" — which is why THAT function stopped trusting the id. This one
+   * never got the same treatment. Both filters are applied now.
+   * Worth noting what this also repairs: 0.39.2 added `isSponsoredRow` for the
+   * production symptom "a result was tapped but nothing that looks like a player
+   * appeared". That filter is correct and it could never fire, because the rows
+   * handed to it were nav icons rather than cards — so the symptom outlived its
+   * fix. `search-channel.test.ts` had recorded the bug as a property
+   * (`expect(resultRowsOf(loading).length).toBeGreaterThan(0)` on a fixture its
+   * OWN sibling test calls "the bottom navigation"); that assertion is inverted
+   * here rather than deleted.
    *
    * **0.39.10 — the timing kit is the SDK's now, not this pack's own copy.**
    * `makeRng`, `between`, `pick`, the watch-time model and `planConfirmStep`
