@@ -976,6 +976,22 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.49.11 — the shop's category strip was missed twice over: wrong word AND wrong place.
+  //   `shop-browse` reported "the shop opened neither on a consent gate nor on a readable category
+  //   strip" over a perfectly good shop. The tree it saved (`shop-missing`, 297 nodes) held the
+  //   strip, drawn and clickable:
+  //       'All'  [14,650][78,720]   'Beauty' [417,650]   "Women's Clothing" [536,650]
+  //   Both `hasShopSurface` and the strip check demanded `text === 'Semua'` AND `top` between 800
+  //   and 1300. The chip reads `All` here, and it sits at y=650 — outside that band. Fixing only the
+  //   word would have left the member failing and looked like a fix that did not take.
+  //   The band is WIDENED, not moved, because both readings are real: 800..1300 was measured on the
+  //   Indonesian build (2026-09-03), 650 on this English one (2026-09-17). 300 keeps the search bar
+  //   out (y 85..139), 1400 keeps the bottom nav out (1470..1556).
+  //   Worth recording what this was NOT: the failure screenshot shows a full-screen promo
+  //   interstitial ("Brands Crazy Deals!") over the shop, and I diagnosed that first. The tree has
+  //   no trace of it — no headline, no "Shop now", no close control — so it is drawn outside the
+  //   accessibility tree and the script never saw it. Adding it to the modal register would have
+  //   changed nothing. The strip check was always the cause.
   // 1.49.10 — three videos opened, and the run reported that none of them had.
   //   `keyword-videos`' `playerUp` was Indonesian-only: it required two of `Sukai video`, `Baca atau
   //   tambahkan komentar`, `Bagikan video`. On the owner's en-US moto the rail reads `Like video.
@@ -1441,7 +1457,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.49.10',
+  version: '1.49.11',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

@@ -13,13 +13,43 @@ const SHOP_OPEN_TIMEOUT_MS = 20_000
  * Whether this tree is the shop rather than whatever preceded it — the
  * consent gate or the category strip, since either one means it arrived.
  * Both labels are the ones the strip and the gate actually carry here; the
- * gate is already bilingual below, and `Semua` is the chip TikTok ships on
- * an Indonesian install.
+ * gate is already bilingual below, and the first chip is `Semua` on an
+ * Indonesian install and `All` on an English one (both measured — see
+ * `SHOP_FIRST_CHIP`).
  */
+/*
+  The category strip's first chip, in both languages, and in a band wide enough for both builds
+  (1.49.11).
+
+  Two things were wrong here, and finding only the first would have looked like a fix. Measured on
+  the owner's moto g06 with TikTok in `en-US`, from the tree this member saved when it failed
+  (`shop-missing`, 297 nodes):
+
+    'All'               clickable  [14,650][78,720]
+    'Beauty'            clickable  [417,650]
+    "Women's Clothing"  clickable  [536,650]
+
+  So (1) the chip reads `All`, not `Semua`, and (2) it sits at y=650 — OUTSIDE the 800..1300 band
+  this file demanded. The strip was drawn, readable and clickable, and both checks missed it, which
+  is why the member reported "the shop opened neither on a consent gate nor on a readable category
+  strip" over a perfectly good shop.
+
+  The band is widened rather than moved, because both readings are real: 800..1300 came off the
+  Indonesian build on 2026-09-03, 650 off this English one on 2026-09-17. 300 keeps the search bar
+  out (measured at y 85..139) and 1400 keeps the bottom nav out (1470..1556).
+*/
+const SHOP_FIRST_CHIP: readonly string[] = ['Semua', 'All']
+const CHIP_BAND_TOP = 300
+const CHIP_BAND_BOTTOM = 1_400
+
+function isFirstChip(n: UiNode): boolean {
+  return n.clickable && SHOP_FIRST_CHIP.includes(n.text.trim()) && n.bounds.top > CHIP_BAND_TOP && n.bounds.top < CHIP_BAND_BOTTOM
+}
+
 function hasShopSurface(tree: UiNode): boolean {
   const gate = all(tree, (n) => n.clickable && /^(Lanjutkan|Continue)$/.test((n.text || n.desc).trim()))
   if (gate.length > 0) return true
-  return all(tree, (n) => n.clickable && n.text.trim() === 'Semua' && n.bounds.top > 800 && n.bounds.top < 1_300).length > 0
+  return all(tree, isFirstChip).length > 0
 }
 
 /**
@@ -134,8 +164,8 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
       steps.push('consent-gate passed (Lanjutkan)')
     }
 
-    const chips = all(gate, (n) => n.clickable && n.text.trim() === 'Semua' && n.bounds.top > 800 && n.bounds.top < 1_300)
-    if (chips.length > 0) reached = 'category strip (Semua chip visible)'
+    const chips = all(gate, isFirstChip)
+    if (chips.length > 0) reached = `category strip (${chips[0]?.text.trim() ?? SHOP_FIRST_CHIP[0]} chip visible)`
     else if (consentPassed) reached = 'consent passed, strip not confirmed'
     else {
       await capture(ctx, 'shop-missing')
