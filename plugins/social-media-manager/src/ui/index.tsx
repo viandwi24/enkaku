@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
-import { ArrowsClockwiseIcon, Button, Spinner, Tabs, TabsContent, TabsList, TabsTrigger, type PluginViewProps } from '@enkaku/ui'
+import { ArrowsClockwiseIcon, Button, CaretLeftIcon, PlusIcon, Spinner, Tabs, TabsContent, TabsList, TabsTrigger, type PluginViewProps } from '@enkaku/ui'
+import { AccountsPanel } from './parts/accounts'
 import { ComposePanel } from './parts/compose'
 import { SessionDetail, SessionsPanel } from './parts/sessions'
 import { OpenSpeechContext, SpeechPanel } from './parts/speech'
@@ -9,7 +10,7 @@ import { DraftsPanel } from './parts/drafts'
  * One screen for the whole job: upload the videos, say where they go, name the
  * batch, start it, watch it.
  *
- * ## One MENU, three places to stand
+ * ## One MENU, four places to stand
  *
  * This plugin used to declare three views — a table of post rows, a table of
  * upload sessions, and a page listing which platforms can post. The owner's
@@ -22,31 +23,51 @@ import { DraftsPanel } from './parts/drafts'
  * The answer is not one flat page. Their next words were how it should be laid
  * out: *"ga bisa dibuat tabs aja kah biar rapih... dihalaman depan itu
  * nampilin semua sesi atau grup, baru kalau di-details masing-masing sesi baru
- * ada sub page nampilin list item dari sesi"* — one menu entry, two tabs, and
- * a session that opens onto its own page. So:
+ * ada sub page nampilin list item dari sesi"* — one menu entry, a row of tabs,
+ * and a session that opens onto its own page. So:
  *
  * - **Sessions** — every batch, newest first, one table row each, with how far
- *   each has got.
- * - **New session** — the whole compose flow: files in, phones and pacing
- *   chosen, session created.
- * - **A session's own page** — reached by opening a row, and it replaces both
+ *   each has got. **New session** is a BUTTON here, not a fifth tab (0.37.0).
+ * - **Auto-Caption** — Whisper: the model, the doctor, the caption style. Named
+ *   "Speech" until 0.37.0, which said what it ran rather than what it is for.
+ * - **Cleanup** — each platform's drafts, and the videos the post scripts left
+ *   on the phones.
+ * - **Accounts** — which account each phone is signed in to on each platform.
+ * - **A session's own page** — reached by opening a row, and it replaces the
  *   tabs rather than expanding inside one, because forty videos with their
  *   phones and errors is a page's worth of reading, not a drawer.
+ *
+ * ## Why composing is a page and not a tab
+ *
+ * The owner (2026-09-16): *"tabs dikompakkan lagi"*, and New session moved out
+ * of the row. A tab is a PLACE the operator stands; composing is a task they
+ * start and finish, after which they want the session they just made. It had
+ * the same standing in the row as the four lists and it was never one of them —
+ * so it is now a primary button on the Sessions tab, opening the compose flow
+ * full-width with the same **All sessions** way back a session's page has.
  *
  * ## Where the page is, is in the URL
  *
  * `params`/`setParams` are the host's query passthrough (`PluginViewProps`),
- * so the tab and the open session live in the address bar: a reload lands
- * where the operator was, and a link to one session is a link somebody can
- * send. Holding either in `useState` would have cost both.
+ * so the tab, the compose flow and the open session all live in the address
+ * bar: a reload lands where the operator was, and a link to one session is a
+ * link somebody can send. Holding any of them in `useState` would have cost
+ * both. Every URL that worked before still works: `tab=new` opens composing
+ * (now as a page), and `tab=speech` opens Auto-Caption under its new name.
  *
  * What it does NOT buy is the browser's Back button: the host writes with
  * `history.replaceState` (deliberately — a `router.replace` under
  * `output: 'export'` re-resolves the route and could remount this component
  * mid-flow), so opening a session edits the URL rather than pushing an entry.
- * Hence the explicit **All sessions** button on the session page: it is the
- * way back, and it is on screen rather than assumed.
+ * Hence the explicit **All sessions** button on both sub-pages: it is the way
+ * back, and it is on screen rather than assumed.
  */
+
+/** The four places to stand. `new` is a PAGE reached from Sessions, never a tab. */
+type Tab = 'sessions' | 'speech' | 'drafts' | 'accounts'
+const TABS: readonly string[] = ['sessions', 'speech', 'drafts', 'accounts']
+const isTab = (value: unknown): value is Tab => typeof value === 'string' && TABS.includes(value)
+
 function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactElement {
   /*
     The one piece of state that is NOT in the URL: a counter the compose panel
@@ -57,14 +78,18 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
   const [refreshKey, setRefreshKey] = useState(0)
 
   const openSessionId = params.session ?? null
-  const tab = params.tab === 'new' || params.tab === 'speech' || params.tab === 'drafts' ? params.tab : 'sessions'
+  /* `tab=new` is kept as the compose flow's address: every old link still lands on it. */
+  const composing = params.tab === 'new'
+  const tab: Tab = isTab(params.tab) ? params.tab : 'sessions'
 
   const openSession = useCallback((groupId: string) => setParams({ session: groupId }), [setParams])
-  const backToList = useCallback(() => setParams({ session: null }), [setParams])
+  const backToSessions = useCallback(() => setParams({ session: null, tab: null }), [setParams])
+  const openNew = useCallback(() => setParams({ session: null, tab: 'new' }), [setParams])
   /*
-    Speech (0.20.0) is a tab, not a second sidebar entry, for the reason this whole page is one entry: Whisper exists
-    here for auto captions, and the operator reaches it from the note beside those buttons. That note switches the tab in
-    place through this context, from the compose tab or a session's own page alike.
+    Auto-Caption (0.20.0 as "Speech") is a tab, not a second sidebar entry, for the reason this whole page is one entry:
+    Whisper exists here for auto captions, and the operator reaches it from the note beside those buttons. That note
+    switches the tab in place through this context, from the compose flow or a session's own page alike. The `speech`
+    query value is unchanged — only what the tab is CALLED changed — so every link already written still opens it.
   */
   const openSpeech = useCallback(() => setParams({ session: null, tab: 'speech' }), [setParams])
 
@@ -93,7 +118,24 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
   if (openSessionId !== null) {
     return (
       <OpenSpeechContext.Provider value={openSpeech}>
-        <SessionDetail groupId={openSessionId} refreshKey={refreshKey} onBack={backToList} />
+        <SessionDetail groupId={openSessionId} refreshKey={refreshKey} onBack={backToSessions} />
+      </OpenSpeechContext.Provider>
+    )
+  }
+
+  if (composing) {
+    return (
+      <OpenSpeechContext.Provider value={openSpeech}>
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" onClick={backToSessions}>
+              <CaretLeftIcon aria-hidden />
+              All sessions
+            </Button>
+            <span className="text-[12px] text-dim">New session</span>
+          </div>
+          <ComposePanel onCreated={onCreated} />
+        </div>
       </OpenSpeechContext.Provider>
     )
   }
@@ -104,16 +146,17 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
   */
   return (
     <OpenSpeechContext.Provider value={openSpeech}>
-      <Tabs value={tab} onValueChange={(next) => setParams({ tab: next === 'new' || next === 'speech' || next === 'drafts' ? next : null })} className="gap-3">
+      <Tabs value={tab} onValueChange={(next) => setParams({ tab: next === 'sessions' ? null : next })} className="gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          <TabsList variant="line">
+          {/* `compact` (0.37.0): the owner asked for a tighter row, and four names in chips read as one row on a narrow window. */}
+          <TabsList variant="compact">
             <TabsTrigger value="sessions">Sessions</TabsTrigger>
-            <TabsTrigger value="new">New session</TabsTrigger>
-            <TabsTrigger value="speech">Speech</TabsTrigger>
+            <TabsTrigger value="speech">Auto-Caption</TabsTrigger>
             <TabsTrigger value="drafts">Cleanup</TabsTrigger>
+            <TabsTrigger value="accounts">Accounts</TabsTrigger>
           </TabsList>
           <div className="grow" />
-          {tab !== 'new' && tab !== 'drafts' ? (
+          {tab === 'sessions' || tab === 'speech' ? (
             <>
               {refreshing ? <Spinner className="size-3.5 text-faint" /> : null}
               <Button variant="outline" size="sm" onClick={refresh}>
@@ -122,20 +165,27 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
               </Button>
             </>
           ) : null}
+          {tab === 'sessions' ? (
+            <Button size="sm" onClick={openNew}>
+              <PlusIcon aria-hidden />
+              New session
+            </Button>
+          ) : null}
         </div>
 
         <TabsContent value="sessions">
-          <SessionsPanel refreshKey={refreshKey} onOpen={openSession} onRefreshingChange={setRefreshing} />
-        </TabsContent>
-        <TabsContent value="new">
-          <ComposePanel onCreated={onCreated} />
+          <SessionsPanel refreshKey={refreshKey} onOpen={openSession} onRefreshingChange={setRefreshing} onNew={openNew} />
         </TabsContent>
         <TabsContent value="speech">
           <SpeechPanel refreshKey={refreshKey} onRefreshingChange={setRefreshing} />
         </TabsContent>
-        {/* Drafts (0.32.0): each platform pack's clear-drafts member, sent to the phones picked here. */}
+        {/* Cleanup (0.32.0 as Drafts): each platform pack's clear-drafts member, sent to the phones picked here. */}
         <TabsContent value="drafts">
           <DraftsPanel />
+        </TabsContent>
+        {/* Accounts (0.37.0): who each phone is signed in as, read by `smm/sync-accounts` and stored under `account:`. */}
+        <TabsContent value="accounts">
+          <AccountsPanel />
         </TabsContent>
       </Tabs>
     </OpenSpeechContext.Provider>

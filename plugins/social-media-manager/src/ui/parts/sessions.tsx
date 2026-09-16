@@ -15,6 +15,7 @@ import {
   LoadingRows,
   PencilSimpleIcon,
   PlayIcon,
+  PlusIcon,
   Progress,
   Spinner,
   Table,
@@ -808,10 +809,13 @@ export function SessionsPanel({
   refreshKey,
   onOpen,
   onRefreshingChange,
+  onNew,
 }: {
   refreshKey: number
   onOpen: (groupId: string) => void
   onRefreshingChange: (refreshing: boolean) => void
+  /** Opens the compose flow — the same button the tab row carries, so an empty list is not a dead end. */
+  onNew: () => void
 }): ReactElement {
   const { data, error, loading, reload } = useSessionsData(refreshKey)
   const { startSession, retrySession, removeSession, busy } = useSessionActions(reload)
@@ -842,7 +846,13 @@ export function SessionsPanel({
         <EmptyState
           icon={<FilmStripIcon className="size-4" aria-hidden />}
           title="No sessions yet"
-          description="Open “New session”, drop in your videos, choose where they go and how fast — the session appears here, with every video, every phone and every failure in it."
+          description="Press New session, drop in your videos, choose where they go and how fast — the session appears here, with every video, every phone and every failure in it."
+          action={
+            <Button size="sm" onClick={onNew}>
+              <PlusIcon aria-hidden />
+              New session
+            </Button>
+          }
         />
       ) : (
         <div className="overflow-hidden rounded-inner border border-line">

@@ -76,6 +76,19 @@ import {
  *
  * ## Changelog
  *
+ * - **0.37.0 — a compacter tab row, and an Accounts tab.** The owner
+ *   (2026-09-16): *"tabs dikompakkan lagi"*, and a way to know which account
+ *   each phone is actually signed in to. The row is now four compact tabs —
+ *   Sessions, Auto-Caption (the Whisper panel, renamed from "Speech"; its
+ *   `tab=speech` links still work), Cleanup, Accounts — and **New session** is
+ *   a button on the Sessions tab opening the compose flow as its own page
+ *   (`tab=new` still addresses it), rather than a fifth tab standing beside
+ *   four lists. The new **Accounts** tab sends `smm/sync-accounts` to the
+ *   phones carrying each platform's label (or to the phones chosen), follows
+ *   every job to its end, and tables what was stored under `account:`: the
+ *   phone, the platform, each handle with its display name and slot, which one
+ *   the app is standing in now, and when it was read. A phone no sync has ever
+ *   read is named as such, and a row's own error is shown rather than hidden.
  * - **0.36.0 — the router never sends a video whose file was deleted.** Files
  *   can now be cleaned from the Files page. Before dispatching, the router asks the
  *   farm's new `artifact.get` whether the upload still exists (read once a minute
@@ -1269,7 +1282,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.36.0',
+  version: '0.37.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

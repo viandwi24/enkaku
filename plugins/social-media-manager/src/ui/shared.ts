@@ -283,6 +283,65 @@ export async function listPosts(): Promise<Post[]> {
   return posts
 }
 
+// ---------------------------------------------------------------------------
+// The accounts each phone is signed in to (0.37.0)
+// ---------------------------------------------------------------------------
+
+/** One account an app holds. TikTok keeps several in one install, in the order its switcher lists them. */
+export const AccountSchema = z.object({
+  username: z.string(),
+  displayName: z.string().nullable().default(null),
+  /** The platform's own id for the account, when the app shows one. Handles are renamed; this is not. */
+  accountId: z.string().nullable().default(null),
+  /** Its position in the app's own account list, from 0. */
+  slot: z.number(),
+  /** `true` on the ONE the app was standing in when the read finished. */
+  current: z.boolean(),
+})
+export type Account = z.infer<typeof AccountSchema>
+
+/**
+ * What `smm/sync-accounts` stores: one row per phone and platform, under
+ * `account:<platform>:<deviceId>`.
+ *
+ * `evidence` is how sure the row is that the account marked `current` really is
+ * the one signed in: `confirmed` was read from the app itself, `moved` means the
+ * account changed while the read was under way, `assumed` is the switcher's own
+ * first entry with nothing confirming it, and `none` established nothing. The
+ * screen says which — a handle shown as fact when the phone only guessed is how
+ * a video ends up on somebody else's account.
+ */
+export const AccountRowSchema = z.object({
+  version: z.literal(1),
+  platform: z.enum(['tiktok', 'youtube', 'instagram']),
+  deviceId: z.string(),
+  deviceName: z.string().nullable().default(null),
+  accounts: z.array(AccountSchema).default([]),
+  /** Unix seconds the read finished. */
+  readAt: z.number(),
+  evidence: z.enum(['confirmed', 'moved', 'assumed', 'none']).default('none'),
+  error: z.string().nullable().default(null),
+})
+export type AccountRow = z.infer<typeof AccountRowSchema>
+
+export const ACCOUNT_PREFIX = 'account:'
+
+/** The key a row is stored under — `account:tiktok:<deviceId>`. Also this screen's React key for it. */
+export function accountRowKeyOf(row: AccountRow): string {
+  return `${ACCOUNT_PREFIX}${row.platform}:${row.deviceId}`
+}
+
+/** Every stored account row. A row this build cannot parse is skipped, never shown half-read. */
+export async function listAccountRows(): Promise<AccountRow[]> {
+  const rows = await readAll(ACCOUNT_PREFIX)
+  const out: AccountRow[] = []
+  for (const row of rows) {
+    const parsed = AccountRowSchema.safeParse(row.value)
+    if (parsed.success) out.push(parsed.data)
+  }
+  return out
+}
+
 const RunScriptResult = z.object({
   results: z.array(z.object({ deviceId: z.string(), status: z.string(), jobId: z.string().nullable().default(null), message: z.string().nullable().default(null) })),
 })
