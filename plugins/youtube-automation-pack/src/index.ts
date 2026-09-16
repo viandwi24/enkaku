@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.13',
+  version: '0.39.14',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,42 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.14 — five members blamed five different things for one Play Store
+   * sheet, and a channel row that was a video row.**
+   * The first English-locale matrix for this pack scored 1 of 8, and the
+   * failures read as five separate bugs. They were two.
+   * (1) A search results page carries sponsored install cards ("Sponsored -
+   * MIFX - Trading di Aplikasi MIFX - FREE - Install"). A tap reached one,
+   * Google Play opened over YouTube, and nothing closed it. Every member after
+   * that failed at its FIRST step: `watch-video` and `scroll-live` said "no
+   * search button", `scroll-shorts` said "the Shorts tab was not on the bottom
+   * navigation", `clear-drafts` said the bar has no "Anda" tab, `post-video`
+   * said no Create ("Buat") button and suggested a SIGNED-OUT account. Both of
+   * the last two name Indonesian labels on an English phone, which reads
+   * exactly like a locale bug and is not one; the account lead is the most
+   * expensive of the lot. The trees say the same thing five times over: zero
+   * YouTube nodes, `['com.android.systemui', 'com.android.vending']`.
+   * Neither existing guard could fire — `pictureInPictureOnly` returns false at
+   * its first line with no YouTube nodes, and `googleAccountPageOnTop` looks for
+   * `com.google.android.gms`, not `com.android.vending`. `foreignAppOnTop` is
+   * about SHAPE instead: any non-YouTube, non-systemui window covering the
+   * screen with no YouTube node anywhere. The launcher qualifies too, which is
+   * correct — that is YouTube having failed to start at all. Recovery is BACK
+   * then `launch`; the intruder is never force-stopped, because on a production
+   * phone that package may be the owner's and killing it to tidy a test is not
+   * this pack's call.
+   * (2) `pickChannelRow`'s precise rungs read `buka|open` and `lihat|view`
+   * channel. English YouTube says **"Go to channel"**, so both missed — and the
+   * LOOSE rung below them then matched the whole 436px video row, whose desc
+   * contains both "channel" and the query word. `clickableFor` climbed to the
+   * row container, tapping it played the video, and the run correctly reported
+   * "it does not look like a channel page". Replayed offline against the saved
+   * `04-results` tree to confirm which rung fired before anything was changed.
+   * The precise node was on the page the whole time: `go to channel rizki
+   * aditama | sekolah trading`, clickable, at [21,1462][84,1472]. The id-ID runs
+   * had passed through the `handle` rung (`@RizkiAditama`); this English page
+   * carries no handle at all, so nothing caught the fall.
    *
    * **0.39.13 — the last Indonesian-only label in this pack.**
    * `scroll-shorts`' rail check read

@@ -413,7 +413,28 @@ export function pickChannelRow(tree: UiNode, query: string): { node: UiNode; via
   const needle = query.trim().toLowerCase()
 
   const rungs: readonly { via: string; test: (n: UiNode) => boolean }[] = [
-    { via: 'open-channel', test: (n) => n.clickable && /^(buka|open)\s+channel\b/.test(label(n)) },
+    /*
+      `go to` is the English build's wording, and its absence did not merely miss a rung — it let the
+      LOOSE rung below win (0.39.14).
+
+      Replayed offline against the tree this member saved when it failed on the owner's moto with
+      YouTube in `en-US` (artifact `04-results`, 2026-09-17):
+
+        rung open-channel  : no match
+        rung view-channel  : no match
+        rung channel-named : FIRES on [0,1036][720,1472] — the whole 436px video ROW, whose desc
+                             reads "belajar forex … - go to channel rizki aditama … - play video"
+
+      That row contains "channel" and the query word, so the loose rung matched it, `clickableFor`
+      climbed to the row container, and tapping a video row plays the video: the run opened a player
+      with a pre-roll advert and then correctly reported "it does not look like a channel page".
+
+      The precise node was on the page all along — `go to channel rizki aditama | sekolah trading`,
+      clickable, at [21,1462][84,1472]. Naming `go to` here makes it win before the loose rung is
+      ever reached. The id-ID runs passed through the `handle` rung instead (`@RizkiAditama`), and
+      this English page carries no handle at all, so nothing caught the fall.
+    */
+    { via: 'open-channel', test: (n) => n.clickable && /^(buka|open|go to)\s+channel\b/.test(label(n)) },
     { via: 'view-channel', test: (n) => n.clickable && /^(lihat|view)\s+channel\b/.test(label(n)) },
     // "Subscribe ke Eno Bening." names the channel and appears on no other row.
     // Used to LOCATE the row, never tapped: `clickableFor` climbs to the row

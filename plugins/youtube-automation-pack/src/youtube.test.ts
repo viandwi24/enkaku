@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readdirSync } from 'node:fs'
 import type { UiNode } from '@enkaku/protocol'
-import { googleAccountPageOnTop, pictureInPictureOnly } from './youtube'
+import { foreignAppOnTop, googleAccountPageOnTop, pictureInPictureOnly } from './youtube'
 
 async function fixture(name: string): Promise<UiNode> {
   return (await Bun.file(new URL(`./__fixtures__/${name}`, import.meta.url)).json()) as UiNode
@@ -80,5 +80,86 @@ describe('pictureInPictureOnly', () => {
     for (const name of names) {
       expect({ name, pip: pictureInPictureOnly(await fixture(name)) }).toEqual({ name, pip: false })
     }
+  })
+})
+
+/*
+  0.39.14 — the Play Store sheet that cost five members in one matrix.
+
+  Rebuilt from the dumps two of those failures saved on the owner's moto g06 (2026-09-17,
+  `yt-drafts-no-you-tab` and `yt-01-home`, 150 and 151 nodes): NOT ONE YouTube node, packages
+  `['com.android.systemui', 'com.android.vending']`, and the MIFX listing's own words.
+
+  A search results page carries sponsored install cards; a tap reached one, Google Play opened over
+  YouTube, and nothing closed it. Every member afterwards failed at its first step blaming something
+  else — "no search button", "the Shorts tab was not on the bottom navigation", no "Anda" tab, no
+  Create ("Buat") button "usually a signed-out YouTube". Five accusations, one cause, and the suite
+  was 134 green before this fix and 134 after: nothing here could see it.
+*/
+function playStoreSheet(): UiNode {
+  const play = (children: UiNode[] = []): UiNode =>
+    node({ packageName: 'com.android.vending', bounds: { left: 0, top: 0, right: 720, bottom: 1640 }, children })
+  return node({
+    className: 'hierarchy',
+    children: [
+      play([play([node({ packageName: 'com.android.vending', text: 'Platform trading forex dan komoditas', bounds: { left: 40, top: 900, right: 680, bottom: 960 } })])]),
+      node({ packageName: 'com.android.vending', desc: 'Tutup sheet', clickable: true, bounds: { left: 24, top: 120, right: 96, bottom: 192 } }),
+      node({ packageName: 'com.android.systemui', text: '07.23', bounds: { left: 14, top: 20, right: 98, bottom: 50 } }),
+      node({ packageName: 'com.android.systemui', desc: 'Kembali', clickable: true, bounds: { left: 83, top: 1556, right: 221, bottom: 1640 } }),
+    ],
+  })
+}
+
+/** An ordinary YouTube home screen: its own package, full screen, with the bottom bar drawn. */
+function youtubeHome(): UiNode {
+  const yt = (partial: Partial<UiNode>): UiNode => node({ packageName: 'com.google.android.youtube', ...partial })
+  return node({
+    className: 'hierarchy',
+    children: [
+      yt({ bounds: { left: 0, top: 0, right: 720, bottom: 1640 }, children: [yt({ desc: 'Search', clickable: true, bounds: { left: 622, top: 72, right: 720, bottom: 170 } })] }),
+      yt({ desc: 'Home', clickable: true, bounds: { left: 0, top: 1470, right: 144, bottom: 1556 } }),
+      yt({ desc: 'Shorts', clickable: true, bounds: { left: 144, top: 1470, right: 288, bottom: 1556 } }),
+      node({ packageName: 'com.android.systemui', desc: 'Kembali', clickable: true, bounds: { left: 83, top: 1556, right: 221, bottom: 1640 } }),
+    ],
+  })
+}
+
+describe('foreignAppOnTop — one cause behind five different accusations (0.39.14)', () => {
+  test('a screen-covering Play Store sheet with no YouTube node is recognised', () => {
+    expect(foreignAppOnTop(playStoreSheet())).toBe(true)
+  })
+
+  test('an ordinary YouTube home screen is NOT — a guard that fires here would relaunch a healthy run', () => {
+    expect(foreignAppOnTop(youtubeHome())).toBe(false)
+  })
+
+  test('the System UI alone never counts as a foreign app', () => {
+    const barsOnly = node({
+      className: 'hierarchy',
+      children: [
+        node({ packageName: 'com.android.systemui', bounds: { left: 0, top: 0, right: 720, bottom: 1640 } }),
+        node({ packageName: 'com.android.systemui', desc: 'Kembali', clickable: true, bounds: { left: 83, top: 1556, right: 221, bottom: 1640 } }),
+      ],
+    })
+    expect(foreignAppOnTop(barsOnly)).toBe(false)
+  })
+
+  test('the launcher standing alone IS caught — that is YouTube never having started', () => {
+    const launcher = node({
+      className: 'hierarchy',
+      children: [
+        node({ packageName: 'com.motorola.launcher3', bounds: { left: 0, top: 0, right: 720, bottom: 1640 } }),
+        node({ packageName: 'com.android.systemui', text: '05.29', bounds: { left: 14, top: 20, right: 98, bottom: 50 } }),
+      ],
+    })
+    expect(foreignAppOnTop(launcher)).toBe(true)
+  })
+
+  test('the Play sheet is not mistaken for the two guards that could not see it', () => {
+    // `pictureInPictureOnly` returns false at its first line with no YouTube nodes, and
+    // `googleAccountPageOnTop` looks for `com.google.android.gms`, not `com.android.vending`.
+    // Asserted so a future widening of either cannot quietly absorb this case and hide why it exists.
+    expect(pictureInPictureOnly(playStoreSheet())).toBe(false)
+    expect(googleAccountPageOnTop(playStoreSheet())).toBe(false)
   })
 })

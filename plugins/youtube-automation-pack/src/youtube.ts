@@ -201,6 +201,48 @@ export function googleAccountPageOnTop(tree: UiNode): boolean {
 }
 
 /**
+ * Another app is standing over YouTube entirely (0.39.14).
+ *
+ * Measured on the owner's moto g06 on 2026-09-17, and it cost FIVE members in one matrix. A search
+ * results page carries sponsored install cards ("Sponsored - MIFX - Trading di Aplikasi MIFX - FREE -
+ * Install - Link opens in new window"); a tap reached one, Google Play opened over YouTube, and the
+ * sheet was never closed. Every member that ran afterwards then failed at its FIRST step, each
+ * blaming something different:
+ *
+ *     watch-video    "no search button on the YouTube home screen"
+ *     scroll-shorts  "the Shorts tab was not on the bottom navigation"
+ *     scroll-live    "no search button on the YouTube home screen"
+ *     clear-drafts   "YouTube's bottom bar has no \"Anda\" tab"
+ *     post-video     "no Create (\"Buat\") button ... usually a signed-out YouTube"
+ *
+ * Five accusations, one cause. The last two name Indonesian labels on an English phone, which reads
+ * exactly like a locale bug and is not one; `post-video`'s blames the account, which is the most
+ * expensive wrong lead of the lot. Both trees say the same thing: **zero** YouTube nodes,
+ * `packages: ['com.android.systemui', 'com.android.vending']`, and the Play listing's own words.
+ *
+ * Neither existing guard could fire. `pictureInPictureOnly` returns false at its first line when
+ * there are no YouTube nodes, and `googleAccountPageOnTop` looks for `com.google.android.gms`, not
+ * `com.android.vending`. So this one is deliberately about SHAPE, not about Play: any package that
+ * is not YouTube and not the system UI, covering the screen, with no YouTube node anywhere. The
+ * launcher qualifies too, which is correct — that is YouTube having failed to come up at all.
+ */
+export function foreignAppOnTop(tree: UiNode): boolean {
+  const nodes = flatten(tree)
+  if (nodes.some((n) => n.packageName === YOUTUBE_PACKAGE)) return false
+  const width = Math.max(0, ...nodes.map((n) => n.bounds.right))
+  const height = Math.max(0, ...nodes.map((n) => n.bounds.bottom))
+  if (width === 0 || height === 0) return false
+  return nodes.some(
+    (n) =>
+      n.packageName !== '' &&
+      n.packageName !== YOUTUBE_PACKAGE &&
+      n.packageName !== 'com.android.systemui' &&
+      n.bounds.right - n.bounds.left >= width * 0.9 &&
+      n.bounds.bottom - n.bounds.top >= height * 0.5,
+  )
+}
+
+/**
  * What YouTube may ask for on the screens this pack walks, answered before it opens (0.27.0).
  *
  * On Android 14+ the system permission dialog is hidden from the farm's reader; the production
@@ -275,7 +317,7 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
   await sleep(3_000)
   // A Google account page can open over YouTube at launch (`googleAccountPageOnTop`). BACK leaves it
   // without answering anything on it — its only buttons add a recovery phone or open settings.
-  const readyOrAccountPage = (t: UiNode): boolean => isReady(t) || googleAccountPageOnTop(t) || pictureInPictureOnly(t)
+  const readyOrAccountPage = (t: UiNode): boolean => isReady(t) || googleAccountPageOnTop(t) || pictureInPictureOnly(t) || foreignAppOnTop(t)
   let nav = await waitForTree(ctx, readyOrAccountPage, { budgetMs: READY_TIMEOUT_MS })
   /*
     Counted, because the caller's failure depends on it (0.39.7). Production #54 (2026-09-16) met this
@@ -290,6 +332,28 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
     accountPagePresses += 1
     await ctx.device.key('BACK')
     await sleep(1_500)
+    nav = await waitForTree(ctx, readyOrAccountPage, { budgetMs: 12_000 })
+  }
+
+  /*
+    Another app over YouTube (0.39.14) — see `foreignAppOnTop` for what this cost.
+
+    BACK closes a sheet; `launch` brings YouTube's own task back to the front. The intruder is NEVER
+    force-stopped: on a production phone that package may be something of the owner's that has
+    nothing to do with this run, and killing it to tidy a test is not this pack's call. If three
+    rounds do not clear it, the caller's own anchor reports what it found — but the log will already
+    have named the app, so the failure is not blamed on a missing button.
+  */
+  for (let round = 0; round < 3 && !isReady(nav.tree) && foreignAppOnTop(nav.tree); round++) {
+    const intruder =
+      flatten(nav.tree)
+        .map((n) => n.packageName)
+        .find((pkg) => pkg !== '' && pkg !== YOUTUBE_PACKAGE && pkg !== 'com.android.systemui') ?? 'an unknown app'
+    ctx.log.warn(`${intruder} is standing over YouTube — closing it with BACK and bringing YouTube back`, { round: round + 1 })
+    await ctx.device.key('BACK')
+    await sleep(1_500)
+    await ctx.device.app.launch(YOUTUBE_PACKAGE)
+    await sleep(2_000)
     nav = await waitForTree(ctx, readyOrAccountPage, { budgetMs: 12_000 })
   }
   /*
