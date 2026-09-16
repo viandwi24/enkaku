@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.12',
+  version: '0.39.13',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,22 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.13 — the last Indonesian-only label in this pack.**
+   * `scroll-shorts`' rail check read
+   * `/^(sukai|suka|like) (video ini|this video)/` OR
+   * `n.desc.trim() === 'Video Berikutnya'`. The first clause was already
+   * bilingual, so the rail is read correctly on an English phone either way —
+   * this is the low-severity one, found by a sweep rather than by a failure.
+   * It is fixed anyway because a fallback that covers one locale less than the
+   * clause beside it is the shape every bug found on 2026-09-17 started as, and
+   * because it was the only one left: a scan of this pack's finder comparisons
+   * turned up 27, and after this, every one carries both spellings. No selector
+   * in this pack passes a bare language literal at all.
+   * Stated plainly since the scan is in the record: it first reported SIX
+   * single-spelling comparisons here. Four were artefacts of the scanner
+   * splitting `n.desc === 'Buat' || n.desc === 'Create'` into two hits, and one
+   * was "shorts", the same word in both languages. One was real.
    *
    * **0.39.12 — the cast button is not a player.**
    * `playerEvidence`'s transport rung matched `/^(jeda|pause|putar|play|

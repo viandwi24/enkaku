@@ -2,6 +2,7 @@ import type { PluginMemberScript } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
 import { sleep } from './human'
+import { captureSafe } from './gesture'
 import { ACCOUNTS_KEY, parseSheetAccounts, type StoredAccounts } from './accounts'
 import { MAX_SHEET_SCROLL_ATTEMPTS, TIKTOK_PACKAGE, openSwitchAccountSheet, scanSheet, type SheetRow } from './sheet'
 
@@ -92,7 +93,22 @@ const listAccountsScript: PluginMemberScript<typeof paramsSchema, typeof resultS
       // Refuse rather than store nothing. A sheet with zero rows is not a device with zero
       // accounts — the signed-in account is always listed — so this is a misread, and writing it
       // would replace a good list with an empty one on the screen this member exists to fill.
-      await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-empty-sheet`)
+      /*
+        A TREE as well as a screenshot (1.49.12).
+
+        This path fired on the owner's moto on 2026-09-17 and saved two screenshots and nothing else.
+        The picture showed the sheet OPEN and POPULATED — "Switch account", `dewi_purnama280` with
+        its checkmark, `user2578127329501` with a 9+ badge, `Add account` — while `scanSheet` read
+        zero rows. Rows are found by `rowsById(sheetNode, 'l_z')`, an obfuscated id this app rotates
+        between builds, and the checkmark lookup missed too although a tick was plainly drawn. Both
+        readers are keyed on the row SUBTREE, and without a dump there is no way to learn what that
+        subtree carries now — the diagnosis had to wait for the phone to come free.
+
+        `captureSafe`, not `capture`: this is already a failure path, and `capture` THROWS when the
+        inspector cannot dump, which would replace the accurate message below with a complaint about
+        the inspector. Adding evidence must never remove evidence.
+      */
+      await captureSafe(ctx, `${ARTIFACT_PREFIX}-empty-sheet`)
       throw Object.assign(
         new Error(`the switch-account sheet listed no accounts at all, even after ${MAX_SHEET_SCROLL_ATTEMPTS} scrolls — refusing to overwrite the stored list with nothing`),
         { code: 'E_NO_ACCOUNTS_FOUND' },
@@ -132,7 +148,9 @@ const listAccountsScript: PluginMemberScript<typeof paramsSchema, typeof resultS
    * on the device to undo: this member left the account list exactly as it found it.
    */
   async finish(ctx) {
-    if (ctx.error) await ctx.artifact.screenshot(`${ARTIFACT_PREFIX}-failed`)
+    // The tree too (1.49.12) — the generic failure artifact was a screenshot alone, and on Compose
+    // surfaces what a person sees and what the script can read diverge constantly.
+    if (ctx.error) await captureSafe(ctx, `${ARTIFACT_PREFIX}-failed`)
     await ctx.device.app.forceStop(TIKTOK_PACKAGE, { clearRecents: true })
   },
 }

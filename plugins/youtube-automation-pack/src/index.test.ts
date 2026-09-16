@@ -18,7 +18,7 @@ describe('youtube-automation-pack manifest', () => {
   /** The three-site version bump `CLAUDE.md` requires: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.39.12')
+    expect(plugin.version).toBe('0.39.13')
     expect(plugin.version).toBe(pkg.version)
   })
 

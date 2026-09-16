@@ -114,7 +114,14 @@ function shortsTabOf(tree: UiNode): UiNode | null {
 
 /** Are we inside the Shorts player? The rail buttons are the only place these descriptions appear. */
 export function inShorts(tree: UiNode): boolean {
-  return flatten(tree).some((n) => /^(sukai|suka|like) (video ini|this video)\b/i.test(n.desc.trim()) || n.desc.trim() === 'Video Berikutnya')
+  // Both spellings on the second clause too (0.39.13). The first clause was already bilingual, so
+  // this rail is READ correctly in English either way — but `Video Berikutnya` alone would have been
+  // the only Indonesian-only label left in this pack after the 2026-09-17 sweep, and a fallback that
+  // silently covers one locale less than the clause beside it is the shape every bug found today
+  // started as.
+  return flatten(tree).some(
+    (n) => /^(sukai|suka|like) (video ini|this video)\b/i.test(n.desc.trim()) || /^(video berikutnya|next video)$/i.test(n.desc.trim()),
+  )
 }
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {

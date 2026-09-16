@@ -976,6 +976,26 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.49.12 — `list-accounts` saves the TREE when it fails, not just a picture.
+  //   Not a behaviour fix: an instrumentation one, and it is here because its absence cost a
+  //   diagnosis today. On 2026-09-17 the member failed with "the switch-account sheet listed no
+  //   accounts at all", and the two artifacts it saved were both screenshots (identical, 115206
+  //   bytes each). The picture shows the sheet OPEN and POPULATED — "Switch account",
+  //   `dewi_purnama280` with its checkmark, `user2578127329501` with a 9+ badge, `Add account` —
+  //   while `scanSheet` read zero rows.
+  //   That rules the locale work out: rows come from `rowsById(sheetNode, 'l_z')`, an obfuscated id
+  //   this app rotates between builds, and the checkmark lookup missed as well although a tick was
+  //   plainly drawn — and `CHECKMARK_DESCS` has been bilingual since 1.49.8. Both readers key on the
+  //   row SUBTREE. Which id that subtree carries now cannot be learned from a screenshot, so the
+  //   diagnosis had to wait for the device instead of being answered from what the run already had.
+  //   `captureSafe`, not `capture`: this is already a failure path, and `capture` throws when the
+  //   inspector cannot dump, which would replace the accurate message with a complaint about the
+  //   inspector. Adding evidence must never remove evidence.
+  //   The same swap is made in `finish`, whose `ctx.error` artifact was also a screenshot alone.
+  //   Worth recording as a general lesson from this day: three separate times a screenshot suggested
+  //   one cause and the tree showed another — sponsored cards that were nav icons, a promo modal
+  //   that was not in the tree at all, and a "missing feed" that was my own stray tap. On Compose
+  //   surfaces, what a person sees and what a script can read diverge constantly.
   // 1.49.11 — the shop's category strip was missed twice over: wrong word AND wrong place.
   //   `shop-browse` reported "the shop opened neither on a consent gate nor on a readable category
   //   strip" over a perfectly good shop. The tree it saved (`shop-missing`, 297 nodes) held the
@@ -1457,7 +1477,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.49.11',
+  version: '1.49.12',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
