@@ -470,6 +470,19 @@ const TRIM_DONE_IDS = ['shorts_trim_finish_trim_button', 'creation_next_button']
 /** How many times the Shorts editor's "Berikutnya" is pressed again when YouTube does not act on it (0.39.4). */
 const EDITOR_RETAPS = 4
 
+/**
+ * Android's own input-method chooser, standing over whatever was on screen (0.39.5).
+ *
+ * Measured on production #9 (2026-09-16): a dump with not one YouTube node in it, carrying "Enkaku
+ * input — driven by the farm host" and "Switch keyboard". That dialog withholds every app window from
+ * the reader, so anything that reads the screen under it sees nothing and concludes the app is gone.
+ * Matched by its own wording rather than a package, because the chooser is drawn by the system UI on
+ * some builds and by the settings app on others.
+ */
+export function imePickerShowing(tree: UiNode): boolean {
+  return flatten(tree).some((n) => /switch keyboard|ubah keyboard|ganti keyboard|pilih metode (masukan|input)|choose input method/i.test(`${n.text} ${n.desc}`))
+}
+
 const TRIM_DONE_TEXTS: readonly string[] = ['Selesai', 'Done']
 const TRIM_DONE_DESCS: readonly string[] = ['Tambahkan segmen ke project', 'Add segment to project']
 
@@ -1556,7 +1569,23 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         let held = titleFieldText(back.tree)
         for (let read = 0; read < 2 && held === null; read++) {
           await sleep(1_000)
-          held = titleFieldText(await ctx.device.dump())
+          const again = await ctx.device.dump()
+          /*
+            Some of those unreadable screens are not screens at all (0.39.5). Production #9 and #43
+            (2026-09-16) reached this branch with dumps holding no YouTube node whatsoever, and #9's
+            names what was really there: Android's input-method chooser ("Switch keyboard"), which
+            withholds every app window from the reader while it is up. No amount of reading again gets
+            past a dialog — only a press does. BACK closes that chooser and nothing else while it is
+            showing, so it is pressed only on a tree that shows it, and the field is read once more.
+          */
+          if (imePickerShowing(again)) {
+            ctx.log.warn('an input-method chooser is standing over the details screen — closing it with BACK before reading the title again')
+            await ctx.device.key('BACK')
+            await sleep(1_000)
+            held = titleFieldText(await ctx.device.dump())
+          } else {
+            held = titleFieldText(again)
+          }
         }
         if (held === '') {
           await ctx.device.tap({ point: titlePoint }, { via: 'adb' })

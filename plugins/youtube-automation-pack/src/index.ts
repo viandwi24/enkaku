@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.4',
+  version: '0.39.5',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,15 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.5 — an input-method chooser is closed, not read through.** The two
+   * runs 0.39.4 was written for came back the same evening on two more phones
+   * (#43 and #9, 2026-09-16), and #9's dump names what is really standing there:
+   * not a screen still drawing but Android's own IME chooser — "Enkaku input —
+   * driven by the farm host", "Switch keyboard" — which withholds every app
+   * window from the reader, which is why those dumps carry no YouTube node at
+   * all. Reading again cannot get past a dialog; only a press can. While the
+   * chooser is in the tree, BACK closes it and the title field is read once more.
    *
    * **0.39.4 — two more presses for a swallowed "Berikutnya", and an
    * unreadable title field is asked again.** Two production runs on 2026-09-16,

@@ -29,6 +29,7 @@ import {
   processingOverlay,
   readChannelCells,
   resumeDraftPrompt,
+  imePickerShowing,
   trimDoneButton,
   updateRequired,
   titleFieldText,
@@ -551,6 +552,48 @@ describe('the gallery, in both of YouTube\'s pickers', () => {
  * `screen-channel-uploading.json` (72395efa ui/00064, the title replaced by "#enkakutest") and
  * `screen-details-hidden-1600.json` (72395efa ui/00058).
  */
+describe("imePickerShowing — Android's own keyboard chooser (0.39.5)", () => {
+  const leaf = (text: string, packageName = 'com.android.systemui'): UiNode => ({
+    resourceId: '',
+    text,
+    desc: '',
+    className: 'android.widget.TextView',
+    packageName,
+    bounds: { left: 0, top: 800, right: 720, bottom: 860 },
+    clickable: false,
+    enabled: true,
+    focused: false,
+    index: 0,
+    children: [],
+  })
+  const chooser = (children: UiNode[]): UiNode => ({
+    resourceId: '',
+    text: '',
+    desc: '',
+    className: 'android.widget.FrameLayout',
+    packageName: 'com.android.systemui',
+    bounds: { left: 0, top: 0, right: 720, bottom: 1600 },
+    clickable: false,
+    enabled: true,
+    focused: false,
+    index: 0,
+    children,
+  })
+
+  test('the chooser production #9 met is recognised', () => {
+    expect(imePickerShowing(chooser([leaf('Enkaku input — driven by the farm host'), leaf('Switch keyboard')]))).toBe(true)
+  })
+
+  test('the Indonesian wordings are recognised too', () => {
+    expect(imePickerShowing(chooser([leaf('Pilih metode masukan')]))).toBe(true)
+    expect(imePickerShowing(chooser([leaf('Ubah keyboard')]))).toBe(true)
+  })
+
+  test('a details screen with no chooser over it is not one', () => {
+    expect(imePickerShowing(chooser([leaf('Tambahkan judul', 'com.google.android.youtube')]))).toBe(false)
+  })
+})
+
 describe('trimDoneButton — the trim screen under either id (0.31.0)', () => {
   test('the renamed shorts_trim_finish_trim_button is the trim button, and so is the older creation_next_button', async () => {
     expect(trimDoneButton(await fixture('screen-trim-finish.json'))?.resourceId).toBe('com.google.android.youtube:id/shorts_trim_finish_trim_button')
