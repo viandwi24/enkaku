@@ -52,7 +52,7 @@ import clearDrafts from './clear-drafts'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.10.8',
+  version: '0.10.9',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -61,6 +61,19 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.10.9 — the timing kit is the SDK's now, not this pack's own copy.**
+   * `makeRng`, `between`, the dwell model and `planConfirmStep` existed three
+   * times over — once in each of the TikTok, Instagram and YouTube packs — and
+   * the copies had already drifted, which is exactly why a fix written in one of
+   * them never reached the other two. They delegate to `@enkaku/sdk` now:
+   * `makeRng`, `between`, `pickDwellMs`, `planRevisitStep`. Behaviour is
+   * unchanged, and that is verified rather than asserted — the SDK's test
+   * transcribes the implementation this pack carried and compares the two step
+   * for step, four seeds, 120 rounds each, including the order the rng is drawn
+   * in, which is what a seeded replay depends on. The dwell TABLE stays here: a
+   * reel is not a Short and not a TikTok clip, and the model takes the table as
+   * an argument for that reason. No call site in this pack changed.
    *
    * **0.10.8 — the retry swipe stops being identical, and the easing is drawn.**
    * Two leftovers from the 2026-09-17 survey. `verifiedSwipeUp` drew its first

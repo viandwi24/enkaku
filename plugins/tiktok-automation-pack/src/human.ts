@@ -6,23 +6,16 @@
  * `index.ts` and now needs to cross a module boundary.
  */
 
-/** A small deterministic PRNG so a run can be replayed exactly — `Math.random()` cannot be seeded. */
-export function makeRng(seed: number): () => number {
-  let s = seed >>> 0 || 0x2f6e2b1
-  return () => {
-    // xorshift32 — plenty for gesture jitter, not for anything that needs real entropy.
-    s ^= s << 13
-    s >>>= 0
-    s ^= s >>> 17
-    s ^= s << 5
-    s >>>= 0
-    return s / 0x100000000
-  }
-}
+import { between, makeRng, pickDwellMs, planRevisitStep, type DwellBucket, type RevisitMove, type RevisitPlan, type RevisitStep } from '@enkaku/sdk'
 
-export function between(rng: () => number, lo: number, hi: number): number {
-  return lo + rng() * (hi - lo)
-}
+/** A small deterministic PRNG so a run can be replayed exactly — `Math.random()` cannot be seeded. */
+/*
+  The rng and `between` are the SDK's now (1.49.7), re-exported so no call site in this pack changes.
+  The generator is the same xorshift32 this file has always used — verified across 8 seeds x 2000
+  draws — and the SDK adopted this file's `0x2f6e2b1` fallback so even a zero seed matches. A seeded
+  run replays exactly as it did before.
+*/
+export { between, makeRng }
 
 /**
  * What a post-confirmation round does before it reads the profile again (1.42.0). `refresh` pulls the profile on
@@ -60,14 +53,11 @@ export const MAX_REFRESHES_IN_A_ROW = 3
  * seeded, so a run replays exactly.
  */
 export function planConfirmStep(rng: () => number, recent: readonly ConfirmMove[], plan: ConfirmPlan): ConfirmStep {
-  let refreshRun = 0
-  for (let i = recent.length - 1; i >= 0 && recent[i] === 'refresh'; i--) refreshRun++
-  const last = recent[recent.length - 1]
-  const move: ConfirmMove = last === 'home' ? 'refresh' : refreshRun >= MAX_REFRESHES_IN_A_ROW ? 'home' : rng() < plan.homeChance ? 'home' : 'refresh'
-  const [lo, hi] = plan.waitMs
-  const waitMs = Math.round(between(rng, lo, hi) * (rng() < 0.15 ? between(rng, 1.3, 1.7) : 1))
-  if (move === 'refresh') return { move, waitMs, lingerMs: 0, pull: true }
-  return { move, waitMs, lingerMs: Math.round(between(rng, 1_500, 5_000)), pull: rng() < plan.pullAfterHome }
+  // This body is the SDK's `planRevisitStep` (1.49.7). It is not a look-alike: the SDK's test
+  // transcribes the implementation that used to live here and asserts the two agree step for step
+  // over 120 rounds on four seeds, including the draw ORDER, which is what a seeded replay depends
+  // on. The numbers stay this pack's — they arrive in `plan`.
+  return planRevisitStep(rng, recent as readonly RevisitMove[], { ...plan, waitMs: [plan.waitMs[0], plan.waitMs[1]] } as RevisitPlan) as ConfirmStep
 }
 
 /**
@@ -78,12 +68,12 @@ export function planConfirmStep(rng: () => number, recent: readonly ConfirmMove[
  * for a long time. The weights below are a coarse model of that shape, not measured data — they
  * exist so the *distribution* is uneven, which is the property that matters.
  */
-const WATCH_BUCKETS = [
-  { weight: 0.12, lo: 600, hi: 1_900, label: 'skip' },
-  { weight: 0.58, lo: 2_500, hi: 9_000, label: 'watch' },
-  { weight: 0.22, lo: 9_000, hi: 22_000, label: 'engaged' },
-  { weight: 0.08, lo: 22_000, hi: 50_000, label: 'hooked' },
-] as const
+const WATCH_BUCKETS: readonly DwellBucket[] = [
+  { label: 'skip', weight: 0.12, ms: [600, 1_900] },
+  { label: 'watch', weight: 0.58, ms: [2_500, 9_000] },
+  { label: 'engaged', weight: 0.22, ms: [9_000, 22_000] },
+  { label: 'hooked', weight: 0.08, ms: [22_000, 50_000] },
+]
 
 /**
  * Picks a watch time, TILTED by how well the video matched — never switched by it.
@@ -96,21 +86,17 @@ const WATCH_BUCKETS = [
  * an unmatched one is sometimes watched to the end, exactly as happens with a real viewer.
  */
 export function pickWatchMs(rng: () => number, tilt = 0): { ms: number; label: string } {
-  // `skip` scales down as tilt rises and up as it falls; `engaged`/`hooked` do the opposite.
-  const bias: Record<string, number> = { skip: -1, watch: 0, engaged: 0.8, hooked: 1 }
-  const weights = WATCH_BUCKETS.map((b) => Math.max(0.01, b.weight * (1 + tilt * (bias[b.label] ?? 0))))
-  const total = weights.reduce((sum, w) => sum + w, 0)
-  const r = rng() * total
-  let acc = 0
-  for (let i = 0; i < WATCH_BUCKETS.length; i++) {
-    acc += weights[i] as number
-    if (r <= acc) {
-      const b = WATCH_BUCKETS[i] as (typeof WATCH_BUCKETS)[number]
-      return { ms: Math.round(between(rng, b.lo, b.hi)), label: b.label }
-    }
-  }
-  const last = WATCH_BUCKETS[WATCH_BUCKETS.length - 1] as (typeof WATCH_BUCKETS)[number]
-  return { ms: Math.round(between(rng, last.lo, last.hi)), label: last.label }
+  /*
+    The argument above is now implemented once, in the SDK's `pickDwellMs` — including the per-bucket
+    tilt bias (`skip` -1, `watch` 0, `engaged` 0.8, `hooked` 1) and the 0.01 weight floor, which the
+    SDK takes as `minWeight` precisely so this pack keeps the property the paragraph above defends:
+    even at full tilt every bucket stays reachable.
+
+    One difference, stated rather than buried: the SDK CLAMPS tilt to [-1, 1] where this copy did not.
+    For every value the callers here pass the two agree exactly; outside that range the old code
+    produced negative weights, which the floor then papered over.
+  */
+  return pickDwellMs(rng, tilt, WATCH_BUCKETS, { minWeight: 0.01 })
 }
 
 export function sleep(ms: number): Promise<void> {

@@ -976,6 +976,20 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.49.7 — the timing kit is the SDK's now, not this pack's own copy.
+  //   `makeRng`, `between`, the watch-time model and `planConfirmStep` existed three times over —
+  //   once here, once in the Instagram pack, once in the YouTube pack — and the copies had already
+  //   drifted apart, which is precisely why a fix written in one of them never reached the other
+  //   two. They delegate to `@enkaku/sdk` now: `makeRng`, `between`, `pickDwellMs`,
+  //   `planRevisitStep`. Nothing about the behaviour changes, and that is verified rather than
+  //   claimed — the SDK's own test transcribes the implementation this file carried and compares the
+  //   two step for step, four seeds and 120 rounds each, including the ORDER the rng is drawn in,
+  //   which is what a seeded replay depends on. The watch-time TABLE stays here, and so does the
+  //   0.01 weight floor (it is the SDK's `minWeight` argument now), because those numbers are this
+  //   app's and the model around them is not. One difference worth stating rather than burying: the
+  //   SDK clamps `tilt` to [-1, 1] where this copy did not — identical for every value the callers
+  //   here pass, and safer outside that range, where the old code made negative weights the floor
+  //   then papered over. No call site in this pack changed.
   // 1.49.6 — the second swipe stops being the same swipe, and nothing deletes at zero milliseconds.
   //   Three leftovers from the 2026-09-17 survey. (1) Both verified page-turns drew their first reach
   //   at random and then fell back to a bare constant — 0.85 and 0.6 — so any feed that needed a
@@ -1358,7 +1372,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.49.6',
+  version: '1.49.7',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

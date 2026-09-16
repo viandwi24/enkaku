@@ -1,5 +1,5 @@
 import type { ScriptContext } from '@enkaku/sdk'
-import { aimInside, pick } from '@enkaku/sdk'
+import { aimInside, between, makeRng, pick, pickDwellMs, planRevisitStep, type DwellBucket, type RevisitMove, type RevisitPlan, type RevisitStep } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { flatten } from './tree'
 
@@ -28,14 +28,14 @@ export async function tapNodeJittered(ctx: ScriptContext<unknown>, node: UiNode,
 
 /* ── RNG ─────────────────────────────────────────────────────────────────── */
 
-export function makeRng(seed: number): () => number {
-  let s = seed >>> 0 || 0x2f6e2b1
-  return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 0x100000000 }
-}
-
-export function between(rng: () => number, lo: number, hi: number): number {
-  return lo + rng() * (hi - lo)
-}
+/*
+  The rng and `between` come from the SDK now (0.10.9), and are re-exported so no call site in this
+  pack changes. They are not merely equivalent — the SDK's `makeRng` was checked against this one
+  across 8 seeds x 2000 draws and produces the identical sequence, and its default seed constant was
+  changed to this pack's `0x2f6e2b1` so even the zero case matches. A seeded run replays exactly as
+  it did before.
+*/
+export { between, makeRng }
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -43,19 +43,23 @@ export function sleep(ms: number): Promise<void> {
 
 /* ── Human dwell (heavy-tailed, same buckets YouTube & TikTok use) ──────── */
 
-const DWELL = [
-  { weight: 0.14, lo: 1_200, hi: 3_000, label: 'skip' },
-  { weight: 0.52, lo: 3_500, hi: 10_000, label: 'watch' },
-  { weight: 0.24, lo: 10_000, hi: 25_000, label: 'engaged' },
-  { weight: 0.10, lo: 25_000, hi: 55_000, label: 'hooked' },
-] as const
+/*
+  The TABLE stays here, the MODEL comes from the SDK (0.10.9).
+
+  These four ranges are Instagram's own: a reel is not a Short and not a TikTok clip, and the numbers
+  were read off this app. What was duplicated was never the table — it was the weighted draw around
+  it, written three times in three packs. `pickDwellMs` takes the table as an argument for exactly
+  this reason, so each pack keeps what it measured and shares only the machinery.
+*/
+const DWELL: readonly DwellBucket[] = [
+  { label: 'skip', weight: 0.14, ms: [1_200, 3_000] },
+  { label: 'watch', weight: 0.52, ms: [3_500, 10_000] },
+  { label: 'engaged', weight: 0.24, ms: [10_000, 25_000] },
+  { label: 'hooked', weight: 0.1, ms: [25_000, 55_000] },
+]
 
 export function pickDwell(rng: () => number): { ms: number; label: string } {
-  const total = DWELL.reduce((s, b) => s + b.weight, 0)
-  let r = rng() * total
-  for (const b of DWELL) { r -= b.weight; if (r <= 0) return { ms: Math.round(between(rng, b.lo, b.hi)), label: b.label } }
-  const last = DWELL[DWELL.length - 1] as (typeof DWELL)[number]
-  return { ms: Math.round(between(rng, last.lo, last.hi)), label: last.label }
+  return pickDwellMs(rng, 0, DWELL)
 }
 
 /* ── Byte-equal + frame ─────────────────────────────────────────────────── */
@@ -181,14 +185,11 @@ export const MAX_REFRESHES_IN_A_ROW = 3
  * seeded, so a run replays exactly.
  */
 export function planConfirmStep(rng: () => number, recent: readonly ConfirmMove[], plan: ConfirmPlan): ConfirmStep {
-  let refreshRun = 0
-  for (let i = recent.length - 1; i >= 0 && recent[i] === 'refresh'; i--) refreshRun++
-  const last = recent[recent.length - 1]
-  const move: ConfirmMove = last === 'home' ? 'refresh' : refreshRun >= MAX_REFRESHES_IN_A_ROW ? 'home' : rng() < plan.homeChance ? 'home' : 'refresh'
-  const [lo, hi] = plan.waitMs
-  const waitMs = Math.round(between(rng, lo, hi) * (rng() < 0.15 ? between(rng, 1.3, 1.7) : 1))
-  if (move === 'refresh') return { move, waitMs, lingerMs: 0, pull: true }
-  return { move, waitMs, lingerMs: Math.round(between(rng, 1_500, 5_000)), pull: rng() < plan.pullAfterHome }
+  // The SDK's `planRevisitStep` is this function (0.10.9) — its own test transcribes the body that
+  // used to live here and asserts the two agree, step for step, over 120 rounds on four seeds. The
+  // rules it keeps are the ones this pack wrote: never two Home trips in a row, never more than three
+  // refreshes running, and a refresh always pulls.
+  return planRevisitStep(rng, recent as readonly RevisitMove[], plan as RevisitPlan) as ConfirmStep
 }
 
 /* ── Keyword tilt (shared across IG / YouTube / TikTok) ─────────────────── */

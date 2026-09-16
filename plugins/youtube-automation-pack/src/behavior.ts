@@ -1,4 +1,4 @@
-import type { ScriptContext } from '@enkaku/sdk'
+import { between, makeRng, pick, pickDwellMs, planRevisitStep, type DwellBucket, type RevisitMove, type RevisitPlan, type RevisitStep, type ScriptContext } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { flatten } from './tree'
 import { centre, hasId, isVisible, tapNode, YOUTUBE_PACKAGE } from './youtube'
@@ -32,48 +32,38 @@ import { centre, hasId, isVisible, tapNode, YOUTUBE_PACKAGE } from './youtube'
  *   "video ini" and never on a bare "suka".
  */
 
-/** A small deterministic PRNG so a seeded run replays exactly (same model as tiktok-automation-pack/human.ts). */
-export function makeRng(seed: number): () => number {
-  let s = seed >>> 0 || 0x2f6e2b1
-  return () => {
-    s ^= s << 13
-    s >>>= 0
-    s ^= s >>> 17
-    s ^= s << 5
-    s >>>= 0
-    return s / 0x100000000
-  }
-}
+/*
+  The rng, `between` and `pick` come from the SDK now (0.39.10), re-exported so no call site in this
+  pack changes. The old comment here said "same model as tiktok-automation-pack/human.ts" — that was
+  the problem, not a reassurance: three packs kept three copies of one generator and each fix reached
+  only one of them. The SDK's sequence was checked against this one across 8 seeds x 2000 draws and
+  is identical, so a seeded run replays exactly as before. (This copy wrote an extra `s >>>= 0` after
+  the first shift; it changes how JS reads the sign, never the 32 bits, so the streams agree.)
 
-export function between(rng: () => number, lo: number, hi: number): number {
-  return lo + rng() * (hi - lo)
-}
-
-export function pick<T>(rng: () => number, items: readonly T[]): T {
-  return items[Math.floor(rng() * items.length)] as T
-}
+  One deliberate difference: the SDK's `pick` THROWS on an empty list where this one returned
+  `undefined` cast as T — a cast that turned an empty ladder into a crash further away from its cause.
+*/
+export { between, makeRng, pick }
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** Watch-time buckets: heavy-tailed and lumpy, never one uniform range (the model plan 40's `natural` profile implies). */
-const WATCH_BUCKETS = [
-  { weight: 0.15, lo: 1_500, hi: 3_500, label: 'skip' },
-  { weight: 0.5, lo: 4_000, hi: 10_000, label: 'watch' },
-  { weight: 0.25, lo: 10_000, hi: 25_000, label: 'engaged' },
-  { weight: 0.1, lo: 25_000, hi: 55_000, label: 'hooked' },
-] as const
+/*
+  Watch-time buckets: heavy-tailed and lumpy, never one uniform range (the model plan 40's `natural`
+  profile implies). The TABLE is YouTube's and stays here — a Short is not a TikTok clip and not a
+  reel, and these four ranges were read off this app. Only the weighted draw around it moved to the
+  SDK, which takes the table as an argument for exactly that reason.
+*/
+const WATCH_BUCKETS: readonly DwellBucket[] = [
+  { label: 'skip', weight: 0.15, ms: [1_500, 3_500] },
+  { label: 'watch', weight: 0.5, ms: [4_000, 10_000] },
+  { label: 'engaged', weight: 0.25, ms: [10_000, 25_000] },
+  { label: 'hooked', weight: 0.1, ms: [25_000, 55_000] },
+]
 
 export function pickWatchMs(rng: () => number): { ms: number; label: string } {
-  const total = WATCH_BUCKETS.reduce((sum, b) => sum + b.weight, 0)
-  let r = rng() * total
-  for (const b of WATCH_BUCKETS) {
-    r -= b.weight
-    if (r <= 0) return { ms: Math.round(between(rng, b.lo, b.hi)), label: b.label }
-  }
-  const last = WATCH_BUCKETS[WATCH_BUCKETS.length - 1] as (typeof WATCH_BUCKETS)[number]
-  return { ms: Math.round(between(rng, last.lo, last.hi)), label: last.label }
+  return pickDwellMs(rng, 0, WATCH_BUCKETS)
 }
 
 export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -251,14 +241,10 @@ export const MAX_REFRESHES_IN_A_ROW = 3
  * seeded, so a run replays exactly.
  */
 export function planConfirmStep(rng: () => number, recent: readonly ConfirmMove[], plan: ConfirmPlan): ConfirmStep {
-  let refreshRun = 0
-  for (let i = recent.length - 1; i >= 0 && recent[i] === 'refresh'; i--) refreshRun++
-  const last = recent[recent.length - 1]
-  const move: ConfirmMove = last === 'home' ? 'refresh' : refreshRun >= MAX_REFRESHES_IN_A_ROW ? 'home' : rng() < plan.homeChance ? 'home' : 'refresh'
-  const [lo, hi] = plan.waitMs
-  const waitMs = Math.round(between(rng, lo, hi) * (rng() < 0.15 ? between(rng, 1.3, 1.7) : 1))
-  if (move === 'refresh') return { move, waitMs, lingerMs: 0, pull: true }
-  return { move, waitMs, lingerMs: Math.round(between(rng, 1_500, 5_000)), pull: rng() < plan.pullAfterHome }
+  // The body that used to be here is now the SDK's `planRevisitStep` (0.39.10), and its own test
+  // transcribes this exact implementation and asserts the two agree step for step over 120 rounds on
+  // four seeds. The waits this pack uses are still this pack's — they arrive in `plan`.
+  return planRevisitStep(rng, recent as readonly RevisitMove[], { ...plan, waitMs: [plan.waitMs[0], plan.waitMs[1]] } as RevisitPlan) as ConfirmStep
 }
 
 const youtubeNodes = (tree: UiNode): UiNode[] =>

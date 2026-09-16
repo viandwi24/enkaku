@@ -76,7 +76,10 @@ export function aimInside(box: AimBox, rng: () => number = Math.random, opts?: {
 
 /** A seeded xorshift32. Same seed, same sequence — so a run can be replayed exactly. */
 export function makeRng(seed: number): () => number {
-  let s = seed >>> 0 || 0x9e3779b9
+  // The same fallback the three packs use, so this is a drop-in for their own `makeRng`: every
+  // non-zero seed already produced an identical sequence (verified across 8 seeds x 2000 draws), and
+  // this makes the zero case identical too.
+  let s = seed >>> 0 || 0x2f6e2b1
   return () => {
     s ^= s << 13
     s ^= s >>> 17
@@ -128,9 +131,19 @@ const TILT_BIAS: Record<DwellBucket['label'], number> = { skip: -1, watch: 0, en
  * run that switches between two different distributions is easier to spot than one that does not
  * randomise at all.
  */
-export function pickDwellMs(rng: () => number, tilt = 0, buckets: readonly DwellBucket[] = DWELL_BUCKETS): { label: DwellBucket['label']; ms: number } {
+export function pickDwellMs(
+  rng: () => number,
+  tilt = 0,
+  buckets: readonly DwellBucket[] = DWELL_BUCKETS,
+  opts?: { minWeight?: number },
+): { label: DwellBucket['label']; ms: number } {
   const clamped = Math.max(-1, Math.min(1, tilt))
-  const weighted = buckets.map((b) => ({ b, w: Math.max(0, b.weight * (1 + clamped * TILT_BIAS[b.label])) }))
+  // `minWeight` keeps a tilted-away bucket reachable. The TikTok pack floors at 0.01 so that even at
+  // full tilt a matched video is sometimes abandoned in a second — its own comment argues that a
+  // perfectly bimodal watch time is a SHARPER fingerprint than no randomisation. Default 0, which is
+  // what a caller that never tilts (Instagram, YouTube) gets either way.
+  const floor = opts?.minWeight ?? 0
+  const weighted = buckets.map((b) => ({ b, w: Math.max(floor, b.weight * (1 + clamped * TILT_BIAS[b.label])) }))
   const total = weighted.reduce((sum, x) => sum + x.w, 0)
   if (total <= 0) {
     const fallback = buckets[0] as DwellBucket
@@ -165,6 +178,11 @@ export interface RevisitPlan {
   homeChance: number
   /** Chance a `home` round also pulls to refresh once it is back. */
   pullAfterHome: number
+  /**
+   * Whether a plain `refresh` round pulls the page down. Default TRUE, which is what all three packs
+   * already do — a round that looks again without refreshing is not a check, it is a wait.
+   */
+  pullOnRefresh?: boolean
 }
 
 /** Never this many refreshes in a row — the one pattern that reads as a script watching a page. */
@@ -186,14 +204,18 @@ export function planRevisitStep(rng: () => number, previous: readonly RevisitMov
   })()
   const mustLeave = trailingRefreshes >= MAX_REFRESHES_IN_A_ROW
   const move: RevisitMove = mustLeave ? 'home' : lastWasHome ? 'refresh' : rng() < plan.homeChance ? 'home' : 'refresh'
-  // A person does not check back on a metronome: one round in seven runs long.
-  const stretch = rng() < 0.15 ? between(rng, 1.3, 1.7) : 1
-  return {
-    move,
-    waitMs: Math.round(between(rng, plan.waitMs[0], plan.waitMs[1]) * stretch),
-    lingerMs: move === 'home' ? Math.round(between(rng, 1_500, 5_000)) : 0,
-    pull: move === 'home' && rng() < plan.pullAfterHome,
-  }
+  /*
+    The draw order below is not arbitrary: the base wait is drawn FIRST and the stretch second,
+    matching the three packs this replaces exactly. Swapping them consumes the same rng in a
+    different order and yields different numbers for the same seed, which would make this a
+    look-alike rather than a drop-in — the whole point of moving the helper here.
+
+    A person does not check back on a metronome: one round in seven runs long.
+  */
+  const base = between(rng, plan.waitMs[0], plan.waitMs[1])
+  const waitMs = Math.round(base * (rng() < 0.15 ? between(rng, 1.3, 1.7) : 1))
+  if (move === 'refresh') return { move, waitMs, lingerMs: 0, pull: plan.pullOnRefresh ?? true }
+  return { move, waitMs, lingerMs: Math.round(between(rng, 1_500, 5_000)), pull: rng() < plan.pullAfterHome }
 }
 
 /**

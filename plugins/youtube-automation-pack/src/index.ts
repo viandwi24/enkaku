@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.9',
+  version: '0.39.10',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,18 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.10 — the timing kit is the SDK's now, not this pack's own copy.**
+   * `makeRng`, `between`, `pick`, the watch-time model and `planConfirmStep`
+   * existed three times over, once per pack, and had drifted apart. This file's
+   * own comment used to describe its rng as "same model as
+   * tiktok-automation-pack/human.ts" — which was the problem stated out loud,
+   * not a reassurance. They delegate to `@enkaku/sdk` now, and the SDK's test
+   * transcribes what this pack carried and compares the two step for step, so
+   * a seeded run replays exactly as before. The watch-time TABLE stays here.
+   * One deliberate change: `pick` throws on an empty list where it used to
+   * return `undefined` cast as `T`, a cast that turned an empty ladder into a
+   * crash somewhere further away from its cause.
    *
    * **0.39.9 — the watch dwell is drawn once, not until it comes up short.**
    * `watch-video` drew `pickWatchMs` INSIDE its loop and compared each fresh

@@ -199,7 +199,55 @@ describe('planRevisitStep — the two rules every pack had written separately', 
       moves.push(step.move)
       if (step.move === 'home') expect(step.lingerMs).toBeGreaterThan(0)
       else expect(step.lingerMs).toBe(0)
+    }
+  })
+
+  test('a refresh round pulls by default — that is what a check IS', () => {
+    const rng = makeRng(6)
+    const moves: RevisitMove[] = []
+    for (let i = 0; i < 80; i++) {
+      const step = planRevisitStep(rng, moves, plan)
+      moves.push(step.move)
+      if (step.move === 'refresh') expect(step.pull).toBe(true)
+    }
+  })
+
+  test('pullOnRefresh false turns it off, for a screen that must not be pulled', () => {
+    const rng = makeRng(6)
+    const moves: RevisitMove[] = []
+    for (let i = 0; i < 40; i++) {
+      const step = planRevisitStep(rng, moves, { ...plan, pullOnRefresh: false })
+      moves.push(step.move)
       if (step.move === 'refresh') expect(step.pull).toBe(false)
+    }
+  })
+
+  test('it is a DROP-IN: same seed, same numbers as the implementation the packs carry', () => {
+    // The three packs' own `planConfirmStep`, transcribed. If this ever diverges, the helper below
+    // is a look-alike rather than a replacement, and migrating a pack to it changes its behaviour.
+    const MAX = 3
+    const packStep = (rng: () => number, recent: readonly RevisitMove[], p: typeof plan) => {
+      let refreshRun = 0
+      for (let i = recent.length - 1; i >= 0 && recent[i] === 'refresh'; i--) refreshRun++
+      const last = recent[recent.length - 1]
+      const move: RevisitMove = last === 'home' ? 'refresh' : refreshRun >= MAX ? 'home' : rng() < p.homeChance ? 'home' : 'refresh'
+      const [lo, hi] = p.waitMs
+      const waitMs = Math.round(between(rng, lo, hi) * (rng() < 0.15 ? between(rng, 1.3, 1.7) : 1))
+      if (move === 'refresh') return { move, waitMs, lingerMs: 0, pull: true }
+      return { move, waitMs, lingerMs: Math.round(between(rng, 1_500, 5_000)), pull: rng() < p.pullAfterHome }
+    }
+    for (const seed of [1, 9, 44, 2026]) {
+      const mine = makeRng(seed)
+      const theirs = makeRng(seed)
+      const a: RevisitMove[] = []
+      const b: RevisitMove[] = []
+      for (let i = 0; i < 120; i++) {
+        const x = planRevisitStep(mine, a, plan)
+        const y = packStep(theirs, b, plan)
+        expect(x).toEqual(y)
+        a.push(x.move)
+        b.push(y.move)
+      }
     }
   })
 })
