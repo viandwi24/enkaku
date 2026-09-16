@@ -15,9 +15,22 @@ import { VERB_DIALOGS, type ActionDialogVerb } from './verb-dialogs'
 export type { ActionDialogVerb } from './verb-dialogs'
 
 interface OpenRequest {
+  /**
+   * Which open this is. It is the dialog's React key, together with the verb.
+   *
+   * The key used to be the verb alone, so opening the SAME verb again reused
+   * the mounted component — and `value` is seeded from `prefill` in a
+   * `useState` initialiser, which does not re-run on a reused component. With
+   * one prefilled entry point that never showed (nothing opened `adb` twice in
+   * a row); with saved shortcuts it would be the normal case, and the second
+   * shortcut would have run the first one's command.
+   */
+  seq: number
   verb: ActionDialogVerb
   ctx: TargetContext
   prefill?: Record<string, unknown>
+  /** Submit the prefilled draft as soon as the target resolves (a saved adb shortcut fired from a menu). */
+  autoRun?: boolean
 }
 
 type Listener = (req: OpenRequest | null) => void
@@ -27,6 +40,7 @@ type Listener = (req: OpenRequest | null) => void
  * one value, one subscriber list, no React context needed above `AppShell`.
  */
 let current: OpenRequest | null = null
+let seq = 0
 const listeners = new Set<Listener>()
 
 function setCurrent(next: OpenRequest | null): void {
@@ -35,8 +49,20 @@ function setCurrent(next: OpenRequest | null): void {
 }
 
 export interface ActionDialogApi {
-  /** Opens the dialog for `verb` with the target pre-filled. `prefill` seeds the verb's own draft (a script id, a package name). */
-  open: (verb: ActionDialogVerb, ctx: TargetContext, prefill?: Record<string, unknown>) => void
+  /**
+   * Opens the dialog for `verb` with the target pre-filled. `prefill` seeds
+   * the verb's own draft (a script id, a package name).
+   *
+   * `opts.autoRun` submits that draft the moment the target resolves, instead
+   * of waiting for the footer's button — for an entry point that already
+   * carries the whole answer. A saved adb shortcut fired from a device menu is
+   * the case it exists for (owner, 2026-09-16: "langsung dijalankan"): the
+   * command and the devices are both decided by the click, so a dialog that
+   * then asks for a second click is just a speed bump. The dialog still opens,
+   * because the OUTPUT is the reason to run an adb command at all, and a
+   * `warned` device still stops for its confirmation exactly as it would have.
+   */
+  open: (verb: ActionDialogVerb, ctx: TargetContext, prefill?: Record<string, unknown>, opts?: { autoRun?: boolean }) => void
 }
 
 /**
@@ -55,9 +81,9 @@ export function useActionDialogs(): ActionDialogApi {
      * clicks for one act, and the target was already chosen by the selection
      * the menu opened from (CEO, 2026-09-05).
      */
-    open: (verb, ctx, prefill) => {
+    open: (verb, ctx, prefill, opts) => {
       if (!VERB_DIALOGS[verb]?.immediate) {
-        setCurrent({ verb, ctx, prefill })
+        setCurrent({ seq: ++seq, verb, ctx, prefill, ...(opts?.autoRun ? { autoRun: true } : {}) })
         return
       }
       const count = (ctx.deviceIds ?? []).length
@@ -166,10 +192,11 @@ export function ActionDialogHost(): React.JSX.Element | null {
   const spec = VERB_DIALOGS[request.verb]
   return (
     <ActionDialog
-      key={request.verb}
+      key={`${request.verb}:${request.seq}`}
       spec={spec}
       ctx={request.ctx}
       prefill={request.prefill}
+      autoRun={request.autoRun ?? false}
       devices={devices}
       groups={groups}
       onClose={() => setCurrent(null)}

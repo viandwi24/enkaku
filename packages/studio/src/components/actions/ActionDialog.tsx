@@ -23,6 +23,7 @@ export function ActionDialog<P>({
   spec,
   ctx,
   prefill,
+  autoRun = false,
   devices,
   groups,
   onClose,
@@ -31,6 +32,8 @@ export function ActionDialog<P>({
   ctx: TargetContext
   /** Seeds the verb's own draft on open (a script id, a package name) — MVP 07 §2.1. */
   prefill?: Record<string, unknown>
+  /** Submit that prefilled draft as soon as the target resolves — see `ActionDialogApi.open`. */
+  autoRun?: boolean
   devices: DeviceInfo[]
   groups: GroupInfo[]
   onClose: () => void
@@ -46,6 +49,18 @@ export function ActionDialog<P>({
    * created in and the new value lands only on the next one.
    */
   const [runQueued, setRunQueued] = useState(false)
+  /**
+   * An `autoRun` open, still waiting for the device list.
+   *
+   * It cannot simply queue the run on mount: `useTarget` resolves its ids
+   * against `devices`, which `ActionDialogHost` fetches AFTER this component
+   * mounts, so at the first render the target is empty and the gate below
+   * would drop the run silently — the shortcut would open a dialog and do
+   * nothing, which is worse than not having fired it. So it waits for the
+   * list to arrive and then queues exactly one run through the same path the
+   * footer's button takes.
+   */
+  const [autoRunPending, setAutoRunPending] = useState(autoRun)
   /**
    * The operation this dialog is watching, once the core has accepted the
    * work and gone away to do it. Held in the shared store rather than here,
@@ -123,6 +138,12 @@ export function ActionDialog<P>({
     void submit(target.needsForce)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runQueued])
+
+  useEffect(() => {
+    if (!autoRunPending || devices.length === 0) return
+    setAutoRunPending(false)
+    setRunQueued(true)
+  }, [autoRunPending, devices.length])
 
   const run = (next: P) => {
     setValue(next)
