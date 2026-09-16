@@ -316,10 +316,33 @@ export function contentNodes(tree: UiNode): UiNode[] {
   return flatten(tree).filter((n) => isVisible(n) && !isChrome(n) && inContentBand(n, tree) && label(n) !== '')
 }
 
-/** What the result reports as `resultCount` — the thumbnails when they carry ids, else the readable rows. */
+/**
+ * A row YouTube sells rather than one it found (0.39.2). `download-home.ts` has matched these since it
+ * shipped; the search walk never did, and on production (2026-09-16) that cost twelve runs of
+ * `search-play` and two of `watch-video`: a query for "saham" came back with two sponsored install
+ * cards ABOVE the first real result, a random pick landed on one, and the tap left YouTube for the
+ * card's own destination — the run then failed "a result was tapped but nothing that looks like a
+ * player appeared", with the dump showing the account page instead of a player.
+ *
+ * The badge is read from the row's own words and from its children's, because the card puts
+ * "Bersponsor"/"Sponsored" on a label inside itself rather than on the box the walk collects.
+ */
+export function isSponsoredRow(row: UiNode): boolean {
+  const sponsored = (s: string): boolean => /^(bersponsor|sponsored)\b/i.test(s.trim())
+  return flatten(row).some((n) => sponsored(n.desc) || sponsored(n.text))
+}
+
+/**
+ * What the result reports as `resultCount` — the thumbnails when they carry ids, else the readable
+ * rows, with the rows YouTube sold dropped either way (0.39.2, `isSponsoredRow`).
+ */
 export function resultRowsOf(tree: UiNode): UiNode[] {
   const thumbs = flatten(tree).filter((n) => isVisible(n) && hasId(n, 'thumbnail_layout'))
-  return thumbs.length > 0 ? thumbs : contentNodes(tree)
+  const rows = thumbs.length > 0 ? thumbs : contentNodes(tree)
+  const organic = rows.filter((n) => !isSponsoredRow(n))
+  // Never an empty page because everything on it was an advert: a caller that has nothing to pick
+  // from fails with its own message, which is worse than picking from what is actually there.
+  return organic.length > 0 ? organic : rows
 }
 
 /**

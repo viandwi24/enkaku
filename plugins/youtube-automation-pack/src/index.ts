@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.1',
+  version: '0.39.2',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,14 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.2 — a search result is never a sponsored card.** Production
+   * (2026-09-16): twelve `search-play` runs and two `watch-video` runs failed "a
+   * result was tapped but nothing that looks like a player appeared". The dumps
+   * show why — a query's first page carried two sponsored install cards above the
+   * first real result, and a random pick tapped one, which leaves YouTube. The
+   * search walk now drops the rows YouTube sold, the way `download-home` already
+   * did, and falls back to the full list only if every row is an advert.
    *
    * **0.39.1 — the pushed videos are cleaned up.** Every run left its video in /sdcard/DCIM/Camera and nothing removed it (the owner, 2026-09-16: old video files pile up). Before pushing, `removeStalePushedVideos` deletes this pack's own pushed files older than six hours
    *
