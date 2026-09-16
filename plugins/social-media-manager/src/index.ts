@@ -10,6 +10,7 @@ import updatePost from './update-post'
 import resolveAttempt from './resolve-attempt'
 import updateGroup from './update-group'
 import cleanPhoneVideos from './clean-phone-videos'
+import syncAccounts from './sync-accounts'
 import { warmupRotation } from './workflows/warmup-rotation'
 import { NO_HASHTAG_RULE } from './hashtags'
 import { platformPostTexts } from './platform-captions'
@@ -76,6 +77,15 @@ import {
  *
  * ## Changelog
  *
+ * - **0.38.0 — `sync-accounts`: which accounts each phone is signed in to.** The
+ *   owner (2026-09-16) asked the manager to own this. The member opens each app on
+ *   the phone, walks to its account list — TikTok's Profile → Profile menu →
+ *   Settings and privacy → Switch account sheet, Instagram's profile toolbar and its
+ *   switcher, YouTube's You tab account sheet — reads every account listed and marks
+ *   the one in use, then stores one row per phone and platform under `account:`. It
+ *   never taps an account row, so it cannot change which account is signed in; a
+ *   platform that fails keeps its last good reading beside the error. Measured on the
+ *   owner's moto (two TikTok accounts, one Instagram, one YouTube channel).
  * - **0.37.0 — a compacter tab row, and an Accounts tab.** The owner
  *   (2026-09-16): *"tabs dikompakkan lagi"*, and a way to know which account
  *   each phone is actually signed in to. The row is now four compact tabs —
@@ -1282,11 +1292,11 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.37.0',
+  version: '0.38.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
-  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, updateGroup, cleanPhoneVideos],
+  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, updateGroup, cleanPhoneVideos, syncAccounts],
   /*
     Plan 315 — workflows this plugin ships. Registered on the farm as
     `smm/<name>` when this version is activated, read-only there; an operator
