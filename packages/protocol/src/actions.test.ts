@@ -26,6 +26,7 @@ const MINIMAL_PARAMS: Record<(typeof ACTION_VERBS)[number], Record<string, unkno
   cutover: { medium: 'wired' },
   forget: {},
   block: {},
+  quarantine: {},
   unquarantine: {},
   'set-network': { route: { engine: 'none' } },
   'apply-screen-label': {},
@@ -47,9 +48,10 @@ describe('ActionVerbSchema', () => {
   // any plan's prose: plan 207's §0 goal checklist said 26 while its own §4.1
   // list and MVP 07 §1.1 both named 25, and the table itself has been 27 since
   // `install-agent`/`uninstall-agent` landed. Plan 227 §3.3 adds
-  // `screen-off`/`screen-on`, so 29.
-  test('has exactly 29 verbs', () => {
-    expect(ACTION_VERBS.length).toBe(29)
+  // `screen-off`/`screen-on`, so 29 — and `quarantine`, the partner
+  // `unquarantine` shipped without, makes 30.
+  test('has exactly 30 verbs', () => {
+    expect(ACTION_VERBS.length).toBe(30)
   })
 
   test('an unknown verb fails', () => {

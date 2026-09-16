@@ -33,7 +33,16 @@ export const MAIN_EVENT_KINDS = [
   'job.triggered',
   'settings.changed',
   'battery.warning',
-  /** A device ran hotter than the farm's `tempThresholdC` and was auto-quarantined — carries { reason, temperatureC, thresholdC }. Released on its own once it cools (`device.recovered`). */
+  /**
+   * A device left the scheduler's pool.
+   *
+   * Two ways in, told apart by `meta`: the thermal path carries
+   * `{ reason, temperatureC, thresholdC }` and is released on its own once
+   * the phone cools (`device.recovered`); an operator's own quarantine
+   * carries `{ reason, manual: true }` and is released by nobody but an
+   * operator, because `device/battery.ts` only ever auto-releases a
+   * `thermal:` reason and `device/health.ts` only an `adb:` one.
+   */
   'device.quarantined',
   /** A device stopped answering adb and was auto-quarantined (plan 23 §4.4). */
   'device.unhealthy',

@@ -67,6 +67,24 @@ export const ACTION_VERBS = [
   'cutover',
   'forget',
   'block',
+  // Quarantine, by hand, and the way back out of it.
+  //
+  // `unquarantine` shipped without a partner (plan 207 §4.2): the farm could
+  // pull a device out of the pool on its own — too hot, or adb stopped
+  // answering — and an operator could put it back, but could not take a
+  // phone out themselves. A phone with a swelling battery, a cracked screen
+  // or a SIM that has to come out is exactly the device nobody wants the
+  // scheduler to pick next, and the only thing Studio offered was Forget
+  // (which deletes the record) or Block (which un-enrols it by `stableId`).
+  // Quarantine is the reversible one: the device keeps its number, labels,
+  // group, settings and history, stays visible and castable, and only stops
+  // being dispatched work.
+  //
+  // The reason is written as `manual:<text>` (`device/battery.ts`), which is
+  // what keeps the automatic releases off it: the thermal prober only ever
+  // releases a `thermal:` reason and the adb prober only an `adb:` one, so a
+  // quarantine an operator set stays until an operator lifts it.
+  'quarantine',
   'unquarantine',
   'set-network',
   // The device's PHYSICAL label — the number written onto its lock screen or
@@ -254,6 +272,8 @@ export const ActionRequestSchema = z.discriminatedUnion('verb', [
   }).refine((b) => b.op === 'cancel' || b.medium !== undefined, 'medium is required to start a cutover'),
   CommonSchema.extend({ verb: z.literal('forget'), deleteHistory: z.boolean().default(false) }),
   CommonSchema.extend({ verb: z.literal('block'), reason: z.string().min(1).optional() }),
+  /** `reason` is free text an operator types ("battery swelling"); it is stored prefixed with `manual:` and rendered back without it. */
+  CommonSchema.extend({ verb: z.literal('quarantine'), reason: z.string().min(1).max(200).optional() }),
   CommonSchema.extend({ verb: z.literal('unquarantine') }),
   CommonSchema.extend({
     verb: z.literal('set-network'),
