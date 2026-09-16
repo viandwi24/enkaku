@@ -77,6 +77,20 @@ import {
  *
  * ## Changelog
  *
+ * - **0.42.0 — the Accounts sync gets past a leftover TikTok edit.** 0.41.0's
+ *   evidence fix paid for itself on its first run: the capture it saved is
+ *   TikTok's VIDEO EDITOR — "Add sound", "Your Story", "Next", "Video templates",
+ *   "AutoCut" — not its feed. TikTok had come up on an edit left behind by an
+ *   earlier job, and the walk to Settings never had the screen it expected. That
+ *   is what failed four of five production phones on 2026-09-16, invisible the
+ *   whole time because nothing was captured. The TikTok pack answers this from
+ *   its own modal register (`tt.resume-edit-en`); this member has no such
+ *   machinery, so it presses BACK — the one press that leaves an editor without
+ *   posting, saving or discarding anything — at most three times, looking for the
+ *   bottom navigation after each. Measured on the moto: a BACK lands on the For
+ *   You feed with its navigation and no sheet in the way. Nothing else is tapped,
+ *   an account row least of all.
+ *
  * - **0.41.0 — the Accounts sync stops overcounting, stops hiding its failures,
  *   and keeps the evidence.** Three findings from the production sync of
  *   2026-09-16 (5 phones, 10 runs, 15 stored rows): (1) every phone reported two
@@ -1337,7 +1351,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.41.0',
+  version: '0.42.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

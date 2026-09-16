@@ -128,7 +128,28 @@ interface Reading {
 /** TikTok: Profile → "Profile menu" → "Settings and privacy" → (scroll) → "Switch account" → the sheet. */
 async function readTikTok(ctx: ScriptContext<unknown>): Promise<Reading> {
   await launch(ctx, PACKAGES.tiktok)
-  const home = await waitFor(ctx, (t) => labelled(t, ['Profile', 'Profil']) !== null, 25_000)
+  let home = await waitFor(ctx, (t) => labelled(t, ['Profile', 'Profil']) !== null, 25_000)
+  /*
+    TikTok can come up on a leftover edit (0.42.0).
+
+    The first capture this member ever saved (moto, 2026-09-16, the run that proved 0.41.0's evidence
+    fix) is TikTok's VIDEO EDITOR — "Add sound", "Your Story", "Next", "Video templates", "AutoCut" —
+    not its feed. The TikTok pack meets the same thing at launch and answers it from its modal register
+    (`tt.resume-edit-en`, an ack in its own logs); this member has no such machinery and simply failed,
+    on four of five production phones and again here.
+
+    BACK is the one press that is safe on any of those screens: it leaves an editor without posting,
+    saving or discarding anything, and on a feed it does nothing this walk cares about. Measured after
+    a BACK on the moto: the For You feed with its bottom navigation, and no sheet in the way. Three
+    presses at most, each followed by a fresh look, and nothing else is ever tapped — an account row
+    least of all.
+  */
+  for (let back = 0; back < 3 && !home.ok; back++) {
+    ctx.log.warn('TikTok did not come up on its feed — pressing BACK once and looking again', { attempt: back + 1 })
+    await ctx.device.key('BACK')
+    await sleep(1_500)
+    home = await waitFor(ctx, (t) => labelled(t, ['Profile', 'Profil']) !== null, 8_000)
+  }
   if (!home.ok || !home.tree) throw new Error('TikTok did not show its bottom navigation')
   const profile = await tapLabel(ctx, home.tree, ['Profile', 'Profil'], (t) => labelled(t, ['Profile menu', 'Menu profil']) !== null, 15_000)
   if (!profile) throw new Error('the TikTok profile did not open')
