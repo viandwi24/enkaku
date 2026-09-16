@@ -9,6 +9,7 @@ import {
   withPlatformCaptions,
   type PlatformCaptions,
 } from './platform-captions'
+import { SKIPPED_BY_HAND } from './excludes'
 import { PLATFORM_IDS, PlatformIdSchema, deviceCarriesPlatform, platformById, type PlatformId } from './platforms'
 
 /**
@@ -82,8 +83,15 @@ export function postKeyFor(videoArtifactId: string): string {
  * - `unsupported` — this platform has no verified upload flow in this build.
  *   Retrying changes nothing, and the row says so by name rather than sitting
  *   at `pending` forever looking like a transient problem.
+ * - `skipped` — an operator said this phone does not post here (0.45.0,
+ *   `excludes.ts`). Its own state and emphatically not a flavour of `failed`:
+ *   nothing was sent, nothing went wrong, and the row exists precisely so the
+ *   decision stays visible and can be taken back with one press. The router
+ *   never sends a `skipped` platform and never rewrites one, so the only two
+ *   things that move it are an operator enabling it (back to `pending`, and
+ *   the next tick sends it) and a hand mark saying it was posted elsewhere.
  */
-export const DISPATCH_STATES = ['pending', 'dispatched', 'succeeded', 'partial', 'failed', 'unsupported'] as const
+export const DISPATCH_STATES = ['pending', 'dispatched', 'succeeded', 'partial', 'failed', 'unsupported', 'skipped'] as const
 export type DispatchState = (typeof DISPATCH_STATES)[number]
 
 /**
@@ -349,6 +357,10 @@ const ATTEMPT_WORDS: Record<AttemptState, string> = {
  */
 export function describePlatform(state: PlatformState): string {
   if (state.state === 'unsupported') return 'Not supported in this build'
+  // Before the attempts are looked at, deliberately: a platform skipped after a
+  // retry cleared its attempts still has `history`, and "Skipped" is the whole
+  // truth about what it is doing now.
+  if (state.state === 'skipped') return 'Skipped'
   const attempts = state.attempts ?? []
   if (attempts.length === 0) {
     // `dispatched` with no attempts is a row written before attempts were
@@ -421,6 +433,19 @@ export function withDeviceNames(state: PlatformState, names: ReadonlyMap<string,
 }
 
 export const PENDING_STATE: PlatformState = withSummary({ state: 'pending', at: null, deviceCount: 0, attempts: [], history: [], note: null, summary: null })
+
+/**
+ * A platform an operator said this phone does not post to (0.45.0).
+ *
+ * `at` carries the moment it was skipped rather than null, so the session page
+ * can say when — a skip an hour into a run and a skip made when the session was
+ * created are different decisions. `attempts` is empty by construction: the only
+ * states that may be skipped are the ones that never sent anything
+ * (`setPlatformSkip`), so a skip can never bury a record of what a phone did.
+ */
+export function skippedState(note: string, at: number, history: readonly Attempt[] = []): PlatformState {
+  return withSummary({ state: 'skipped', at, deviceCount: 0, attempts: [], history: [...history], note, summary: null })
+}
 
 /**
  * A stored post. `.strict()` and an explicit `version`, so a row written by a
@@ -590,6 +615,8 @@ export function postSummary(post: Post): string {
         return `${title}: failed on ${bad}`
       case 'unsupported':
         return `${title}: unsupported`
+      case 'skipped':
+        return `${title}: skipped`
       default:
         return `${title}: waiting`
     }
@@ -882,7 +909,10 @@ export function markPost(input: {
     if (action !== 'mark-posted') {
       return { ok: false, code: 'E_NOT_FOUND', message: `This video has not been sent to ${title}, so there is nothing to mark.` }
     }
-    if (state.state !== 'pending' && state.state !== 'unsupported') {
+    // `skipped` joins the two since 0.45.0, and for the same reason they are here: nothing was sent, so
+    // a manual attempt is the only record there could be. An operator who posted a skipped platform by
+    // hand says so, and the row stops being a hole in the session's count.
+    if (state.state !== 'pending' && state.state !== 'unsupported' && state.state !== 'skipped') {
       return {
         ok: false,
         code: 'E_CONFLICT',
@@ -979,6 +1009,62 @@ export function markPost(input: {
 /** Was this attempt set by hand — a manual attempt, or one with any mark on it? */
 export function markedByHand(attempt: Pick<Attempt, 'manual' | 'resolution'>): boolean {
   return attempt.manual === true || (attempt.resolution?.length ?? 0) > 0
+}
+
+export type SkipOutcome =
+  | { ok: true; post: Post; state: PlatformState; changed: boolean }
+  | { ok: false; code: 'E_NOT_FOUND' | 'E_CONFLICT'; message: string }
+
+/**
+ * Turn one platform of one video off, or back on (0.45.0). Pure, and the only
+ * place the rules live — `add-group` applies the session's rules through it,
+ * and the `skip-platform` member is the operator pressing the same button.
+ *
+ * | doing | from | to | refused when |
+ * |---|---|---|---|
+ * | skip | `pending`, `unsupported` | `skipped` | anything was sent (`E_CONFLICT`) |
+ * | skip | `skipped` | unchanged, `changed: false` | — |
+ * | enable | `skipped` | `pending`, note cleared | not skipped (`E_CONFLICT`) |
+ *
+ * **A skip may only be set on a platform that has sent nothing**, and that is
+ * the whole safety property. `succeeded`, `partial`, `failed` and `dispatched`
+ * are records of what phones actually did; letting "skip" write over one would
+ * turn the single screen an operator trusts about a real account into a screen
+ * that can be edited into agreeing with them. A failure that should not be
+ * retried is already expressible — leave it, or mark it by hand — and neither
+ * of those forgets what happened.
+ *
+ * Enabling returns the platform to `pending` with NO note. The router writes
+ * its own on the next tick ("waiting for this video's phone", and the rest),
+ * and carrying the skip's sentence forward would leave a row that is being sent
+ * still explaining why it was not.
+ */
+export function setPlatformSkip(input: { post: Post; platform: PlatformId; skip: boolean; note?: string | null; now: number }): SkipOutcome {
+  const { post, platform, skip, now } = input
+  const title = platformById(platform)?.title ?? platform
+  if (!post.dispatch[platform] && !post.platforms.includes(platform)) {
+    return { ok: false, code: 'E_NOT_FOUND', message: `This video is not for ${title}, so there is nothing to skip.` }
+  }
+  const current = stateFor(post, platform)
+
+  if (!skip) {
+    if (current.state !== 'skipped') {
+      return { ok: false, code: 'E_CONFLICT', message: `${title} for this video is not skipped — it is "${current.state}". Refresh the page.` }
+    }
+    const next = withSummary({ ...current, state: 'pending', at: null, deviceCount: 0, attempts: [], note: null, summary: null })
+    return { ok: true, post: { ...post, dispatch: { ...post.dispatch, [platform]: next } }, state: next, changed: true }
+  }
+
+  if (current.state === 'skipped') return { ok: true, post, state: current, changed: false }
+  if (current.state !== 'pending' && current.state !== 'unsupported') {
+    return {
+      ok: false,
+      code: 'E_CONFLICT',
+      message: `${title} for this video has already been sent to a phone (it is "${current.state}"), so it cannot be skipped — a skip would hide what the phone did. Leave it, or mark it by hand.`,
+    }
+  }
+  const next = skippedState(input.note?.trim() || SKIPPED_BY_HAND, now, current.history)
+  return { ok: true, post: { ...post, dispatch: { ...post.dispatch, [platform]: next } }, state: next, changed: true }
 }
 
 /**
@@ -1131,6 +1217,16 @@ export function planDispatch(input: {
     if (current.state === 'dispatched' || current.state === 'succeeded' || current.state === 'partial' || current.state === 'failed') {
       continue
     }
+
+    /*
+      A skip is a decision, so the router neither sends it nor argues with it
+      (0.45.0). Left alone in the fullest sense: no dispatch, no state written,
+      and — unlike `unsupported` — no note either. The sentence a skip carries
+      names the operator who made it and is theirs, not the router's; rewriting
+      it every tick with "no phone carries the label" would replace the one
+      thing that explains why the row is standing still.
+    */
+    if (current.state === 'skipped') continue
 
     const platform = platformById(platformId)
     if (!platform) {

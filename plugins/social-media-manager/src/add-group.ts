@@ -4,8 +4,9 @@ import { PLATFORM_CAPTION_STORED_MAX, fitPlatformCaptions } from './platform-cap
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
 import { ASSIGNMENTS, GroupSchema, groupKeyFor, maxDevicesFor, newGroupId, shuffled } from './groups'
+import { ExcludeRuleSchema, NO_EXCLUDES, describeRule, excludedFor, isEmptyRule, needsFleet, type ExcludableDevice } from './excludes'
 import { PLATFORM_IDS } from './platforms'
-import { PostSchema, newPost, postKeyFor, stateFor } from './posts'
+import { PostSchema, newPost, postKeyFor, skippedState, stateFor } from './posts'
 
 /**
  * One named upload session: forty videos, forty phones, started when the
@@ -38,6 +39,18 @@ import { PostSchema, newPost, postKeyFor, stateFor } from './posts'
  * dispatched to — the same carry-over `add-post`/`add-posts` use, and for the
  * same reason: re-posting a video to an account it already reached is the one
  * mistake this farm cannot take back.
+ *
+ * ## Skips are applied HERE, once (0.45.0)
+ *
+ * `excludes` says which platform a phone does not post to — by device group, by
+ * label, by naming the phone, or any mix (`excludes.ts` says why). It is
+ * resolved against the fleet once, at creation, and written onto each row as a
+ * `skipped` platform. Nothing about it is consulted again: the router never
+ * reads the rule, and the rule is never re-applied, so a platform an operator
+ * enables afterwards stays enabled. A rule with no label half needs no fleet
+ * read at all, and a fleet read that fails is NOT fatal — the phones named by
+ * hand are still skipped, the label half is reported as unresolved, and a
+ * session is never held hostage to a device list.
  */
 
 const params = z.object({
@@ -136,6 +149,9 @@ const params = z.object({
     .optional()
     .describe('Which phones this batch may use. Leave empty for any phone carrying the platform\'s label; choose phones and those phones are used as chosen, labelled or not.')
     .meta(ui({ title: 'Phones', kind: 'deviceIds', group: 'Spread' })),
+  excludes: ExcludeRuleSchema.optional()
+    .describe('Platforms a phone does not post to: by device group, by label, or by naming the phones. Applied once when the session is made, as a skip you can undo per video.')
+    .meta(ui({ title: 'Skip platforms', group: 'Spread' })),
 })
 
 const result = z.object({
@@ -144,6 +160,23 @@ const result = z.object({
   created: z.number().int().describe('How many new post rows were written.').meta(ui({ title: 'Created', summary: true })),
   updated: z.number().int().describe('How many existing rows joined this group instead.').meta(ui({ title: 'Updated' })),
   keys: z.array(z.string()).describe('The rows written, in the order the videos were given.').meta(ui({ title: 'Rows' })),
+  skipped: z.number().int().describe('How many platform cells were turned off by the skip rules.').meta(ui({ title: 'Skipped', summary: true })),
+  skipWarning: z.string().nullable().describe('Why a skip rule could not be fully applied, or null when it was.').meta(ui({ title: 'Skip warning' })),
+})
+
+/** Enough of `device.list` to resolve a label rule — the labels, and the id they belong to. */
+const DeviceListOutput = z.object({
+  items: z
+    .array(
+      z
+        .object({
+          id: z.string(),
+          labels: z.array(z.object({ name: z.string() })).default([]),
+          group: z.object({ id: z.string(), name: z.string() }).nullable().default(null),
+        })
+        .loose(),
+    )
+    .default([]),
 })
 
 const script: PluginMemberScript<typeof params, typeof result> = {
@@ -160,6 +193,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
   async run(ctx: ScriptContext<z.infer<typeof params>>) {
     const { title, videoArtifactIds, captions, videoCaptions, videoHashtags, platforms, assignment, order, concurrency, gapMinSec, gapMaxSec, deviceIds } = ctx.params
     const hashtagRule = ctx.params.hashtags ?? NO_HASHTAG_RULE
+    const excludes = ctx.params.excludes ?? NO_EXCLUDES
 
     // Deduplicated BEFORE the caption count is checked, so "40 videos, 40 captions"
     // is not silently satisfied by a list holding one video twice.
@@ -195,11 +229,48 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       pacing: { order, concurrency, gapSec: [Math.min(gapMinSec, gapMaxSec), Math.max(gapMinSec, gapMaxSec)] },
       videoArtifactIds: videos,
       hashtags: hashtagRule,
+      excludes,
     })
+
+    /*
+      The fleet, read ONLY for the label half of the rule and only when there is one. A failure here
+      costs the label rules and nothing else: the phones named by hand carry their own ids and need no
+      lookup, so a device list that times out still produces exactly the session the operator would
+      have got by naming those phones — with `skipWarning` saying which half did not apply.
+    */
+    let fleet: ExcludableDevice[] = []
+    let skipWarning: string | null = null
+    /*
+      A skip is written onto ONE video's row, for the one phone that video belongs to — so an
+      every-phone session has nowhere to put it, and the rule is reported as not applied rather than
+      dropped in silence. A caller that means "nobody posts to YouTube" leaves YouTube out of
+      `platforms`; a caller that means "these phones do not" wants one video per phone.
+    */
+    if (assignment !== 'one-per-phone' && !isEmptyRule(excludes)) {
+      skipWarning =
+        'The skip rules were not applied: they name a phone per video, and this session sends every video to every phone. Use one video per phone, or leave the platform out of the session.'
+      ctx.log.warn('skip rules ignored on an every-phone session', { groupId, skips: describeRule(excludes) })
+    }
+    if (assignment === 'one-per-phone' && needsFleet(excludes)) {
+      try {
+        const listed = await ctx.farm.call('device.list', {}, DeviceListOutput)
+        fleet = listed.items.map((d) => ({ id: d.id, labels: d.labels, group: d.group }))
+      } catch (err) {
+        skipWarning = `The phones could not be read, so the skip rules by group and by label were not applied (${err instanceof Error ? err.message : String(err)}). The phones you named by hand were still skipped.`
+        ctx.log.warn('could not read the fleet for the session\'s group and label skip rules', { error: skipWarning })
+      }
+    }
+    const byId = new Map(fleet.map((d) => [d.id, d]))
+    /** One phone's skips: its group and labels when the fleet was read, plus whatever it was named for by hand. */
+    const skipsFor = (deviceId: string | null) =>
+      deviceId === null || isEmptyRule(excludes) || assignment !== 'one-per-phone'
+        ? new Map<(typeof PLATFORM_IDS)[number], string>()
+        : excludedFor(byId.get(deviceId) ?? { id: deviceId, labels: [], group: null }, excludes)
 
     const keys: string[] = []
     let created = 0
     let updated = 0
+    let skipped = 0
 
     /*
       One video, one phone, decided HERE and kept (0.12.0).
@@ -253,6 +324,19 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         created += 1
       }
 
+      /*
+        Applied AFTER the carry-over, and deliberately only over what is still `pending`. A video
+        re-added to a new session that already posted to YouTube from this phone keeps that record:
+        the skip is about what will be SENT, and there is nothing left to send there. `setPlatformSkip`
+        would say the same thing by refusing; this says it by not asking.
+      */
+      for (const [platform, note] of skipsFor(next.assignedDeviceId)) {
+        if (!next.platforms.includes(platform)) continue
+        if (next.dispatch[platform]?.state !== 'pending') continue
+        next.dispatch[platform] = skippedState(note, now)
+        skipped += 1
+      }
+
       await ctx.storage.global.set(key, next)
       keys.push(key)
     }
@@ -269,8 +353,10 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       concurrency,
       gapSec: `${group.pacing.gapSec[0]}-${group.pacing.gapSec[1]}`,
       phones: !deviceIds || deviceIds.length === 0 ? 'any labelled' : String(deviceIds.length),
+      skips: describeRule(excludes),
+      skipped,
     })
-    return { groupId, title: group.title, created, updated, keys }
+    return { groupId, title: group.title, created, updated, keys, skipped, skipWarning }
   },
 }
 

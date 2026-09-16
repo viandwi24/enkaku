@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ExcludeRuleSchema, NO_EXCLUDES } from './excludes'
 import { HashtagRuleSchema, NO_HASHTAG_RULE } from './hashtags'
 import { PlatformIdSchema } from './platforms'
 
@@ -59,6 +60,8 @@ export const GroupProgressSchema = z.object({
   posted: z.number().int().nonnegative(),
   failed: z.number().int().nonnegative(),
   attention: z.number().int().nonnegative(),
+  /** Platforms an operator turned off for a phone (0.45.0). Defaulted, so a progress row written before it parses as none. */
+  skipped: z.number().int().nonnegative().default(0),
 })
 
 export const GroupSchema = z.object({
@@ -73,6 +76,18 @@ export const GroupSchema = z.object({
   videoArtifactIds: z.array(z.string().min(1)),
   /** The session's hashtag rule (0.19.0) — fixed ones on every video, and lines one of which each video may be given. */
   hashtags: HashtagRuleSchema.default(NO_HASHTAG_RULE),
+  /**
+   * Which platform each phone does NOT post to (0.45.0, `excludes.ts`).
+   *
+   * Stored although it has already been APPLIED to the rows, and the two are
+   * not the same thing: the rows carry the decision (a `skipped` platform an
+   * operator can undo one at a time), and this carries what was ASKED FOR, so
+   * the session page can still say "this session skips YouTube on phones
+   * tagged no-youtube" after somebody has enabled three of them by hand. It is
+   * never re-applied on its own — a rule that quietly re-skipped what an
+   * operator had just enabled would make the button a lie.
+   */
+  excludes: ExcludeRuleSchema.default(NO_EXCLUDES),
   /**
    * How far the batch has got, as of the router's last look.
    *
@@ -207,7 +222,7 @@ export function maxDevicesFor(assignment: Assignment): number | null {
   return assignment === 'one-per-phone' ? 1 : null
 }
 
-export type RowState = 'pending' | 'dispatched' | 'succeeded' | 'partial' | 'failed' | 'unsupported'
+export type RowState = 'pending' | 'dispatched' | 'succeeded' | 'partial' | 'failed' | 'unsupported' | 'skipped'
 
 export interface GroupProgress {
   total: number
@@ -216,6 +231,7 @@ export interface GroupProgress {
   posted: number
   failed: number
   attention: number
+  skipped: number
 }
 
 /**
@@ -225,6 +241,13 @@ export interface GroupProgress {
  * from `failed` because the two need different actions: one is "try again",
  * the other is "look at it first". `unsupported` counts as attention too; it
  * is a row that can never send until something changes.
+ *
+ * `skipped` is its own count and belongs to NONE of the others (0.45.0). It is
+ * not waiting (nothing will come for it), not failed (nothing went wrong), and
+ * not something to look at (it is already what the operator asked for) — and
+ * folding it into any of those is what would make a finished session read as
+ * eight things still outstanding. `total` still counts it, so the parts add up
+ * and "3 skipped of 120" is visible rather than silently missing.
  */
 export function groupProgress(states: readonly RowState[]): GroupProgress {
   const count = (s: RowState): number => states.filter((x) => x === s).length
@@ -235,6 +258,7 @@ export function groupProgress(states: readonly RowState[]): GroupProgress {
     posted: count('succeeded'),
     failed: count('failed'),
     attention: count('partial') + count('unsupported'),
+    skipped: count('skipped'),
   }
 }
 
@@ -242,12 +266,16 @@ export function groupProgress(states: readonly RowState[]): GroupProgress {
 export function groupSummary(title: string, p: GroupProgress): string {
   if (p.total === 0) return `${title}: no videos`
   if (p.posted === p.total) return `${title}: all ${p.total} posted`
+  // A session whose every remaining platform was skipped is DONE, and says so with the skips named
+  // (0.45.0): "all 36 posted, 4 skipped" rather than a bar stuck four short of the end forever.
+  if (p.posted + p.skipped === p.total) return `${title}: all ${p.posted} posted, ${p.skipped} skipped`
   const parts: string[] = []
   if (p.posted > 0) parts.push(`${p.posted} posted`)
   if (p.running > 0) parts.push(`${p.running} running`)
   if (p.waiting > 0) parts.push(`${p.waiting} waiting`)
   if (p.failed > 0) parts.push(`${p.failed} failed`)
   if (p.attention > 0) parts.push(`${p.attention} need a look`)
+  if (p.skipped > 0) parts.push(`${p.skipped} skipped`)
   return `${title}: ${parts.join(', ')} of ${p.total}`
 }
 

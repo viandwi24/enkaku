@@ -88,8 +88,14 @@ function codedError(message: string, code: string): Error {
   return Object.assign(new Error(message), { code })
 }
 
-/** The row and the version it was read at — `KvApi` has no versioned get, so it is found through `list`. */
-async function readWithVersion(ctx: ScriptContext<unknown>, key: string): Promise<{ post: Post; version: number } | null> {
+/**
+ * The row and the version it was read at — `KvApi` has no versioned get, so it is found through `list`.
+ *
+ * Exported since 0.45.0 and shared with `skip-platform`, which needs exactly the same read-then-
+ * `setIfVersion` shape against exactly the same rows. A second copy would be a second place for the
+ * "a prefix also matches longer keys" trap below to be got wrong.
+ */
+export async function readWithVersion(ctx: ScriptContext<unknown>, key: string): Promise<{ post: Post; version: number } | null> {
   let cursor: string | null = null
   do {
     const opts: { prefix: string; limit: number; cursor?: string } = { prefix: key, limit: 50 }

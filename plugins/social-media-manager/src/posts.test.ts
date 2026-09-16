@@ -27,6 +27,8 @@ import {
   postSummary,
   refreshPost,
   rollUp,
+  setPlatformSkip,
+  skippedState,
   stateFor,
   type Attempt,
   type PlatformState,
@@ -1062,5 +1064,135 @@ describe('a session written by 0.11.0, read by 0.12.0', () => {
     const p = PostSchema.parse(rows[0])
     pickAssignment({ post: p, ownedByOthers: new Set(), fleet: [], sessionVideos: 5 })
     expect(p.assignedDeviceId).toBeNull()
+  })
+})
+
+describe('skipping a platform for a phone (0.45.0)', () => {
+  const skipped = (p: Post, id = 'tiktok') => stateFor(p, id as 'tiktok')
+
+  test('a skip is written on a platform that has sent nothing, and says why', () => {
+    const outcome = setPlatformSkip({ post: post(), platform: 'tiktok', skip: true, note: 'no account on this phone', now: NOW })
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) return
+    expect(skipped(outcome.post).state).toBe('skipped')
+    expect(skipped(outcome.post).note).toBe('no account on this phone')
+    // The cell's own line, so the table never renders a bare enum.
+    expect(skipped(outcome.post).summary).toBe('Skipped')
+    expect(describePlatform(skipped(outcome.post))).toBe('Skipped')
+  })
+
+  test('a skip with no words of its own still says nothing failed and how to undo it', () => {
+    const outcome = setPlatformSkip({ post: post(), platform: 'tiktok', skip: true, now: NOW })
+    expect(outcome.ok && (skipped(outcome.post).note ?? '')).toContain('nothing failed')
+  })
+
+  test('skipping what is already skipped changes nothing and is not an error', () => {
+    const first = setPlatformSkip({ post: post(), platform: 'tiktok', skip: true, now: NOW })
+    expect(first.ok).toBe(true)
+    if (!first.ok) return
+    const again = setPlatformSkip({ post: first.post, platform: 'tiktok', skip: true, now: NOW + 60 })
+    expect(again.ok && again.changed).toBe(false)
+    expect(again.ok && again.post).toBe(first.post)
+  })
+
+  test('an unsupported platform may be skipped — nothing was sent there either', () => {
+    const base = post({ platforms: ['tiktok'], dispatch: { tiktok: { ...PENDING_STATE, state: 'unsupported', note: 'no flow' } } })
+    expect(setPlatformSkip({ post: base, platform: 'tiktok', skip: true, now: NOW }).ok).toBe(true)
+  })
+
+  /*
+    The safety property of the whole feature. Every one of these states is a record of what a real
+    phone did to a real account; a skip that could overwrite one would turn the single screen an
+    operator trusts into a screen that can be edited into agreeing with them.
+  */
+  test('a platform that HAS been sent can never be skipped, whatever it did', () => {
+    for (const state of ['dispatched', 'succeeded', 'partial', 'failed'] as const) {
+      const base = post({ dispatch: { tiktok: { ...PENDING_STATE, state } } })
+      const outcome = setPlatformSkip({ post: base, platform: 'tiktok', skip: true, now: NOW })
+      expect({ state, ok: outcome.ok, code: outcome.ok ? null : outcome.code }).toEqual({ state, ok: false, code: 'E_CONFLICT' })
+    }
+  })
+
+  test('a platform this video is not for has nothing to skip', () => {
+    const outcome = setPlatformSkip({ post: post({ platforms: ['tiktok'] }), platform: 'youtube', skip: true, now: NOW })
+    expect(outcome.ok ? null : outcome.code).toBe('E_NOT_FOUND')
+  })
+
+  test('enabling returns it to pending with NO note, so the router writes its own', () => {
+    const base = post({ dispatch: { tiktok: skippedState('skipped by the session rule', NOW) } })
+    const outcome = setPlatformSkip({ post: base, platform: 'tiktok', skip: false, now: NOW + 60 })
+    expect(outcome.ok).toBe(true)
+    if (!outcome.ok) return
+    expect(skipped(outcome.post).state).toBe('pending')
+    expect(skipped(outcome.post).note).toBeNull()
+    expect(skipped(outcome.post).at).toBeNull()
+  })
+
+  test('enabling something that is not skipped is refused rather than quietly reset to pending', () => {
+    const base = post({ dispatch: { tiktok: { ...PENDING_STATE, state: 'failed' } } })
+    const outcome = setPlatformSkip({ post: base, platform: 'tiktok', skip: false, now: NOW })
+    expect(outcome.ok ? null : outcome.code).toBe('E_CONFLICT')
+  })
+
+  test('a skip keeps the earlier attempts a retry had already retired', () => {
+    const history: Attempt[] = [
+      { jobId: 'j1', deviceId: 'd1', deviceName: '#1', state: 'failed', error: 'nope', at: NOW, settledAt: NOW, round: 1 },
+    ]
+    const base = post({ dispatch: { tiktok: { ...PENDING_STATE, history } } })
+    const outcome = setPlatformSkip({ post: base, platform: 'tiktok', skip: true, now: NOW })
+    expect(outcome.ok && skipped(outcome.post).history).toEqual(history)
+  })
+
+  test('the router neither sends a skipped platform nor rewrites the sentence explaining it', () => {
+    const note = 'this phone carries the "no-youtube" label'
+    const base = post({ platforms: ['tiktok'], dispatch: { tiktok: skippedState(note, NOW) } })
+    const plan = planDispatch({ post: base, devices: [device({ id: 'd1' })], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.dispatches).toEqual([])
+    // Nothing written at all — not even a note. A router that "explained" a skip would replace the
+    // one sentence that says who decided it.
+    expect(plan.states).toEqual({})
+    expect(plan.note).toBeNull()
+  })
+
+  test('a skipped platform never holds back the ones beside it', () => {
+    const base = post({
+      platforms: ['tiktok', 'youtube'],
+      dispatch: { tiktok: skippedState('skipped', NOW), youtube: { ...PENDING_STATE } },
+    })
+    const plan = planDispatch({
+      post: base,
+      devices: [device({ id: 'd1', labels: [{ name: 'youtube' }] })],
+      now: NOW,
+      maxDevicesPerPlatform: 5,
+    })
+    expect(plan.dispatches.map((d) => d.platform)).toEqual(['youtube'])
+  })
+
+  test('an enabled platform goes out on the very next tick', () => {
+    const base = post({ platforms: ['tiktok'], dispatch: { tiktok: skippedState('skipped', NOW) } })
+    const enabled = setPlatformSkip({ post: base, platform: 'tiktok', skip: false, now: NOW })
+    expect(enabled.ok).toBe(true)
+    if (!enabled.ok) return
+    const plan = planDispatch({ post: enabled.post, devices: [device({ id: 'd1' })], now: NOW, maxDevicesPerPlatform: 5 })
+    expect(plan.dispatches.map((d) => d.deviceId)).toEqual(['d1'])
+  })
+
+  test('a skipped platform an operator posted by hand records a manual attempt against the video\'s phone', () => {
+    const base = post({ platforms: ['tiktok'], assignedDeviceId: 'd1', dispatch: { tiktok: skippedState('skipped', NOW) } })
+    const marked = markPost({ post: base, platform: 'tiktok', action: 'mark-posted', now: NOW, byJobId: 'job-9' })
+    expect(marked.ok).toBe(true)
+    if (!marked.ok) return
+    expect(marked.manual).toBe(true)
+    expect(stateFor(marked.post, 'tiktok').state).toBe('succeeded')
+  })
+
+  test('the row\'s own summary names a skipped platform as skipped, never as waiting', () => {
+    const base = post({ platforms: ['tiktok', 'youtube'], dispatch: { tiktok: skippedState('skipped', NOW), youtube: { ...PENDING_STATE } } })
+    expect(postSummary(base)).toBe('TikTok: skipped · YouTube: waiting')
+  })
+
+  test('a skipped platform round-trips through the stored schema', () => {
+    const base = post({ dispatch: { tiktok: skippedState('skipped', NOW) } })
+    expect(PostSchema.parse(base)).toEqual(base)
   })
 })

@@ -8,6 +8,7 @@ import startGroup from './start-group'
 import retryGroup from './retry-group'
 import updatePost from './update-post'
 import resolveAttempt from './resolve-attempt'
+import skipPlatform from './skip-platform'
 import updateGroup from './update-group'
 import cleanPhoneVideos from './clean-phone-videos'
 import syncAccounts from './sync-accounts'
@@ -76,6 +77,28 @@ import {
  * memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.45.0 — a platform can be skipped for a phone, and enabled again.** The
+ *   owner (2026-09-16): twenty videos over twenty phones, three platforms each —
+ *   but #2 has no YouTube channel and #3 was never signed in to TikTok. Those two
+ *   cells used to be sent anyway: a real run on a real phone, walking an app it
+ *   cannot post from, ending red. A finished session read as two things broken.
+ *   The New Session screen now takes SKIP RULES — by device group, by label, or by
+ *   naming a phone and a platform outright — and `add-group` resolves them once
+ *   against the fleet and writes the result onto each row as a new platform state,
+ *   `skipped`. The row still exists, in its place, saying "Skipped" and why
+ *   ("this phone carries the no-youtube label"); nothing is sent, nothing failed,
+ *   and the session's progress counts it apart from both (`groupProgress`'s own
+ *   `skipped`, so "all 36 posted, 4 skipped" reads as done rather than four short).
+ *   Either way round with one press: **Skip** on any cell that has sent nothing,
+ *   **Enable** on a skipped one, which returns it to `pending` and sends it at the
+ *   video's next turn (`smm/skip-platform`). A platform that HAS been sent can
+ *   never be skipped — a skip would paper over what a phone actually did, and
+ *   `setPlatformSkip` refuses it by name. The rule is applied once and never
+ *   re-applied, so a cell an operator enables stays enabled; the session keeps
+ *   what was asked for (`group.excludes`) only so the page can still say what the
+ *   session's rule was. A row written by this version does not parse in 0.44.0 or
+ *   older, which is the usual cost of a new state.
  *
  * - **0.44.0 — a tap is aimed from a tree read just now, not from an older one.**
  *   0.43.0's per-step evidence found it in one run. The capture the failing step
@@ -1381,11 +1404,11 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.44.0',
+  version: '0.45.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
-  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, updateGroup, cleanPhoneVideos, syncAccounts],
+  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts],
   /*
     Plan 315 — workflows this plugin ships. Registered on the farm as
     `smm/<name>` when this version is activated, read-only there; an operator

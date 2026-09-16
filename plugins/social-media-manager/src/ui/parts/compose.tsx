@@ -31,6 +31,7 @@ import {
   composedHashtags,
   defaultSessionTitle,
   hashtagText,
+  deviceName,
   listDevices,
   listVideos,
   parseHashtags,
@@ -263,6 +264,15 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
     below stop a pick that resolves to nobody from ever becoming a session.
   */
   const [pick, setPick] = useState<DevicePick>(() => newPick())
+  /*
+    Which platform a phone does NOT post to (0.45.0). Empty by default and
+    deliberately never guessed at from the labels on its own: a phone silently
+    excluded is a video that never posts, and this screen's whole posture is
+    that nothing about where a video goes is decided by a default nobody typed.
+    The step below lists the labels and groups the chosen phones actually carry,
+    so saying it is one press — but it is still a press.
+  */
+  const [skipRules, setSkipRules] = useState<SkipRules>(NO_SKIP_RULES)
   const [assignment, setAssignment] = useState<'one-per-phone' | 'every-phone'>('one-per-phone')
   const [order, setOrder] = useState<'as-listed' | 'random'>('random')
   const [concurrency, setConcurrency] = useState(4)
@@ -372,6 +382,12 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
   const deviceIds = useMemo(
     () => (assignment === 'one-per-phone' ? resolved.map((d) => d.id) : pool.map((d) => d.id)),
     [assignment, resolved, pool],
+  )
+
+  /** Is there a skip rule at all? What decides whether `excludes` is sent, and what the step's summary reads. */
+  const hasSkipRules = useMemo(
+    () => skipRules.labels.length > 0 || skipRules.groups.length > 0 || Object.keys(skipRules.devices).length > 0,
+    [skipRules],
   )
 
   // --- videos ---------------------------------------------------------------
@@ -597,6 +613,9 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
                 gapMinSec: gapLo,
                 gapMaxSec: gapHi,
                 ...(deviceIds.length > 0 ? { deviceIds } : {}),
+                // Sent only when there is something to say, so a session with no skips stores the
+                // schema's own empty rule rather than three empty collections this screen assembled.
+                ...(hasSkipRules && assignment === 'one-per-phone' ? { excludes: skipRules } : {}),
               },
               hostId,
               CreatedGroupSchema,
@@ -640,6 +659,9 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
             // The session's hashtags stay: they describe the account, not this folder, and the next batch usually wants them again.
             setDrafts(new Map())
             setAutoStates(new Map())
+            // Cleared with the videos: a skip names THESE phones for THIS folder, and carrying it
+            // into the next batch would turn a platform off for a session nobody meant it for.
+            setSkipRules(NO_SKIP_RULES)
             setTitle(defaultSessionTitle())
             videos.reload()
           },
@@ -663,6 +685,10 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
       gapLo,
       gapHi,
       deviceIds,
+      // Both, and not only `skipRules`: `hasSkipRules` decides whether the field is sent at all, so a
+      // stale one would drop a rule the operator had just ticked — with nothing on screen to say so.
+      skipRules,
+      hasSkipRules,
       run,
       onCreated,
       videos,
@@ -926,7 +952,15 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
           <p className="text-[12.5px] font-medium">{pacing}</p>
         </Step>
 
-        <Step n={6} title="Captions" hint="Taken from each file’s own name unless you write your own.">
+        <Step
+          n={6}
+          title="Skip platforms on some phones"
+          hint="Optional. A phone with no YouTube channel should not be sent there — the video is still created, marked Skipped, and you can enable it later with one press."
+        >
+          <SkipRulesField assignment={assignment} pool={resolved} platforms={chosenPlatforms} rules={skipRules} onChange={setSkipRules} />
+        </Step>
+
+        <Step n={7} title="Captions" hint="Taken from each file’s own name unless you write your own.">
           <label className="flex cursor-pointer items-center gap-2 text-[12px]">
             <Checkbox checked={ownCaptions} onCheckedChange={(next) => setOwnCaptions(next === true)} />
             <span>Write my own</span>
@@ -1004,7 +1038,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
           )}
         </Step>
 
-        <Step n={7} title="Hashtags" hint="Added after each caption, on a line of their own.">
+        <Step n={8} title="Hashtags" hint="Added after each caption, on a line of their own.">
           <div className="grid gap-3 @md:grid-cols-2">
             <Field label="Always add">
               <Input value={fixedText} placeholder="#fyp #viral" onChange={(e) => setFixedText(e.target.value)} />
@@ -1032,7 +1066,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
           </p>
         </Step>
 
-        <Step n={8} title="Name this session" hint="It is how you will find it on the Sessions tab.">
+        <Step n={9} title="Name this session" hint="It is how you will find it on the Sessions tab.">
           <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={defaultSessionTitle()} />
         </Step>
 
@@ -1071,6 +1105,292 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
 }
 
 /** One picked video's caption and hashtags, with its own Auto caption button and status. */
+/* ------------------------------------------------------------------------ *
+ * Skip rules (0.45.0)
+ * ------------------------------------------------------------------------ */
+
+/** The rule as `smm/add-group` takes it (`excludes.ts`'s `ExcludeRuleSchema`). */
+interface SkipRules {
+  devices: Record<string, PlatformId[]>
+  labels: { label: string; platforms: PlatformId[] }[]
+  groups: { group: string; platforms: PlatformId[] }[]
+}
+
+const NO_SKIP_RULES: SkipRules = { devices: {}, labels: [], groups: [] }
+
+/** The same normalisation the service matches labels and group names with (`platforms.ts`'s `labelKey`). */
+function labelKey(name: string): string {
+  return name.toLowerCase().replace(/\s+/g, '')
+}
+
+/**
+ * One platform toggled on or off in a rule list. A rule left with no platform is DROPPED rather than
+ * stored empty — an entry that names a label and skips nothing would read as a rule on the session
+ * page and do nothing at all.
+ */
+function toggleRule<T extends { platforms: PlatformId[] }>(entries: readonly T[], match: (entry: T) => boolean, make: () => T, platform: PlatformId): T[] {
+  const found = entries.find(match)
+  if (!found) return [...entries, make()]
+  const platforms = found.platforms.includes(platform) ? found.platforms.filter((p) => p !== platform) : [...found.platforms, platform]
+  return entries.map((entry) => (entry === found ? { ...entry, platforms } : entry)).filter((entry) => entry.platforms.length > 0)
+}
+
+/**
+ * The phones a rule set actually skips, resolved here exactly as `excludes.ts`
+ * resolves it on the service side — a union over the three halves.
+ *
+ * Computed on this screen for one reason: the operator has to see the ANSWER
+ * before pressing Create, not the rules. "Every phone tagged no-youtube" is a
+ * sentence anybody can write and nobody can check; "4 of 20 phones skip
+ * YouTube, and #7 now posts nowhere" is the thing they meant to know.
+ */
+function resolveSkips(pool: readonly Device[], rules: SkipRules, platforms: readonly PlatformId[]): Map<string, Set<PlatformId>> {
+  const out = new Map<string, Set<PlatformId>>()
+  const add = (deviceId: string, platform: PlatformId) => {
+    if (!platforms.includes(platform)) return
+    const set = out.get(deviceId) ?? new Set<PlatformId>()
+    set.add(platform)
+    out.set(deviceId, set)
+  }
+  for (const device of pool) {
+    for (const rule of rules.groups) {
+      if (device.group === null) continue
+      if (device.group.id !== rule.group && labelKey(device.group.name) !== labelKey(rule.group)) continue
+      for (const platform of rule.platforms) add(device.id, platform)
+    }
+    for (const rule of rules.labels) {
+      if (!device.labels.some((l) => labelKey(l.name) === labelKey(rule.label))) continue
+      for (const platform of rule.platforms) add(device.id, platform)
+    }
+    for (const platform of rules.devices[device.id] ?? []) add(device.id, platform)
+  }
+  return out
+}
+
+/** A small platform toggle, the same shape (and the same `aria-pressed`) as the platform step's. */
+function SkipToggle({ on, label, title, onClick }: { on: boolean; label: string; title: string; onClick: () => void }): React.ReactElement {
+  return (
+    <Button size="sm" variant={on ? 'default' : 'outline'} aria-pressed={on} title={title} className="h-6 px-2 text-[11px]" onClick={onClick}>
+      {label}
+    </Button>
+  )
+}
+
+/**
+ * Which platform each phone does NOT post to.
+ *
+ * Three ways to say it, because they are three different facts about a farm and
+ * the operator already keeps them apart on the Devices screen: a GROUP is one
+ * per phone, a LABEL is many per phone and is how "this one has no YouTube
+ * channel" is actually recorded, and a phone NAMED by hand is the exception
+ * that fits neither and must not force anyone to invent a label for one
+ * evening's session.
+ *
+ * All three resolve to the same thing — a skip written onto the row when the
+ * session is created, which the session page can undo one cell at a time. So
+ * nothing here is a commitment: it is a starting position.
+ */
+function SkipRulesField({
+  assignment,
+  pool,
+  platforms,
+  rules,
+  onChange,
+}: {
+  assignment: 'one-per-phone' | 'every-phone'
+  pool: readonly Device[]
+  platforms: readonly PlatformId[]
+  rules: SkipRules
+  onChange: (next: SkipRules) => void
+}): React.ReactElement {
+  /** Every label on the chosen phones, with how many carry it. The platform labels are in here too — skipping by them is legitimate. */
+  const labels = useMemo(() => {
+    const counts = new Map<string, { name: string; phones: number }>()
+    for (const device of pool) {
+      for (const seen of new Set(device.labels.map((l) => labelKey(l.name)))) {
+        const name = device.labels.find((l) => labelKey(l.name) === seen)?.name ?? seen
+        const row = counts.get(seen) ?? { name, phones: 0 }
+        row.phones += 1
+        counts.set(seen, row)
+      }
+    }
+    return [...counts.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }, [pool])
+
+  const groups = useMemo(() => {
+    const counts = new Map<string, { id: string; name: string; phones: number }>()
+    for (const device of pool) {
+      if (device.group === null) continue
+      const row = counts.get(device.group.id) ?? { id: device.group.id, name: device.group.name, phones: 0 }
+      row.phones += 1
+      counts.set(device.group.id, row)
+    }
+    return [...counts.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }, [pool])
+
+  const resolved = useMemo(() => resolveSkips(pool, rules, platforms), [pool, rules, platforms])
+  const cells = useMemo(() => [...resolved.values()].reduce((n, set) => n + set.size, 0), [resolved])
+  /** Phones every chosen platform was skipped on: their video would go nowhere at all, which is never what anyone meant. */
+  const stranded = useMemo(
+    () => (platforms.length === 0 ? [] : pool.filter((d) => platforms.every((p) => resolved.get(d.id)?.has(p)))),
+    [pool, platforms, resolved],
+  )
+
+  /*
+    The one spread this cannot express, said out loud rather than drawn and quietly ignored.
+
+    A skip is written onto a video's ROW, for the one phone that video belongs to. An every-phone
+    session has no such pairing — the same video goes to every phone carrying the platform — so there
+    is no row to write "this phone skips YouTube" on. Drawing the matrix anyway would be a knob that
+    does not turn, which is this repo's own named failure. Choose the phones you want instead.
+  */
+  if (assignment !== 'one-per-phone') {
+    return (
+      <p className="text-[12.5px] text-dim">
+        Skips need one video per phone: they are written onto each video’s own row, and an every-video-to-every-phone session gives a video no phone of
+        its own. Switch the spread above to use them, or leave a platform out for the whole session in “Where it posts”.
+      </p>
+    )
+  }
+
+  if (platforms.length === 0 || pool.length === 0) {
+    return <p className="text-[12.5px] text-dim">Pick the platforms and the phones above, and this lists what you can turn off for which phone.</p>
+  }
+
+  const setDevice = (deviceId: string, platform: PlatformId) => {
+    const own = rules.devices[deviceId] ?? []
+    const next = own.includes(platform) ? own.filter((p) => p !== platform) : [...own, platform]
+    const devices = { ...rules.devices }
+    if (next.length === 0) delete devices[deviceId]
+    else devices[deviceId] = next
+    onChange({ ...rules, devices })
+  }
+
+  return (
+    <div className="space-y-3">
+      {groups.length > 0 ? (
+        <div className="space-y-1.5">
+          <div className="text-[11.5px] font-medium text-dim">By device group</div>
+          {groups.map((group) => {
+            const on = rules.groups.find((g) => g.group === group.id)?.platforms ?? []
+            return (
+              <div key={group.id} className="flex flex-wrap items-center gap-2">
+                <span className="min-w-[9rem] truncate text-[12px]" title={group.name}>
+                  {group.name}
+                </span>
+                <span className="text-[11px] text-faint">
+                  {group.phones} phone{group.phones === 1 ? '' : 's'}
+                </span>
+                {platforms.map((id) => (
+                  <SkipToggle
+                    key={id}
+                    on={on.includes(id)}
+                    label={PLATFORMS.find((p) => p.id === id)?.title ?? id}
+                    title={`Every phone in “${group.name}” skips ${PLATFORMS.find((p) => p.id === id)?.title ?? id}`}
+                    onClick={() =>
+                      onChange({
+                        ...rules,
+                        groups: toggleRule(rules.groups, (g) => g.group === group.id, () => ({ group: group.id, platforms: [id] }), id),
+                      })
+                    }
+                  />
+                ))}
+              </div>
+            )
+          })}
+        </div>
+      ) : null}
+
+      {labels.length > 0 ? (
+        <div className="space-y-1.5">
+          <div className="text-[11.5px] font-medium text-dim">By label</div>
+          {labels.map((label) => {
+            const on = rules.labels.find((l) => labelKey(l.label) === labelKey(label.name))?.platforms ?? []
+            return (
+              <div key={label.name} className="flex flex-wrap items-center gap-2">
+                <Badge variant="secondary" className="min-w-[9rem] justify-start truncate">
+                  {label.name}
+                </Badge>
+                <span className="text-[11px] text-faint">
+                  {label.phones} phone{label.phones === 1 ? '' : 's'}
+                </span>
+                {platforms.map((id) => (
+                  <SkipToggle
+                    key={id}
+                    on={on.includes(id)}
+                    label={PLATFORMS.find((p) => p.id === id)?.title ?? id}
+                    title={`Every phone carrying “${label.name}” skips ${PLATFORMS.find((p) => p.id === id)?.title ?? id}`}
+                    onClick={() =>
+                      onChange({
+                        ...rules,
+                        labels: toggleRule(rules.labels, (l) => labelKey(l.label) === labelKey(label.name), () => ({ label: label.name, platforms: [id] }), id),
+                      })
+                    }
+                  />
+                ))}
+              </div>
+            )
+          })}
+        </div>
+      ) : null}
+
+      <div className="space-y-1.5">
+        <div className="text-[11.5px] font-medium text-dim">By phone</div>
+        {/*
+          Scrolled rather than paged: forty phones is the size this exists for, and an operator
+          looking for #21 scrolls to it far faster than they find the page it is on.
+        */}
+        <div className="max-h-64 space-y-1 overflow-y-auto rounded-inner border border-line p-2">
+          {pool.map((device) => {
+            const own = rules.devices[device.id] ?? []
+            const byRule = resolved.get(device.id) ?? new Set<PlatformId>()
+            return (
+              <div key={device.id} className="flex flex-wrap items-center gap-2">
+                <span className="min-w-[10rem] truncate text-[12px]" title={deviceName(device)}>
+                  {deviceName(device)}
+                </span>
+                {platforms.map((id) => {
+                  const title = PLATFORMS.find((p) => p.id === id)?.title ?? id
+                  // A phone a GROUP or LABEL rule already skips shows it, and pressing it does
+                  // nothing useful — the rule above is what turned it off, so it says so rather than
+                  // offering a toggle that would appear not to work.
+                  const fromRule = byRule.has(id) && !own.includes(id)
+                  return fromRule ? (
+                    <span key={id} className="rounded-inner bg-muted-2 px-2 py-[3px] text-[11px] text-dim" title={`Already skipped by a rule above`}>
+                      {title}
+                    </span>
+                  ) : (
+                    <SkipToggle key={id} on={own.includes(id)} label={title} title={`${deviceName(device)} skips ${title}`} onClick={() => setDevice(device.id, id)} />
+                  )
+                })}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      <p className="text-[12.5px]">
+        {cells === 0 ? (
+          <span className="text-dim">Nothing is skipped: every phone posts to every platform you picked.</span>
+        ) : (
+          <>
+            <span className="font-medium">
+              {cells} of {pool.length * platforms.length} phone-and-platform pairs skipped
+            </span>
+            <span className="text-dim"> — those go out as Skipped, and you can enable any of them on the session’s page.</span>
+          </>
+        )}
+      </p>
+      {stranded.length > 0 ? (
+        <p className="text-[12.5px] text-warn">
+          {stranded.length === 1 ? `${deviceName(stranded[0]!)} now posts nowhere` : `${stranded.length} phones now post nowhere`}: every platform you
+          picked is skipped for {stranded.length === 1 ? 'it' : 'them'}, so {stranded.length === 1 ? 'its' : 'their'} video is created and never sent.
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
 function VideoCaptionRow({
   video,
   draft,

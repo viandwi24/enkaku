@@ -339,6 +339,7 @@ const STATE_WORDS: Record<string, string> = {
   partial: 'Some posted, some did not',
   failed: 'Failed',
   unsupported: 'Not supported in this build',
+  skipped: 'Skipped',
 }
 
 const STATE_TONES: Record<string, string> = {
@@ -348,6 +349,13 @@ const STATE_TONES: Record<string, string> = {
   partial: 'bg-warn',
   failed: 'bg-danger',
   unsupported: 'bg-faint-2',
+  /*
+    Neutral, and emphatically not `bg-warn` or `bg-danger` (0.45.0). A skip is
+    the one state that is exactly what the operator asked for, and a coloured
+    dot is this table's whole vocabulary for "something needs you". Four amber
+    dots down a finished session would undo the feature's entire point.
+  */
+  skipped: 'bg-faint-2',
 }
 
 /**
@@ -386,11 +394,20 @@ type MarkPost = (post: Post, platform: string, attempt: AttemptRow | null, actio
 /** Re-send one video to the phones where it failed (`smm/retry-failed`). */
 type RetryVideo = (post: Post, name: string) => void
 
-/** The two row-level writes about outcomes, passed down the table together. */
+/**
+ * Turn one platform of one video off, or back on (`smm/skip-platform`, 0.45.0).
+ *
+ * `skip: true` is only ever offered on a cell that has sent nothing — the member refuses the rest by
+ * name, and a button that could only produce a refusal is not a button.
+ */
+type SkipPlatform = (post: Post, platform: string, skip: boolean, name: string) => void
+
+/** The row-level writes about outcomes, passed down the table together. */
 interface OutcomeActions {
   onMark: MarkPost
   onRetry: RetryVideo
-  /** Whether a mark or a retry for this video is out right now. */
+  onSkip: SkipPlatform
+  /** Whether a mark, a retry or a skip for this video is out right now. */
   busy: (post: Post) => boolean
 }
 
@@ -741,12 +758,39 @@ function useSessionActions(reload: () => void, onRemoved?: (group: Group) => voi
     )
   }
 
-  const outcomeBusy = (post: Post): boolean => isPending(`resolve:${post.videoArtifactId}`) || isPending(`retry-video:${post.videoArtifactId}`)
+  /**
+   * Turn one platform off for this video, or back on, through `smm/skip-platform` (0.45.0).
+   *
+   * Nothing is sent by either direction. Enabling returns the cell to Waiting and the router sends
+   * it at the video's next turn — within a tick on a session already started, which is what the
+   * success line promises. The member refuses a skip on anything that has already been sent, and
+   * that refusal reaches the failure toast verbatim rather than being guessed at here.
+   */
+  const skipPlatform: SkipPlatform = (post, platform, skip, name) => {
+    const where = platformTitle(platform)
+    void run(
+      `skip:${post.videoArtifactId}`,
+      async () => {
+        const host = await hostOrRefuse()
+        await runMember('smm/skip-platform@latest', { videoArtifactId: post.videoArtifactId, platform, skip }, host.id)
+      },
+      {
+        success: skip
+          ? `“${name}” skips ${where} — nothing is sent there, and nothing failed`
+          : `“${name}” posts to ${where} again — it goes out at this video’s next turn`,
+        failure: skip ? `Could not skip ${where} for “${name}”` : `Could not enable ${where} for “${name}”`,
+        onSuccess: () => reload(),
+      },
+    )
+  }
+
+  const outcomeBusy = (post: Post): boolean =>
+    isPending(`resolve:${post.videoArtifactId}`) || isPending(`retry-video:${post.videoArtifactId}`) || isPending(`skip:${post.videoArtifactId}`)
 
   const busy = (group: Group): boolean =>
     isPending(`start:${group.id}`) || isPending(`retry:${group.id}`) || isPending(`remove:${group.id}`)
 
-  const outcome: OutcomeActions = { onMark: markPost, onRetry: retryVideo, busy: outcomeBusy }
+  const outcome: OutcomeActions = { onMark: markPost, onRetry: retryVideo, onSkip: skipPlatform, busy: outcomeBusy }
 
   /**
    * Change a session's pacing (0.30.0) through `smm/update-group`: "at once" applies from the router's next look, and a
@@ -892,11 +936,11 @@ export function SessionsPanel({
  * ------------------------------------------------------------------------ */
 
 /**
- * The five things one post (one video on one platform) can be doing, as far as
+ * The six things one post (one video on one platform) can be doing, as far as
  * an operator's next move is concerned. Every cell lands in exactly one, so the
  * chips always add up to All.
  */
-type Bucket = 'running' | 'waiting' | 'posted' | 'failed' | 'look'
+type Bucket = 'running' | 'waiting' | 'posted' | 'failed' | 'look' | 'skipped'
 type Filter = 'all' | Bucket
 
 const BUCKETS: readonly { id: Bucket; word: string; dot: string; pill: string; meaning: string }[] = [
@@ -930,6 +974,13 @@ const BUCKETS: readonly { id: Bucket; word: string; dot: string; pill: string; m
     meaning:
       'Some phones posted and some did not, a post was not confirmed (check the account, then mark it as posted or failed), or the platform is not supported in this build. None of these is retried on its own.',
   },
+  {
+    id: 'skipped',
+    word: 'Skipped',
+    dot: 'bg-faint-2',
+    pill: 'bg-muted-2 text-dim',
+    meaning: 'You turned this platform off for this phone. Nothing is sent, and nothing failed. Enable it and it goes out at the video’s next turn.',
+  },
 ]
 
 function bucketInfo(id: Bucket): (typeof BUCKETS)[number] {
@@ -942,6 +993,8 @@ function bucketInfo(id: Bucket): (typeof BUCKETS)[number] {
  * chips and the header's counts agree:
  *
  * - no dispatch entry, or `pending` → Waiting
+ * - `skipped` → Skipped, and nothing else: it is neither waiting (nothing is
+ *   coming) nor something to look at (it is already what was asked for)
  * - `unsupported` → Needs a look
  * - `dispatched`, or any current attempt still `queued` → Running
  * - `succeeded` → Posted
@@ -951,6 +1004,9 @@ function bucketInfo(id: Bucket): (typeof BUCKETS)[number] {
  */
 function bucketOf(state: PlatformState | undefined): Bucket {
   if (!state || state.state === 'pending') return state?.attempts.some((a) => a.state === 'queued') ? 'running' : 'waiting'
+  // Before `attempts` is consulted: a skip keeps the history a retry retired, and none of it is
+  // what the cell is doing now.
+  if (state.state === 'skipped') return 'skipped'
   if (state.state === 'unsupported') return 'look'
   if (state.state === 'dispatched' || state.attempts.some((a) => a.state === 'queued')) return 'running'
   if (state.state === 'succeeded') return 'posted'
@@ -1228,7 +1284,7 @@ function SessionTable({
   const owners = useMemo(() => ownersOf(posts, videos), [posts, videos])
 
   const counts = useMemo(() => {
-    const c: Record<Bucket, number> = { running: 0, waiting: 0, posted: 0, failed: 0, look: 0 }
+    const c: Record<Bucket, number> = { running: 0, waiting: 0, posted: 0, failed: 0, look: 0, skipped: 0 }
     for (const post of posts) {
       for (const platform of platforms) {
         if (hasPlatform(post, platform)) c[bucketOf(post.dispatch[platform])] += 1
@@ -1236,7 +1292,7 @@ function SessionTable({
     }
     return c
   }, [posts, platforms])
-  const total = counts.running + counts.waiting + counts.posted + counts.failed + counts.look
+  const total = counts.running + counts.waiting + counts.posted + counts.failed + counts.look + counts.skipped
 
   const rows = useMemo(() => {
     const numbered = posts.map((post, i) => ({ post, turn: i + 1 }))
@@ -2198,6 +2254,10 @@ function PlatformCell({
     const sentAt = sent.length > 0 ? Math.min(...sent) : (state?.at ?? null)
     if (started.length > 0) when = `for ${span(nowSec - Math.min(...started))}`
     else when = sentAt === null ? 'waiting for its phone' : `waiting ${span(nowSec - sentAt)} for its phone`
+  } else if (bucket === 'skipped') {
+    // Not "sent": nothing was. When it was TURNED OFF is the only time this cell has, and it tells a
+    // skip made when the session was created apart from one made an hour into the run.
+    when = state?.at ? `skipped ${relativeTime(state.at, now)}` : null
   } else if (bucket === 'waiting') {
     if (post.notBeforeAt === null) when = 'session not started'
     else if (post.notBeforeAt > nowSec + 4) when = `turn ${fromNow(post.notBeforeAt, now)}`
@@ -2217,7 +2277,13 @@ function PlatformCell({
   let whyTitle: string | undefined
   let hint: string | null = null
   const single = unconfirmed.length === 1 ? unconfirmed[0]! : null
-  if (bucket === 'failed') {
+  if (bucket === 'skipped') {
+    // The skip's own sentence, which names who decided it ("this phone carries the no-youtube
+    // label"). Shown on the cell rather than only in a tooltip, for the same reason a failure's is:
+    // the operator deciding whether to enable it reads the reason, not the word.
+    why = state?.note ?? 'You turned this platform off for this video.'
+    whyTitle = why
+  } else if (bucket === 'failed') {
     why = failedNow.find((a) => a.error)?.error ?? state?.note ?? 'Failed without an error message — open the row for the run.'
     whyTitle = why
     hint = 'Retry failed on this row sends it again.'
@@ -2253,6 +2319,15 @@ function PlatformCell({
           ? only
           : null
 
+  /**
+   * Whether this cell may be turned off or on (0.45.0), and it mirrors `setPlatformSkip` exactly:
+   * `skipped` offers Enable, a cell that has sent nothing offers Skip, and everything else offers
+   * neither. `unsupported` is included in "sent nothing" for the same reason the member includes it —
+   * there is nothing to overwrite — and skipping it replaces an explanation nobody can act on with a
+   * decision they made.
+   */
+  const skippable = bucket === 'skipped' ? 'enable' : attempts.length === 0 && (state === undefined || state.state === 'pending' || state.state === 'unsupported') ? 'skip' : null
+
   return (
     <div className={cn('min-w-0 space-y-0.5 transition-opacity', dimmed && 'opacity-40')}>
       <div className="flex flex-wrap items-center gap-1">
@@ -2283,7 +2358,13 @@ function PlatformCell({
         </div>
       ) : null}
       {why !== null ? (
-        <div className={cn('line-clamp-3 max-w-[16rem] text-[11px] leading-snug wrap-anywhere', bucket === 'failed' ? 'text-danger' : 'text-warn')} title={whyTitle}>
+        <div
+          className={cn(
+            'line-clamp-3 max-w-[16rem] text-[11px] leading-snug wrap-anywhere',
+            bucket === 'failed' ? 'text-danger' : bucket === 'skipped' ? 'text-dim' : 'text-warn',
+          )}
+          title={whyTitle}
+        >
           {why}
         </div>
       ) : null}
@@ -2291,6 +2372,11 @@ function PlatformCell({
       {markable !== null && !dimmed ? (
         <div data-row-action className="pt-0.5">
           <MarkButtons post={post} platform={platform} attempt={markable} name={name} phone={attemptPhone(markable, devices)} outcome={outcome} />
+        </div>
+      ) : null}
+      {skippable !== null && !dimmed ? (
+        <div data-row-action className="pt-0.5">
+          <SkipButton post={post} platform={platform} name={name} skipped={skippable === 'enable'} outcome={outcome} />
         </div>
       ) : null}
     </div>
@@ -2927,6 +3013,49 @@ function MarkByHandButton({ post, platform, name, phone, outcome }: { post: Post
   )
 }
 
+/**
+ * Turn one platform off for one video, or back on (0.45.0).
+ *
+ * Offered on exactly two kinds of cell, and on nothing else: one that has sent nothing (**Skip**) and
+ * one already skipped (**Enable**). Everything between them is a record of what a phone did, which a
+ * skip may not overwrite — so there is no button, rather than a button whose only possible answer is
+ * the member's refusal.
+ *
+ * Skip is not behind a confirm and Enable is. That looks backwards and is not: skipping sends nothing
+ * and is undone by the button that replaces it, while enabling puts a real video on a real account at
+ * the next turn — the direction that cannot be taken back is the one that asks.
+ */
+function SkipButton({ post, platform, name, skipped, outcome }: { post: Post; platform: string; name: string; skipped: boolean; outcome: OutcomeActions }): ReactElement {
+  const busy = outcome.busy(post)
+  const title = platformTitle(platform)
+  if (!skipped) {
+    return (
+      <Button variant="ghost" size="sm" disabled={busy} title={`Do not post this video to ${title}. Nothing is sent, and you can enable it again.`} onClick={() => outcome.onSkip(post, platform, true, name)}>
+        Skip
+      </Button>
+    )
+  }
+  return (
+    <ConfirmDialog
+      trigger={
+        <Button variant="outline" size="sm" disabled={busy} title={`Post this video to ${title} after all`}>
+          Enable
+        </Button>
+      }
+      title={`Post “${name}” to ${title} after all?`}
+      destructive={false}
+      confirmLabel="Enable"
+      description={
+        <>
+          This platform goes back to <strong>waiting</strong> and is sent to this video’s phone at its next turn — within a minute on a session
+          that is already running. Make sure the phone is signed in to {title}, or the upload fails there.
+        </>
+      }
+      onConfirm={() => outcome.onSkip(post, platform, false, name)}
+    />
+  )
+}
+
 /** A row's own Retry failed: this one video, to the phones where it failed, behind a confirm. */
 function RetryVideoButton({ post, name, outcome, deleted }: { post: Post; name: string; outcome: OutcomeActions; deleted: boolean }): ReactElement {
   const busy = outcome.busy(post)
@@ -3033,6 +3162,9 @@ function SessionRow({
   const platforms = group.platforms.map(platformTitle).join(', ')
   const pacing = pacingLine(group)
   const quiet = p !== null && p.running === 0 && p.waiting === 0 && p.failed === 0 && p.attention === 0
+  // A session finishes when nothing is left to send, and a skipped platform is nothing left to send
+  // (0.45.0). Without this, four skips held "All posted" back forever on a session that was done.
+  const allDone = p !== null && total > 0 && p.posted + p.skipped === total
 
   return (
     <TableRow>
@@ -3064,8 +3196,8 @@ function SessionRow({
             Nothing reported yet
           </span>
         ) : quiet ? (
-          p.posted === total && total > 0 ? (
-            <span className="text-[11.5px] text-ok">All posted</span>
+          allDone ? (
+            <span className="text-[11.5px] text-ok">{p.skipped > 0 ? `All posted, ${p.skipped} skipped` : 'All posted'}</span>
           ) : (
             <span className="text-faint">—</span>
           )
@@ -3101,6 +3233,13 @@ function ProgressBadges({ group }: { group: Group }): ReactElement | null {
       {p.attention > 0 ? (
         <Badge variant="warn" title="Some posted and some did not, or a result could not be confirmed. Open the session to see which phone.">
           {p.attention} need a look
+        </Badge>
+      ) : null}
+      {/* Last, and `secondary`: a skip is neither progress nor a problem, and it is here only so the
+          count in front of it is never read as "four went missing". */}
+      {p.skipped > 0 ? (
+        <Badge variant="secondary" title="Platforms you turned off for a phone. Nothing was sent, and nothing failed. Open the session to enable one again.">
+          {p.skipped} skipped
         </Badge>
       ) : null}
     </>

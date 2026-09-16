@@ -119,6 +119,25 @@ export function postablePlatforms(): Platform[] {
  * matches too.
  */
 export function deviceCarriesPlatform(labels: readonly { name: string }[], platform: Platform): boolean {
-  const want = platform.label.toLowerCase().replace(/\s+/g, '')
-  return labels.some((l) => l.name.toLowerCase().replace(/\s+/g, '') === want)
+  return carriesLabel(labels, platform.label)
+}
+
+/**
+ * A label name reduced to what comparing two of them should actually compare.
+ *
+ * One rule, exported, because there are now TWO readers of it — the platform
+ * label above and the skip rules of `excludes.ts`, where an operator types the
+ * label themselves (`no-youtube`, `No YouTube`). Two copies of "lowercase and
+ * strip the spaces" is two chances for a rule to match on one screen and not
+ * on the other, which is the failure this plugin can least afford: a skip that
+ * quietly does not apply posts a video to an account nobody chose.
+ */
+export function labelKey(name: string): string {
+  return name.toLowerCase().replace(/\s+/g, '')
+}
+
+/** Does this device carry a label by this name? Case- and space-insensitive, exactly as above. */
+export function carriesLabel(labels: readonly { name: string }[], name: string): boolean {
+  const want = labelKey(name)
+  return labels.some((l) => labelKey(l.name) === want)
 }
