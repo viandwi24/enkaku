@@ -6,7 +6,7 @@ import type { UiNode } from '@enkaku/protocol'
 
   - the sheet's header is `title` "Akun", with `add_account` beside it;
   - the signed-in account is a row whose desc begins "Akun yang dipilih: <name>,<handle>,…" and which
-    carries `name` ("Hendi sunadi"), `channel_handle` ("@Hendisunadi") and a `byline`;
+    carries `name` ("Channel Name"), `channel_handle` ("@channel-handle") and a `byline`;
   - above it sit the Google account's own `name` and `email` — the identity the channel belongs to.
 
   Only ONE Google account was signed in on the measured phone, so how a SECOND account's row is
@@ -64,7 +64,7 @@ export function youtubeAccountRows(tree: UiNode): YouTubeAccountRead[] {
     /*
       A channel row, never the Google account header above it (0.37.0): that header carries a `name`
       and an `email` and no channel of its own, and counting it invented an account called "Hendi
-      sunadi" beside the real "@Hendisunadi". A row is a channel when it names one, or when it is the
+      sunadi" beside the real "@channel-handle". A row is a channel when it names one, or when it is the
       one the sheet ticks.
     */
     if (!handle && !flatten(node).some((c) => idIs(c, 'selection_checkmark'))) continue

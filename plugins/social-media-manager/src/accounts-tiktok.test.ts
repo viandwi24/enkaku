@@ -11,8 +11,8 @@ describe('TikTok accounts — the switch-account sheet (0.37.0, moto g06 2026-09
     const sheet = await fixture('screen-tt-switch-account.json')
     expect(tiktokSwitchSheetShowing(sheet)).toBe(true)
     expect(tiktokSwitchSheetAccounts(sheet)).toEqual([
-      { username: 'dewi_purnama280', checked: true },
-      { username: 'user2578127329501', checked: false },
+      { username: 'owner.tiktok', checked: true },
+      { username: 'owner.tiktok2', checked: false },
     ])
   })
 

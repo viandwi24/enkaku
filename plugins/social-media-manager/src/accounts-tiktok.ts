@@ -10,8 +10,8 @@ import type { UiNode } from '@enkaku/protocol'
     handle as text; the row the phone is signed in as holds `fj7` desc "Checkmark";
   - the last row is "Add account" — an action, never an account.
 
-  Two accounts were signed in on the measured phone (`dewi_purnama280`, ticked, and
-  `user2578127329501`), so the multi-account shape IS measured here, unlike Instagram and YouTube.
+  Two accounts were signed in on the measured phone (`owner.tiktok`, ticked, and
+  `owner.tiktok2`), so the multi-account shape IS measured here, unlike Instagram and YouTube.
   The Indonesian build's own ids and labels are the TikTok pack's (`sheet.ts`, plan 86): row id `l_z`,
   sheet desc "Lembar bawah", checkmark desc "Tanda centang" — both vocabularies are accepted below,
   since a farm phone may run either language.

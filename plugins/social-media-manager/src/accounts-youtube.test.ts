@@ -10,7 +10,7 @@ describe('YouTube accounts — the Anda tab account sheet (0.37.0, moto g06 2026
   test('the sheet is recognised, and its one account is read with its handle, name and e-mail', async () => {
     const sheet = await fixture('screen-yt-accounts.json')
     expect(youtubeAccountSheetShowing(sheet)).toBe(true)
-    expect(youtubeAccountRows(sheet)).toEqual([{ username: 'Hendisunadi', displayName: 'Hendi sunadi', accountId: 'hendisunadi859@gmail.com', selected: true }])
+    expect(youtubeAccountRows(sheet)).toEqual([{ username: 'channel-handle', displayName: 'Channel Name', accountId: 'owner@example.com', selected: true }])
   })
 
   test('another app\'s screen is not the sheet, and reads as no accounts', async () => {

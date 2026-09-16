@@ -5,7 +5,7 @@ import type { UiNode } from '@enkaku/protocol'
   id-ID, 720x1640) on 2026-09-16:
 
   - the profile tab's toolbar carries `action_bar_title` whose text and desc are the handle the phone
-    is signed in as ("bitorex.bkk", `screen-ig-profile.json`); tapping it opens the account switcher;
+    is signed in as ("owner.account", `screen-ig-profile.json`); tapping it opens the account switcher;
   - the switcher is a bottom sheet of clickable rows whose desc IS the handle, above "Tambahkan
     Instagram", "Tambahkan Facebook" and "Buka pengaturan Akun Meta" (`screen-ig-account-switcher.json`);
   - the signed-in row carries a blue tick ON SCREEN that the accessibility tree does not expose at
