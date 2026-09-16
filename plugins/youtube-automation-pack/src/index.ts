@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.5',
+  version: '0.39.6',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,21 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.6 — a title field the reader cannot see is decided by pixels.** The
+   * class 0.39.4 and 0.39.5 were both written for, and both missed: production #9
+   * (2026-09-16) reached the recovery on **0.39.5** with a dump holding six YouTube
+   * nodes and not one word among them, no IME chooser over it and nothing left to
+   * wait for — the details screen withholding its whole window set, which this pack
+   * has known since 0.26.1. Reading again cannot fix a screen that answers nothing.
+   * But the run already holds a photograph of that screen taken before the title was
+   * ever tapped (`untouchedDetails`, kept for the Upload band), so the title's own
+   * band is compared against it: pixel-identical means nothing landed in the field,
+   * which is the one thing the tree refused to say, and the title is typed once more.
+   * A band that differs — or a screenshot that will not decode — keeps 0.38.3's
+   * refusal, because a field holding part of the title must never be typed into
+   * twice. `detailsGeometry` gained `titleBand`, derived from the same two phones
+   * its other offsets were measured on.
    *
    * **0.39.5 — an input-method chooser is closed, not read through.** The two
    * runs 0.39.4 was written for came back the same evening on two more phones

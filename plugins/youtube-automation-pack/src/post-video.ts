@@ -145,6 +145,8 @@ export interface DetailsGeometry {
   upload: { x: number; y: number }
   blank: { x: number; y: number }
   uploadBand: Region
+  /** The band the title's own text occupies — what says whether anything landed in a field the reader cannot see (0.39.6). */
+  titleBand: Region
   content: Region
 }
 
@@ -160,6 +162,10 @@ export function detailsGeometry(tree: UiNode): DetailsGeometry {
     upload: { x: px(534), y: bottom - px(76) },
     blank: { x: px(200), y: top + px(42) },
     uploadBand: { top: (bottom - px(101)) / frame.height, bottom: (bottom - px(36)) / frame.height, left: 0, right: 1 },
+    // The title's own line, from the two phones measured above: the moto's field runs from content
+    // top + 120 to top + 188, and the Samsung's hint sits at top + 153. 110..200 covers both with room,
+    // and stays far above the Upload band (bottom − 101), so the two never read each other's pixels.
+    titleBand: { top: (top + px(110)) / frame.height, bottom: (top + px(200)) / frame.height, left: 0, right: 1 },
     content: { top: top / frame.height, bottom: bottom / frame.height, left: 0, right: 1 },
   }
 }
@@ -1585,6 +1591,30 @@ const script: PluginMemberScript<typeof params, typeof result> = {
             held = titleFieldText(await ctx.device.dump())
           } else {
             held = titleFieldText(again)
+          }
+        }
+        if (held === null) {
+          /*
+            A field the reader cannot see, decided by PIXELS (0.39.6). This is the class that survived
+            0.39.4 and 0.39.5: production #9 (2026-09-16) reached here on 0.39.5 with a dump holding six
+            YouTube nodes and not one word among them, no IME chooser over it and nothing left to wait
+            for — the details screen simply withholds its whole window set from the reader, which this
+            pack has known since 0.26.1. Reading again cannot fix a screen that answers nothing.
+
+            What the run DOES have is a photograph of this screen taken before the title was ever
+            tapped, kept for the Upload band (`untouchedDetails`). If the title's own band is still
+            pixel-identical to it, nothing has been typed into that field — which is exactly what the
+            branch below needs to know, and the one thing the tree refused to say. A band that differs,
+            or a screenshot that cannot be decoded, keeps the old refusal: it might hold part of the
+            title, and typing it again is what makes YouTube reject the whole thing.
+          */
+          const nowShot = await ctx.device.screenshot().catch(() => null)
+          const band = nowShot ? compareShots(untouchedDetails, nowShot, geometry.titleBand) : 'unreadable'
+          if (band === 'same') {
+            ctx.log.info('the title field cannot be read, but its band is pixel-identical to the untouched details screen — nothing landed in it, so the title is typed once more')
+            held = ''
+          } else {
+            ctx.log.warn('the title field cannot be read and its band no longer matches the untouched details screen — not typing the title again', { band })
           }
         }
         if (held === '') {
