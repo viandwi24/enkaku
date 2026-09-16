@@ -315,6 +315,26 @@ async function relaunch(ctx: ScriptContext<unknown>, pkg: string): Promise<void>
   }
 }
 
+/** How many times one scroll run will put TikTok back on screen before it reports the feed as blocked. */
+const MAX_FOREGROUND_RELAUNCHES = 2
+
+/**
+ * Is TikTok still the app on screen? (1.49.2)
+ *
+ * An unanswered dump reads as YES on purpose: the inspector is not dependable on this app (see
+ * `clearBlockingDialog`), and a failed reading is not evidence that the app left. The caller only
+ * uses this to choose between a relaunch and an error it was about to throw anyway, so the
+ * conservative answer costs nothing and a wrong `false` would restart a perfectly healthy feed.
+ */
+async function inTikTok(ctx: ScriptContext<unknown>): Promise<boolean> {
+  try {
+    const tree = await ctx.device.dump()
+    return flatten(tree).some((n) => n.packageName === TIKTOK_PACKAGE && n.bounds.right > n.bounds.left && n.bounds.bottom > n.bounds.top)
+  } catch {
+    return true
+  }
+}
+
 /**
  * Five parameters — the original three, plus `commentChance` and `idlePauseSeconds`, pulled
  * back OUT of the constants below now that plan 95's vocabulary gives them a control that can
@@ -489,6 +509,7 @@ export const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof re
         let unreadable = 0
         let consecutiveBlind = 0
         let dialogSweeps = 0
+        let foregroundRelaunches = 0
         let before = await snapshot(ctx)
         if (!before) throw new Error('could not take a first screenshot — the inspector never answered')
         const frame = pngSize(before)
@@ -543,6 +564,25 @@ export const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof re
           }
           const dialogAction = nextDialogAction(consecutiveBlind, dialogSweeps)
           if (dialogAction === 'blocked') {
+            /*
+              Not every stuck feed is a modal (1.49.2). The `blocked` screenshot this branch saved on
+              the owner's farm showed the phone's LAUNCHER: TikTok had left the foreground entirely —
+              killed by the system, or sent home by something outside this run — and every dialog
+              sweep after that was hunting for an ack button on a home screen that could never have
+              one. Giving up there reports a policy notice nobody ever saw, and kills a run that was
+              one relaunch from fine. So the foreground is checked once, and a phone that is simply
+              not in TikTok any more gets the restart `prepare` would have given it.
+            */
+            if (foregroundRelaunches < MAX_FOREGROUND_RELAUNCHES && !(await inTikTok(ctx))) {
+              foregroundRelaunches += 1
+              recoveries += 1
+              ctx.log.warn('TikTok is no longer the app on screen — relaunching instead of reporting a modal', { foregroundRelaunches })
+              await ctx.artifact.screenshot('left-tiktok')
+              await relaunch(ctx, TIKTOK_PACKAGE)
+              consecutiveBlind = 0
+              dialogSweeps = 0
+              continue
+            }
             // A silent `success` on a screen that has been stuck behind a modal for three sweeps
             // is worse than any thrown error — it is exactly the failure this fix exists to catch.
             ctx.log.warn('giving up: the feed never came back after repeated dialog sweeps', { dialogSweeps })
@@ -936,6 +976,11 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.49.2 — a feed that stopped because TikTok LEFT is relaunched, not reported as a modal. The `blocked`
+  //   screenshot a production auto-scroll saved (2026-09-16) showed the phone's launcher: the app was gone from
+  //   the foreground, so every dialog sweep was looking for an ack button on a home screen. The branch now reads
+  //   the foreground once before giving up and restarts TikTok instead, at most twice per run, which is the
+  //   difference between a dead run and a two-minute gap in one.
   // 1.49.1 — a screen wait also closes what the INTERRUPTIONS register knows. Production #34 (2026-09-16, on
   //   1.49.0) failed "expected the camera screen but the dump reads unknown (no modal matched)" while TikTok's
   //   "Riwayat penonton diaktifkan" sheet covered it — a sheet `interruptions.ts` has known since 1.44.0, which
@@ -1272,7 +1317,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.49.1',
+  version: '1.49.2',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
