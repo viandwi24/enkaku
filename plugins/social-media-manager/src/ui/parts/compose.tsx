@@ -30,7 +30,6 @@ import {
   captionFromName,
   composedHashtags,
   defaultSessionTitle,
-  deviceName,
   hashtagText,
   listDevices,
   listVideos,
@@ -44,6 +43,14 @@ import {
   type Device,
   type PlatformId,
 } from '../shared'
+import {
+  DevicePicker,
+  newPick,
+  normaliseLabel,
+  pickRefusal,
+  resolvePick,
+  type DevicePick,
+} from './device-picker'
 import {
   AutoStatus,
   BulkProgress,
@@ -92,11 +99,6 @@ import {
 // ---------------------------------------------------------------------------
 // Resolving a fleet — the same rule the service side applies
 // ---------------------------------------------------------------------------
-
-/** `deviceCarriesPlatform`'s own normalisation (`platforms.ts`): a label is typed by a human onto a chip. */
-function normaliseLabel(name: string): string {
-  return name.toLowerCase().replace(/\s+/g, '')
-}
 
 function carriesPlatform(device: Device, platform: PlatformId): boolean {
   const want = normaliseLabel(platformLabel(platform))
@@ -220,9 +222,6 @@ function reason(e: unknown): string {
  */
 const CreatedGroupSchema = z.object({ groupId: z.string().min(1) })
 
-/** A phone chooser with three modes, because "which phones" is genuinely three different questions. */
-type PhoneMode = 'labelled' | 'labels' | 'devices'
-
 const EMPTY_DEVICES: Device[] = []
 const EMPTY_VIDEOS: Artifact[] = []
 
@@ -272,9 +271,12 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
     nobody picked.
   */
   const [platforms, setPlatforms] = useState<ReadonlySet<PlatformId>>(() => new Set<PlatformId>())
-  const [phoneMode, setPhoneMode] = useState<PhoneMode>('labelled')
-  const [chosenLabels, setChosenLabels] = useState<ReadonlySet<string>>(() => new Set<string>())
-  const [chosenDevices, setChosenDevices] = useState<ReadonlySet<string>>(() => new Set<string>())
+  /*
+    One pick, the shared five options (0.39.0). `labelled` is still the default
+    and still the only mode that sends no ids at all, which is what keeps every
+    session created without touching this control meaning exactly what it did.
+  */
+  const [pick, setPick] = useState<DevicePick>(() => newPick())
   const [assignment, setAssignment] = useState<'one-per-phone' | 'every-phone'>('one-per-phone')
   const [order, setOrder] = useState<'as-listed' | 'random'>('random')
   const [concurrency, setConcurrency] = useState(4)
@@ -347,37 +349,14 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
     [videos],
   )
 
-  /** The phone list's own search — with a hundred phones, ticking the right ones is a find, not a scroll. */
-  const [deviceQuery, setDeviceQuery] = useState('')
-  const shownDevices = useMemo(() => fleet.filter((d) => deviceMatches(d, deviceQuery)), [fleet, deviceQuery])
-
   // --- the fleet the choice resolves to ------------------------------------
   const chosenPlatforms = useMemo(
     () => PLATFORMS.filter((p) => p.postable && platforms.has(p.id)).map((p) => p.id),
     [platforms],
   )
 
-  /** Every label the fleet actually wears — chips built from the farm, never a typed-in list. */
-  const fleetLabels = useMemo(() => {
-    const seen = new Map<string, string>()
-    for (const device of fleet) {
-      for (const label of device.labels) {
-        const key = normaliseLabel(label.name)
-        if (!seen.has(key)) seen.set(key, label.name)
-      }
-    }
-    return [...seen.values()].sort((a, b) => a.localeCompare(b))
-  }, [fleet])
-
   /** The pool BEFORE the platform label is applied — what the operator's mode says. */
-  const pool = useMemo(() => {
-    if (phoneMode === 'labelled') return fleet
-    if (phoneMode === 'labels') {
-      const want = new Set([...chosenLabels].map(normaliseLabel))
-      return fleet.filter((d) => d.labels.some((l) => want.has(normaliseLabel(l.name))))
-    }
-    return fleet.filter((d) => chosenDevices.has(d.id))
-  }, [phoneMode, fleet, chosenLabels, chosenDevices])
+  const pool = useMemo(() => resolvePick(pick, fleet), [pick, fleet])
 
   /*
     The router's own rule (`posts.ts` `planDispatch`): phones the operator
@@ -388,8 +367,8 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
     exactly that.
   */
   const resolved = useMemo(
-    () => (phoneMode === 'labelled' ? resolveFleet(pool, chosenPlatforms) : chosenPlatforms.length === 0 ? [] : pool),
-    [phoneMode, pool, chosenPlatforms],
+    () => (pick.mode === 'labelled' ? resolveFleet(pool, chosenPlatforms) : chosenPlatforms.length === 0 ? [] : pool),
+    [pick.mode, pool, chosenPlatforms],
   )
   const onlineResolved = useMemo(() => resolved.filter((d) => d.status === 'online').length, [resolved])
 
@@ -410,8 +389,8 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
     phone carrying the platform's label.
   */
   const deviceIds = useMemo(
-    () => (assignment === 'one-per-phone' ? resolved.map((d) => d.id) : phoneMode === 'labelled' ? [] : pool.map((d) => d.id)),
-    [assignment, resolved, phoneMode, pool],
+    () => (assignment === 'one-per-phone' ? resolved.map((d) => d.id) : pick.mode === 'labelled' ? [] : pool.map((d) => d.id)),
+    [assignment, resolved, pick.mode, pool],
   )
 
   // --- videos ---------------------------------------------------------------
@@ -535,12 +514,9 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
     if (chosenIds.length === 0) out.push('No video is picked. A session needs at least one.')
     if (chosenPlatforms.length === 0) out.push('No platform is picked. Nothing would know where to post.')
     if (title.trim() === '') out.push('The session has no name. It is how you will find it on the Sessions tab.')
-    if (phoneMode === 'labels' && chosenLabels.size === 0) {
-      out.push('“Only these labels” is chosen and no label is ticked — an empty choice would quietly mean every labelled phone, which is not what it says.')
-    }
-    if (phoneMode === 'devices' && chosenDevices.size === 0) {
-      out.push('“Only these phones” is chosen and no phone is ticked — an empty choice would quietly mean every labelled phone, which is not what it says.')
-    }
+    /* An explicit mode with nothing ticked, worded once in the picker itself so all three panels refuse it the same way. */
+    const emptyPick = pickRefusal(pick)
+    if (emptyPick !== null) out.push(emptyPick)
     if (!ownCaptions) {
       if (tooLong > 0) {
         out.push(`${tooLong} caption${tooLong === 1 ? ' is' : 's are'} longer than ${POST_TEXT_MAX} characters, the most a platform accepts. Shorten ${tooLong === 1 ? 'it' : 'them'}.`)
@@ -562,7 +538,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
     */
     if (chosenPlatforms.length > 0 && resolved.length === 0) {
       out.push(
-        phoneMode === 'labelled'
+        pick.mode === 'labelled'
           ? `No phone carries the ${chosenPlatforms.map((p) => `“${platformLabel(p)}”`).join(' or ')} label, so nothing would ever be sent. Label the phones that post to it on the Devices screen, or choose phones by name below.`
           : 'The phones you chose resolve to none, so nothing would ever be sent. Choose at least one phone.',
       )
@@ -571,7 +547,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
       out.push('No phone is online. The farm runs this session’s bookkeeping as a job on a phone, so one has to be reachable — nothing is posted by that job.')
     }
     return out
-  }, [uploading, chosenIds.length, chosenPlatforms, title, phoneMode, chosenLabels.size, chosenDevices.size, ownCaptions, tooLong, autoBusy, captionLines.length, host, resolved.length])
+  }, [uploading, chosenIds.length, chosenPlatforms, title, pick, ownCaptions, tooLong, autoBusy, captionLines.length, host, resolved.length])
 
   // --- what is worth saying without stopping anything ----------------------
   const warnings = useMemo(() => {
@@ -894,115 +870,13 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
           ))}
         </Step>
 
-        <Step n={4} title="Which phones" hint="Phones you choose are used as chosen. Leave it on the first option to use every phone carrying the platform’s label.">
-          <Select value={phoneMode} onValueChange={(next) => setPhoneMode(next as PhoneMode)}>
-            <SelectTrigger className="w-full @md:w-80">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="labelled">Any phone carrying the platform’s label</SelectItem>
-              <SelectItem value="labels">Only phones with the labels I choose</SelectItem>
-              <SelectItem value="devices">Only the phones I choose</SelectItem>
-            </SelectContent>
-          </Select>
-
-          {/* While the fleet is still being read, say so — "no label" and "no phone" are claims about a list that has not arrived. */}
-          {phoneMode === 'labels' ? (
-            devices.loading && devices.data === null ? (
-              <p className="flex items-center gap-2 text-[12px] text-dim">
-                <Spinner className="size-3" /> Reading the farm’s phones…
-              </p>
-            ) : fleetLabels.length === 0 ? (
-              <p className="text-[11.5px] text-dim">No phone in this farm carries a label yet, so there is nothing to narrow by.</p>
-            ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {fleetLabels.map((name) => {
-                  const on = chosenLabels.has(name)
-                  return (
-                    <Button
-                      key={name}
-                      size="sm"
-                      variant={on ? 'default' : 'outline'}
-                      aria-pressed={on}
-                      onClick={() =>
-                        setChosenLabels((prev) => {
-                          const copy = new Set(prev)
-                          if (copy.has(name)) copy.delete(name)
-                          else copy.add(name)
-                          return copy
-                        })
-                      }
-                    >
-                      {name}
-                    </Button>
-                  )
-                })}
-              </div>
-            )
-          ) : null}
-
-          {phoneMode === 'devices' ? (
-            devices.error ? (
-              <ErrorState message={devices.error} onRetry={devices.reload} />
-            ) : devices.loading && devices.data === null ? (
-              <p className="flex items-center gap-2 text-[12px] text-dim">
-                <Spinner className="size-3" /> Reading the farm’s phones…
-              </p>
-            ) : fleet.length === 0 ? (
-              <p className="text-[11.5px] text-dim">The farm listed no phone at all.</p>
-            ) : (
-              <div className="space-y-1.5">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <Input
-                    type="search"
-                    value={deviceQuery}
-                    onChange={(e) => setDeviceQuery(e.target.value)}
-                    placeholder="Search by #, name, label or group…"
-                    aria-label="Search phones"
-                    className="h-7 max-w-xs grow text-[12px]"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={shownDevices.length === 0}
-                    onClick={() => setChosenDevices((prev) => new Set([...prev, ...shownDevices.map((d) => d.id)]))}
-                  >
-                    Select {deviceQuery.trim() === '' ? 'all' : 'shown'} ({shownDevices.length})
-                  </Button>
-                  <Button type="button" variant="ghost" size="sm" disabled={chosenDevices.size === 0} onClick={() => setChosenDevices(new Set<string>())}>
-                    Clear
-                  </Button>
-                  <span className="text-[11px] text-faint">{chosenDevices.size} chosen</span>
-                </div>
-                {shownDevices.length === 0 ? (
-                  <p className="text-[11.5px] text-dim">No phone matches “{deviceQuery}”. Phones already chosen stay chosen.</p>
-                ) : (
-                  <ul className="max-h-72 space-y-1 overflow-y-auto rounded-inner border border-border p-1">
-                    {shownDevices.map((device) => (
-                      <li key={device.id}>
-                        <label className="flex cursor-pointer items-center gap-2 rounded-small px-2 py-1.5 text-[12px] hover:bg-hover">
-                          <Checkbox
-                            checked={chosenDevices.has(device.id)}
-                            onCheckedChange={(next) =>
-                              setChosenDevices((prev) => {
-                                const copy = new Set(prev)
-                                if (next === true) copy.add(device.id)
-                                else copy.delete(device.id)
-                                return copy
-                              })
-                            }
-                          />
-                          <span className="min-w-0 grow wrap-anywhere">{deviceName(device)}</span>
-                          <span className="flex-none text-[11px] text-faint">{device.status}</span>
-                        </label>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )
-          ) : null}
+        <Step
+          n={4}
+          title="Which phones"
+          hint="The first option lets each platform’s own label pick the phones. Every other option names the phones itself, and the label is then no longer checked."
+        >
+          {/* The one chooser, shared with Cleanup and Accounts sync (0.39.0) — same options, same words, same refusals. */}
+          <DevicePicker fleet={fleet} loading={devices.loading} error={devices.error} onRetry={devices.reload} value={pick} onChange={setPick} />
 
           {/*
             The number this whole step exists for. It is the INTERSECTION the
@@ -1016,7 +890,9 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
               <span className="text-dim">Counting the fleet…</span>
             ) : resolved.length === 0 ? (
               <span className="text-warn">
-                Goes to no phone: nothing in this choice carries the {chosenPlatforms.map((p) => `“${platformLabel(p)}”`).join(' or ')} label.
+                {pick.mode === 'labelled'
+                  ? `Goes to no phone: nothing in this farm carries the ${chosenPlatforms.map((p) => `“${platformLabel(p)}”`).join(' or ')} label.`
+                  : 'Goes to no phone: the phones you chose resolve to none.'}
               </span>
             ) : (
               <>
@@ -1026,7 +902,7 @@ export function ComposePanel({ onCreated }: { onCreated: (groupId: string | null
                 <span className="text-dim">
                   {' '}
                   ({onlineResolved} online right now
-                  {phoneMode === 'labelled' ? '' : `, narrowed from ${fleet.length}`})
+                  {pick.mode === 'labelled' ? '' : `, narrowed from ${fleet.length}`})
                 </span>
               </>
             )}
@@ -1332,12 +1208,3 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
-/** A phone matches when the query is its number (`7` or `#7`), or appears in its name, a label or its group. Empty matches all. */
-function deviceMatches(d: Device, query: string): boolean {
-  const q = query.trim().toLowerCase()
-  if (q === '') return true
-  const bare = q.startsWith('#') ? q.slice(1) : q
-  if (d.number !== null && String(d.number) === bare) return true
-  const haystack = [deviceName(d), d.label ?? '', d.group?.name ?? '', ...d.labels.map((l) => l.name)]
-  return haystack.some((h) => h.toLowerCase().includes(q))
-}

@@ -7,13 +7,7 @@ import {
   CardContent,
   Checkbox,
   ConfirmDialog,
-  ErrorState,
   Input,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
   Spinner,
   Switch,
   api,
@@ -21,6 +15,7 @@ import {
   describeApiError,
 } from '@enkaku/ui'
 import { CORE, deviceName, listDevices, platformLabel, type Device, type PlatformId } from '../shared'
+import { DevicePicker, newPick, normaliseLabel, pickRefusal, resolvePick, type DevicePick } from './device-picker'
 
 /**
  * The drafts cleaner (0.32.0).
@@ -31,9 +26,11 @@ import { CORE, deviceName, listDevices, platformLabel, type Device, type Platfor
  * per platform — and follows every job to its end, so the operator reads what each phone actually deleted.
  *
  * Deleting a draft is permanent, so a real run asks first; a dry run only opens the lists and counts.
+ *
+ * Which phones is asked by the shared `DevicePicker` (0.39.0) — the same five options in the same words as New session
+ * and Accounts sync. This tab dispatches straight to `/api/actions/run-script` with device ids, so every mode but the
+ * default is simply a filter over the fleet; nothing here goes through `add-group`'s empty-list meaning.
  */
-
-type PhoneMode = 'labelled' | 'devices'
 
 /** The platforms whose pack has a `clear-drafts` member — all three since 0.33.0 (YouTube 0.39.0). */
 const CLEANABLE: readonly { id: PlatformId; title: string; ready: boolean }[] = [
@@ -82,9 +79,7 @@ export function DraftsPanel(): ReactElement {
   useEffect(load, [load])
 
   const [platforms, setPlatforms] = useState<Set<PlatformId>>(new Set(['tiktok', 'instagram', 'youtube']))
-  const [mode, setMode] = useState<PhoneMode>('labelled')
-  const [chosen, setChosen] = useState<Set<string>>(new Set())
-  const [query, setQuery] = useState('')
+  const [pick, setPick] = useState<DevicePick>(() => newPick())
   const [dryRun, setDryRun] = useState(false)
   // The farm-pushed videos left in each phone's DCIM/Camera (0.35.0), swept by `smm/clean-phone-videos`.
   const [cleanVideos, setCleanVideos] = useState(false)
@@ -96,15 +91,19 @@ export function DraftsPanel(): ReactElement {
   const fleet = devices ?? []
   const byId = useMemo(() => new Map(fleet.map((d) => [d.id, d])), [fleet])
 
-  /** Per platform, the phones it goes to: the platform's label, or exactly the phones chosen. */
+  /** The phones the picker's own mode resolves to — the whole fleet on the default, where the label decides instead. */
+  const picked = useMemo(() => resolvePick(pick, fleet), [pick, fleet])
+
+  /** Per platform, the phones it goes to: the platform's label on the default, or exactly the phones the pick resolved to. */
   const targets = useMemo(() => {
     const out = new Map<PlatformId, Device[]>()
     for (const id of platforms) {
-      const phones = mode === 'devices' ? fleet.filter((d) => chosen.has(d.id)) : fleet.filter((d) => d.labels.some((l) => l.name.trim().toLowerCase() === platformLabel(id)))
+      const want = normaliseLabel(platformLabel(id))
+      const phones = pick.mode === 'labelled' ? fleet.filter((d) => d.labels.some((l) => normaliseLabel(l.name) === want)) : picked
       out.set(id, phones)
     }
     return out
-  }, [platforms, mode, chosen, fleet])
+  }, [platforms, pick.mode, picked, fleet])
   /** The videos sweep goes to every phone any picked platform reaches — each phone once. */
   const videoPhones = useMemo(() => {
     const seen = new Map<string, Device>()
@@ -187,15 +186,7 @@ export function DraftsPanel(): ReactElement {
     return () => clearTimeout(timer)
   }, [dispatches])
 
-  const visible = fleet.filter((d) => {
-    const q = query.trim().toLowerCase()
-    if (q === '') return true
-    const bare = q.startsWith('#') ? q.slice(1) : q
-    if (d.number !== null && String(d.number) === bare) return true
-    return [deviceName(d), d.label ?? '', d.group?.name ?? '', ...d.labels.map((l) => l.name)].some((h) => h.toLowerCase().includes(q))
-  })
-
-  const blocked = platforms.size === 0 ? 'Pick at least one platform.' : total === 0 ? 'No phone matches — nothing would be sent.' : null
+  const blocked = platforms.size === 0 ? 'Pick at least one platform.' : (pickRefusal(pick) ?? (total === 0 ? 'No phone matches — nothing would be sent.' : null))
   const summary = [
     ...[...targets.entries()].map(([id, phones]) => `${CLEANABLE.find((p) => p.id === id)?.title ?? id} drafts on ${phones.length} phone${phones.length === 1 ? '' : 's'}`),
     ...(cleanVideos ? [`old farm videos (over ${olderThanHours} h) on ${videoPhones.length} phone${videoPhones.length === 1 ? '' : 's'}`] : []),
@@ -235,54 +226,7 @@ export function DraftsPanel(): ReactElement {
 
           <div className="space-y-1.5">
             <p className="text-[12px] font-medium text-text-2">Which phones</p>
-            <Select value={mode} onValueChange={(next) => setMode(next as PhoneMode)}>
-              <SelectTrigger className="w-full @md:w-80">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="labelled">Every phone carrying the platform's label</SelectItem>
-                <SelectItem value="devices">Only the phones I choose</SelectItem>
-              </SelectContent>
-            </Select>
-            {loadError ? (
-              <ErrorState message={loadError} onRetry={load} />
-            ) : devices === null ? (
-              <p className="flex items-center gap-2 text-[12px] text-dim">
-                <Spinner className="size-3" /> Reading the farm's phones…
-              </p>
-            ) : mode === 'devices' ? (
-              <div className="space-y-1.5">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <Input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by #, name, label or group…" className="w-full @md:w-72" />
-                  <Button size="sm" variant="outline" onClick={() => setChosen(new Set(visible.map((d) => d.id)))}>
-                    Select shown
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setChosen(new Set())}>
-                    Clear
-                  </Button>
-                  <span className="text-[11.5px] text-dim">{chosen.size} chosen</span>
-                </div>
-                <div className="max-h-64 space-y-0.5 overflow-y-auto rounded-card border border-border px-2 py-1.5">
-                  {visible.map((d) => (
-                    <label key={d.id} className="flex items-center gap-2 py-0.5 text-[13px]">
-                      <Checkbox
-                        checked={chosen.has(d.id)}
-                        onCheckedChange={(on) =>
-                          setChosen((prev) => {
-                            const copy = new Set(prev)
-                            if (on === true) copy.add(d.id)
-                            else copy.delete(d.id)
-                            return copy
-                          })
-                        }
-                      />
-                      <span className="min-w-0 truncate">{deviceName(d)}</span>
-                      <span className={cn('text-[11px]', d.status === 'online' ? 'text-dim' : 'text-danger')}>{d.status}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            ) : null}
+            <DevicePicker fleet={fleet} loading={devices === null} error={loadError} onRetry={load} value={pick} onChange={setPick} />
           </div>
 
           <div className="space-y-1.5">

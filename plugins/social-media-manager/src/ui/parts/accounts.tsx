@@ -9,13 +9,7 @@ import {
   Checkbox,
   EmptyState,
   ErrorState,
-  Input,
   LoadingRows,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
   SignInIcon,
   Spinner,
   Table,
@@ -41,6 +35,7 @@ import {
   type Device,
   type PlatformId,
 } from '../shared'
+import { DevicePicker, newPick, normaliseLabel, pickRefusal, resolvePick, type DevicePick } from './device-picker'
 
 /**
  * The Accounts tab (0.37.0).
@@ -68,9 +63,15 @@ import {
  * — because a sync that walks an app can fail for the same dozen reasons a
  * draft cleaning can, and inventing a second way to report that would be a
  * second vocabulary for one farm.
+ *
+ * Which phones is asked by the shared `DevicePicker` (0.39.0), in the same five
+ * options and the same words as New session and Cleanup. The label-driven
+ * default keeps this tab's own refinement — a phone is asked only about the
+ * platforms it carries — because sending `instagram` to a phone labelled
+ * `tiktok` only buys a job that opens an app nobody signed into. Every other
+ * mode is the operator naming the phones while looking at them, so every
+ * platform they ticked is sent to every phone they picked.
  */
-
-type PhoneMode = 'labelled' | 'devices'
 
 /** The platforms a sync can read. All three are label-routed the same way the rest of this page routes. */
 const SYNCABLE: readonly { id: PlatformId; title: string }[] = PLATFORMS.map((p) => ({ id: p.id, title: p.title }))
@@ -158,9 +159,7 @@ export function AccountsPanel(): ReactElement {
   }, [])
 
   const [platforms, setPlatforms] = useState<Set<PlatformId>>(() => new Set(SYNCABLE.map((p) => p.id)))
-  const [mode, setMode] = useState<PhoneMode>('labelled')
-  const [chosen, setChosen] = useState<Set<string>>(() => new Set())
-  const [query, setQuery] = useState('')
+  const [pick, setPick] = useState<DevicePick>(() => newPick())
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
   const [dispatches, setDispatches] = useState<Dispatch[]>([])
@@ -179,15 +178,15 @@ export function AccountsPanel(): ReactElement {
   const targets = useMemo((): { deviceId: string; platforms: PlatformId[] }[] => {
     const picked = SYNCABLE.filter((p) => platforms.has(p.id)).map((p) => p.id)
     if (picked.length === 0) return []
-    if (mode === 'devices') return fleet.filter((d) => chosen.has(d.id)).map((d) => ({ deviceId: d.id, platforms: picked }))
+    if (pick.mode !== 'labelled') return resolvePick(pick, fleet).map((d) => ({ deviceId: d.id, platforms: picked }))
     const out: { deviceId: string; platforms: PlatformId[] }[] = []
     for (const device of fleet) {
-      const names = new Set(device.labels.map((l) => l.name.trim().toLowerCase()))
-      const mine = picked.filter((id) => names.has(platformLabel(id)))
+      const names = new Set(device.labels.map((l) => normaliseLabel(l.name)))
+      const mine = picked.filter((id) => names.has(normaliseLabel(platformLabel(id))))
       if (mine.length > 0) out.push({ deviceId: device.id, platforms: mine })
     }
     return out
-  }, [platforms, mode, chosen, fleet])
+  }, [platforms, pick, fleet])
 
   /** One `run-script` call per distinct platform set, so a phone is never sent a platform it does not carry. */
   const batches = useMemo(() => {
@@ -267,15 +266,7 @@ export function AccountsPanel(): ReactElement {
     return () => clearTimeout(timer)
   }, [dispatches, reloadRows])
 
-  const visible = fleet.filter((d) => {
-    const q = query.trim().toLowerCase()
-    if (q === '') return true
-    const bare = q.startsWith('#') ? q.slice(1) : q
-    if (d.number !== null && String(d.number) === bare) return true
-    return [deviceName(d), d.label ?? '', d.group?.name ?? '', ...d.labels.map((l) => l.name)].some((h) => h.toLowerCase().includes(q))
-  })
-
-  const blocked = platforms.size === 0 ? 'Pick at least one platform.' : targets.length === 0 ? 'No phone matches — nothing would be read.' : null
+  const blocked = platforms.size === 0 ? 'Pick at least one platform.' : (pickRefusal(pick) ?? (targets.length === 0 ? 'No phone matches — nothing would be read.' : null))
   const summary =
     targets.length === 0
       ? ''
@@ -317,54 +308,7 @@ export function AccountsPanel(): ReactElement {
 
           <div className="space-y-1.5">
             <p className="text-[12px] font-medium text-text-2">Which phones</p>
-            <Select value={mode} onValueChange={(next) => setMode(next as PhoneMode)}>
-              <SelectTrigger className="w-full @md:w-80">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="labelled">Every phone carrying the platform's label</SelectItem>
-                <SelectItem value="devices">Only the phones I choose</SelectItem>
-              </SelectContent>
-            </Select>
-            {loadError ? (
-              <ErrorState message={loadError} onRetry={load} />
-            ) : devices === null ? (
-              <p className="flex items-center gap-2 text-[12px] text-dim">
-                <Spinner className="size-3" /> Reading the farm's phones…
-              </p>
-            ) : mode === 'devices' ? (
-              <div className="space-y-1.5">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <Input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by #, name, label or group…" className="w-full @md:w-72" />
-                  <Button size="sm" variant="outline" onClick={() => setChosen(new Set(visible.map((d) => d.id)))}>
-                    Select shown
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setChosen(new Set())}>
-                    Clear
-                  </Button>
-                  <span className="text-[11.5px] text-dim">{chosen.size} chosen</span>
-                </div>
-                <div className="max-h-64 space-y-0.5 overflow-y-auto rounded-card border border-border px-2 py-1.5">
-                  {visible.map((d) => (
-                    <label key={d.id} className="flex items-center gap-2 py-0.5 text-[13px]">
-                      <Checkbox
-                        checked={chosen.has(d.id)}
-                        onCheckedChange={(on) =>
-                          setChosen((prev) => {
-                            const copy = new Set(prev)
-                            if (on === true) copy.add(d.id)
-                            else copy.delete(d.id)
-                            return copy
-                          })
-                        }
-                      />
-                      <span className="min-w-0 truncate">{deviceName(d)}</span>
-                      <span className={cn('text-[11px]', d.status === 'online' ? 'text-dim' : 'text-danger')}>{d.status}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            ) : null}
+            <DevicePicker fleet={fleet} loading={devices === null} error={loadError} onRetry={load} value={pick} onChange={setPick} />
           </div>
 
           <div className="flex flex-wrap items-center gap-2">

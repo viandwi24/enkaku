@@ -77,6 +77,23 @@ import {
  *
  * ## Changelog
  *
+ * - **0.39.0 — one phone chooser, the same five options everywhere.** The owner
+ *   (2026-09-16) asked why the manager only offered a label choice, and they were
+ *   right about the cause: the three panels that ask "which phones" had each
+ *   written their own answer — New session offered the platform's label, labels
+ *   and phones; Cleanup and Accounts sync offered the label and phones only.
+ *   Nowhere could an operator say "every phone" or "this group". All three now
+ *   use one shared picker (`ui/parts/device-picker.tsx`) with the same options in
+ *   the same words: any phone carrying the platform's label (the default,
+ *   unchanged), all phones in the farm, only the phones I choose, phones with the
+ *   labels I choose, phones in the groups I choose — with **No group** as its own
+ *   chip, so an ungrouped phone is never hidden behind a control that looks
+ *   complete. Every mode but the default sends an EXPLICIT list of phones, which
+ *   is what makes `planDispatch` stop checking the platform's label, so the
+ *   control says that under itself in one line rather than leaving an operator to
+ *   discover it from a post that failed on a phone nobody signed in. A session
+ *   created on the default still stores an empty `deviceIds` and means exactly
+ *   what it meant before.
  * - **0.38.0 — `sync-accounts`: which accounts each phone is signed in to.** The
  *   owner (2026-09-16) asked the manager to own this. The member opens each app on
  *   the phone, walks to its account list — TikTok's Profile → Profile menu →
@@ -1292,7 +1309,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.38.0',
+  version: '0.39.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
