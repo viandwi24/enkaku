@@ -40,7 +40,17 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     await ctx.device.tap({ point: centre(tab) })
     await sleep(2_500)
     const tree = await ctx.device.dump()
-    const input = flatten(tree).find((n) => n.className.includes('EditText') && n.bounds.top < 320)
+    /*
+      The Explore search box is not always an EditText (0.10.3). Production 2026-09-16: seven runs failed "the Explore
+      screen shows no search field" while the field was right there — `action_bar_search_edit_text` at [23,64][697,130],
+      clickable, reading "Cari", but drawn as an `android.widget.Button` on that build. So the id counts as much as the
+      class does; both are still required to sit in the top bar, which is what keeps a comment box or a caption field
+      further down the screen from ever being mistaken for it.
+    */
+    const searchIds = ['action_bar_search_edit_text', 'action_bar_search_hints_text_layout']
+    const input = flatten(tree).find(
+      (n) => n.bounds.top < 320 && (n.className.includes('EditText') || searchIds.some((id) => n.resourceId.endsWith(`/${id}`) || n.resourceId === id)),
+    )
     if (!input) {
       await capture(ctx, 'ig-search-no-field', tree)
       throw new Error('the Explore screen shows no search field — see artifact ig-search-no-field')

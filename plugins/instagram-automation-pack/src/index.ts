@@ -52,7 +52,7 @@ import clearDrafts from './clear-drafts'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.10.2',
+  version: '0.10.3',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -61,6 +61,13 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.10.3 — the Explore search box is found when it is a Button.** Seven
+   * production runs (2026-09-16) failed "the Explore screen shows no search field"
+   * with the field on screen: `action_bar_search_edit_text` at [23,64][697,130],
+   * clickable and reading "Cari", but an `android.widget.Button` on that build,
+   * while this pack required an `EditText`. The id now counts as much as the class,
+   * and both still have to sit in the top bar.
    *
    * **0.10.2 — the pushed videos are cleaned up.** Every run left its video in /sdcard/DCIM/Camera and nothing removed it (the owner, 2026-09-16: old video files pile up). Before pushing, `removeStalePushedVideos` deletes this pack's own pushed files older than six hours
    *
