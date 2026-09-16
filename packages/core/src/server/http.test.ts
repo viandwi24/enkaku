@@ -63,6 +63,7 @@ function buildDeps(overrides: Partial<HttpDeps> = {}): HttpDeps {
     storageRoutes: emptyAuthEnvApp(),
     artifactRoutes: emptyAuthEnvApp(),
     adbStatsRoutes: emptyAuthEnvApp(),
+    adbShortcutRoutes: emptyAuthEnvApp(),
     videoRoutes: emptyAuthEnvApp(),
     doctorRoutes: emptyAuthEnvApp(),
     authRoutes: emptyAuthEnvApp(),

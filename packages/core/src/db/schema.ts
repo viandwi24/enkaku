@@ -683,6 +683,53 @@ export const groups = sqliteTable(
 export type GroupRow = typeof groups.$inferSelect
 
 /**
+ * The adb commands an operator saved by name.
+ *
+ * They used to live in `localStorage` (`studio/src/lib/adb-command-memory.ts`,
+ * which said so at length), because the one server-side store the core had
+ * was `/api/kv` and that is gated on `kv.manage` — admin-only, so the
+ * operator who actually runs adb commands all day could neither read nor
+ * write one. The owner's answer (2026-09-16) is that the store was the wrong
+ * one, not the feature: a shortcut is a farm's own vocabulary ("Clear
+ * Chrome", "Wi-Fi off"), it is written once and run by everyone, and keeping
+ * it per browser meant it did not survive a different machine, a second
+ * operator, or clearing site data.
+ *
+ * So it is a table of its own, gated like the thing it runs rather than like
+ * plugin secrets: reading needs no more than seeing devices, and writing
+ * needs whatever `canUseShell` admits — exactly the people who may run the
+ * `adb` verb in the first place (`api/adb-shortcuts.ts`).
+ *
+ * The command is stored NORMALISED (`normalizeAdbCommand`, `@enkaku/protocol`),
+ * so `adb shell ls` and `ls` cannot both be saved as different shortcuts:
+ * they are one command. HISTORY stays in the browser — it is what YOU typed,
+ * and another operator's last command in your Up-arrow would be noise.
+ */
+export const adbShortcuts = sqliteTable(
+  'adb_shortcuts',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    /** The normalised shell command — never the `adb shell …` line as typed. */
+    cmd: text('cmd').notNull(),
+    /** Where it sits in the list every surface draws, ascending. New shortcuts join at the end (`max + 1`), so the order is the order they were saved in. */
+    position: integer('position').notNull().default(0),
+    /** Who saved it, for the audit trail; `null` in local mode, which has no user. */
+    createdBy: text('created_by'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [
+    // One command, one shortcut: saving a command that is already saved
+    // renames it rather than growing a second row that runs the same thing
+    // (the browser store this replaces had the same rule).
+    uniqueIndex('idx_adb_shortcuts_cmd').on(t.cmd),
+    index('idx_adb_shortcuts_position').on(t.position, t.id),
+  ],
+)
+
+export type AdbShortcutRow = typeof adbShortcuts.$inferSelect
+
+/**
  * A batch is one script run across a resolved set of devices (plan 20 §3.2,
  * §3.5). `status` is a cached projection of its jobs, recomputed — never
  * incremented — whenever a member job changes state.

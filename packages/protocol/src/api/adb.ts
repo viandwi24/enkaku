@@ -291,6 +291,31 @@ export const AdbRestartReportSchema = z.object({
 })
 export type AdbRestartReport = z.infer<typeof AdbRestartReportSchema>
 
+/**
+ * One adb command an operator saved by name, farm-wide
+ * (`GET /api/adb/shortcuts`).
+ *
+ * `cmd` is always the NORMALISED command (`normalizeAdbCommand`) — the bare
+ * shell line, never `adb shell …` as it was typed — so the same command
+ * saved from two different forms is one shortcut, and a surface that runs one
+ * sends exactly what the core will run.
+ */
+export const AdbShortcutSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  cmd: z.string(),
+  /** Ascending; the order every surface draws. */
+  position: z.number().int(),
+  createdAt: z.number().int(),
+})
+export type AdbShortcut = z.infer<typeof AdbShortcutSchema>
+
+/** `GET /api/adb/shortcuts` — the whole list, in `position` order. */
+export const AdbShortcutsResponseSchema = z.object({ shortcuts: z.array(AdbShortcutSchema) })
+
+/** `POST /api/adb/shortcuts`, `PATCH /api/adb/shortcuts/:id`. */
+export const AdbShortcutResponseSchema = z.object({ shortcut: AdbShortcutSchema })
+
 /** `GET/POST /api/devices/:id/adb-endpoint`. */
 export const AdbEndpointStateSchema = z.object({
   host: z.string(),

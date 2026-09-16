@@ -15,6 +15,16 @@ export type AuditAction =
   | 'device.drivers'
   | 'device.quarantine'
   | 'device.unquarantine'
+  /**
+   * A saved adb shortcut was created, renamed, repointed, reordered or
+   * deleted (`api/adb-shortcuts.ts`; `meta.op` says which).
+   *
+   * Audited although nothing runs: a shortcut is a command every operator can
+   * then fire from a right-click menu on twenty phones at once, so who put
+   * that line there is exactly the question asked afterwards. Running it is
+   * audited separately, by the `adb` verb itself.
+   */
+  | 'adb.shortcut'
   | 'device.control'
   // `PATCH /:id`'s `ownerId` transition (plan 09 §4.4's `device.owner.set`,
   // `api/devices.ts`) — separate from `device.settings` (label/settings)

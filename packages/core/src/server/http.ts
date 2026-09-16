@@ -163,6 +163,8 @@ export interface HttpDeps {
   storageRoutes: Hono<AuthEnv>
   artifactRoutes: Hono<AuthEnv>
   adbStatsRoutes: Hono<AuthEnv>
+  /** `GET/POST/PATCH/DELETE /api/adb/shortcuts` — the farm's saved adb commands. */
+  adbShortcutRoutes: Hono<AuthEnv>
   /** `POST /api/video/reprofile` (plan 92 §3.8, §4.5, §5 step 92.2). */
   videoRoutes: Hono<AuthEnv>
   /** `enkaku doctor`'s checks, rendered as JSON for the Tools page's diagnostics view (plan 41 §4.5). */
@@ -437,6 +439,10 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
 
   // adb concurrency and health diagnostics (plan 23 §4.6).
   app.route('/api/adb/stats', deps.adbStatsRoutes)
+
+  // The farm's saved adb commands — read by every device action list, written
+  // by whoever may run an adb command (`api/adb-shortcuts.ts`).
+  app.route('/api/adb/shortcuts', deps.adbShortcutRoutes)
 
   // `POST /api/video/reprofile` (plan 92 §3.8, §4.5, §5 step 92.2).
   app.route('/api/video', deps.videoRoutes)
