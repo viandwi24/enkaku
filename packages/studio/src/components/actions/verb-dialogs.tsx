@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { toast } from 'sonner'
 import { DeviceDetailResponseSchema, SettingsResponseSchema, compileWorkflowParams, isHighConsequence, normalizeAdbCommand } from '@enkaku/protocol'
 import type { ActionResponse, ActionVerb, DeviceSettingsPatch, ScriptListItem } from '@enkaku/protocol'
 import {
@@ -42,6 +43,7 @@ import {
   renameAdbShortcut,
   saveAdbShortcut,
   useAdbCommandMemory,
+  type AdbShortcut,
 } from '@/lib/adb-command-memory'
 import type { TargetState } from '@/components/target/useTarget'
 
@@ -235,15 +237,34 @@ function AdbFields({ value, onChange, run }: { value: AdbValue; onChange: (v: Ad
     if (run) run({ cmd })
     else onChange({ cmd })
   }
+  /**
+   * The three writes go to the FARM now, not to this browser, so each one can
+   * be refused — by permission (`canUseShell`) or by the normaliser. A silent
+   * failure here is the worst outcome: the operator believes the shortcut is
+   * saved, and it is not there tomorrow. The row closes optimistically and the
+   * toast says what happened if it did not take.
+   */
   const saveShortcut = () => {
     if (naming === null || shellCmd === null || naming.trim().length === 0) return
-    saveAdbShortcut(naming, shellCmd)
+    const name = naming
     setNaming(null)
+    void saveAdbShortcut(name, shellCmd).then((err) => {
+      if (err) toast.error(`Could not save “${name}”`, { description: err })
+      else toast.success(`Saved “${name}” for the whole farm`)
+    })
   }
   const commitRename = () => {
     if (!renaming) return
-    renameAdbShortcut(renaming.id, renaming.name)
+    const { id, name } = renaming
     setRenaming(null)
+    void renameAdbShortcut(id, name).then((err) => {
+      if (err) toast.error('Could not rename that shortcut', { description: err })
+    })
+  }
+  const removeShortcut = (s: AdbShortcut) => {
+    void deleteAdbShortcut(s.id).then((err) => {
+      if (err) toast.error(`Could not delete “${s.name}”`, { description: err })
+    })
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -339,10 +360,14 @@ function AdbFields({ value, onChange, run }: { value: AdbValue; onChange: (v: Ad
       <section className="space-y-1">
         <div className="flex items-baseline justify-between">
           <p className="text-label tracking-wide text-faint uppercase">Shortcuts</p>
-          <span className="text-meta text-faint">Saved in this browser</span>
+          <span className="text-meta text-faint">Shared with the whole farm</span>
         </div>
         {memory.shortcuts.length === 0 ? (
-          <p className="text-meta text-faint">None yet. Type a command and press Save to keep it here.</p>
+          <p className="text-meta text-faint">
+            {memory.shortcutsLoaded
+              ? 'None yet. Type a command and press Save — everyone on this farm gets it, and it appears under “Adb shortcuts” in every device menu.'
+              : 'Loading…'}
+          </p>
         ) : (
           <ul className="space-y-0.5">
             {memory.shortcuts.map((s) => (
@@ -374,7 +399,7 @@ function AdbFields({ value, onChange, run }: { value: AdbValue; onChange: (v: Ad
                 <Button variant="ghost" size="icon-sm" aria-label={`Rename ${s.name}`} title="Rename" onClick={() => setRenaming({ id: s.id, name: s.name })}>
                   <PencilSimpleIcon className="size-3.5" aria-hidden />
                 </Button>
-                <Button variant="ghost" size="icon-sm" aria-label={`Delete ${s.name}`} title="Delete" onClick={() => deleteAdbShortcut(s.id)}>
+                <Button variant="ghost" size="icon-sm" aria-label={`Delete ${s.name}`} title="Delete" onClick={() => removeShortcut(s)}>
                   <TrashIcon className="size-3.5" aria-hidden />
                 </Button>
               </li>
@@ -1428,6 +1453,55 @@ const setNetwork: VerbDialogSpec<SetNetworkValue> = {
 }
 
 // ---------------------------------------------------------------------------
+// Quarantine
+// ---------------------------------------------------------------------------
+interface QuarantineValue {
+  reason: string
+}
+
+/**
+ * Why this phone is coming out of the pool.
+ *
+ * Optional, and deliberately a free line rather than a list of causes: the
+ * reasons an operator pulls a device by hand are physical ("battery swelling",
+ * "screen cracked", "SIM out for a swap") and no enum the farm could ship
+ * would cover them. It is stored as the device's `quarantineReason` and read
+ * back on the device's own banner, the wall tile and the Devices table, so a
+ * blank one is a phone nobody can explain a week later.
+ */
+function QuarantineFields({ value, onChange }: { value: QuarantineValue; onChange: (v: QuarantineValue) => void }) {
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor="quarantine-reason">Reason</Label>
+      <Input
+        id="quarantine-reason"
+        autoFocus
+        value={value.reason}
+        maxLength={200}
+        placeholder="Battery swelling"
+        onChange={(e) => onChange({ reason: e.target.value })}
+      />
+      <p className="text-meta text-faint">
+        Optional, and worth typing: it is what the device shows instead of “no reason recorded”. The device keeps its number, labels, group, settings and history, stays
+        visible and can still be cast and controlled by hand — only the scheduler stops choosing it.
+      </p>
+    </div>
+  )
+}
+
+const quarantine: VerbDialogSpec<QuarantineValue> = {
+  verb: 'quarantine',
+  title: (c) => `Quarantine ${n(c)}`,
+  submitLabel: (c) => `Quarantine ${n(c)}`,
+  initial: { reason: '' },
+  Fields: QuarantineFields,
+  canSubmit: () => true,
+  // Omitted rather than sent empty: the core writes its own wording for a
+  // quarantine with no reason, and an empty string would overwrite it.
+  toParams: async (v) => (v.reason.trim().length > 0 ? { reason: v.reason.trim() } : {}),
+}
+
+// ---------------------------------------------------------------------------
 // Return from quarantine
 // ---------------------------------------------------------------------------
 const unquarantine: VerbDialogSpec<Record<string, never>> = {
@@ -1478,6 +1552,7 @@ export type ActionDialogVerb =
   | 'set-network'
   | 'install-agent'
   | 'uninstall-agent'
+  | 'quarantine'
   | 'unquarantine'
 
 export const VERB_DIALOGS: Record<ActionDialogVerb, VerbDialogSpec<any>> = {
@@ -1503,5 +1578,6 @@ export const VERB_DIALOGS: Record<ActionDialogVerb, VerbDialogSpec<any>> = {
   'install-agent': installAgent,
   'uninstall-agent': uninstallAgent,
   'set-network': setNetwork,
+  quarantine,
   unquarantine,
 }

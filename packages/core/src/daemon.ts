@@ -147,6 +147,7 @@ import { createDeviceRoutes } from './api/devices'
 import { createDeviceIdentityRoutes } from './api/device-identity'
 import { createVmRoutes } from './api/vms'
 import { createGuestAgentRoutes, resolveGuestAgentApkPath } from './api/guest-agent'
+import { createAdbShortcutRoutes } from './api/adb-shortcuts'
 import { createLabelRoutes } from './api/labels'
 import { createGroupRoutes } from './api/groups'
 import { createBatchRoutes, createBatchDispatchDeps } from './api/batches'
@@ -3587,6 +3588,13 @@ let blobGc: BlobGc | null = null
         workspaceFileRoutes: createWorkspaceFileRoutes({
           workspace: workspaceStore,
           upload: { audit, shellSettings: () => shellConstants(settingsStore.get()) },
+        }),
+        adbShortcutRoutes: createAdbShortcutRoutes({
+          db,
+          audit,
+          // The same `shell.mode` the `adb` verb is widened by: whoever may
+          // run a command may save one under a name.
+          shellSettings: () => shellConstants(settingsStore.get()),
         }),
         adbStatsRoutes: createAdbStatsRoutes({
           db,

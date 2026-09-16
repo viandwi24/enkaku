@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from 'react'
 import type { DeviceInfo } from '@enkaku/protocol'
-import { CaretRightIcon, ConfirmDialog, cn } from '@enkaku/ui'
+import { CaretRightIcon, ConfirmDialog, Input, MagnifyingGlassIcon, cn } from '@enkaku/ui'
 import { LabelAssign } from '@/components/labels/LabelAssign'
 import { fetchDevices } from '@/lib/api'
+import { useAdbShortcuts } from '@/lib/adb-command-memory'
 import { deviceActionHint, groupedDeviceActions, type DeviceAction, type DeviceActionContext } from '@/lib/device-actions'
 
 /**
@@ -16,15 +17,20 @@ import { deviceActionHint, groupedDeviceActions, type DeviceAction, type DeviceA
  *    floating popover has a ceiling, so labelled groups open beside the menu
  *    (owner, 2026-09-05: nineteen flat rows reached the top of the window).
  *  - `DeviceActionPanel` — Device Control's Actions tab, a scrolling column
- *    with no ceiling, where a submenu would open over the phone being
- *    watched. Groups are headings and every row is one click away.
+ *    where a submenu would open over the phone being watched. Groups are
+ *    accordions, collapsed by default, with a search box over them.
  *
- * Both walk `groupedDeviceActions()`, so the membership, the order, the
+ * Both walk `groupedDeviceActions(shortcuts)`, so the membership, the order, the
  * icons, the hints and what each row DOES cannot differ between the three
  * surfaces: none of them holds a row of its own. What differs is only the
  * context each passes — which devices, and which surface — and a row that
  * cannot act in that context is drawn disabled with its reason, never hidden
  * and never quietly narrowed to one device.
+ *
+ * The farm's saved adb shortcuts are subscribed to HERE, in the one component
+ * all three surfaces draw through, and handed to `groupedDeviceActions` — the
+ * registry itself stays a plain module with no hooks in it, and no surface
+ * ends up with a shortcut list of its own.
  */
 
 const ROW = 'flex w-full items-center gap-2.5 rounded-button px-[10px] py-[9px] text-row transition-colors'
@@ -165,6 +171,7 @@ export function DeviceActionMenu({
   /** `bottom` grows a submenu upward (the bulk pill opens upward); `top` grows it downward. */
   submenuAlign?: 'top' | 'bottom'
 }) {
+  const shortcuts = useAdbShortcuts()
   const [openGroup, setOpenGroup] = useState<string | null>(null)
   const [labelsOpen, setLabelsOpen] = useState(false)
   const side = submenuSide === 'left' ? 'right-full mr-1' : 'left-full ml-1'
@@ -172,7 +179,7 @@ export function DeviceActionMenu({
 
   return (
     <div className="relative p-1" onMouseLeave={() => setOpenGroup(null)}>
-      {groupedDeviceActions().map(({ group, items }, index) => {
+      {groupedDeviceActions(shortcuts).map(({ group, items }, index) => {
         // An unlabelled group is drawn inline: Open Device Control and Labels
         // because they are the reason most menus are opened, Forget because
         // burying the only destructive row behind a hover is how someone
@@ -238,29 +245,109 @@ export function DeviceActionMenu({
   )
 }
 
+/**
+ * Device Control's Actions tab.
+ *
+ * Every labelled run is a COLLAPSED accordion, and there is a search box above
+ * them (owner, 2026-09-16: the tab "makan space terlalu panjang kebawah").
+ * Forty-odd rows under eight headings made a column nobody could reach the
+ * bottom of inside a window that is mostly phone, and the farm's saved adb
+ * shortcuts only make it longer. Collapsed, the whole tab is one screen: the
+ * three unlabelled rows that are why the tab is opened (Open Device Control,
+ * Labels, Forget) stay inline exactly as before, and everything else is one
+ * click — or one word typed — away.
+ *
+ * Typing searches every row in every run at once and opens whatever matched,
+ * so the accordions never become a thing to remember the layout of: an
+ * operator who knows the row's name does not have to know which heading it
+ * lives under. Matching a heading's own name ("screen") keeps that whole run,
+ * because that is the other way this box gets used.
+ *
+ * Which runs are open is deliberately NOT remembered across opens. Default
+ * collapsed is the ask, and a tab that reopens the way you left it is a tab
+ * that slowly returns to the long column this replaces.
+ */
 export function DeviceActionPanel({ ctx }: { ctx: DeviceActionContext }) {
+  const shortcuts = useAdbShortcuts()
   const [labelsOpen, setLabelsOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({})
+
+  const q = query.trim().toLowerCase()
+  const groups = groupedDeviceActions(shortcuts)
+    .map(({ group, items }) => {
+      if (q.length === 0) return { group, items }
+      // A heading that matches keeps all of its rows; otherwise the rows
+      // match on their own name, and an empty run drops out below.
+      const kept = group.label.toLowerCase().includes(q) ? items : items.filter((i) => i.label.toLowerCase().includes(q))
+      return { group, items: kept }
+    })
+    .filter((g) => g.items.length > 0)
+
+  const searching = q.length > 0
+  const rowsFound = groups.reduce((n, g) => n + g.items.length, 0)
+
   return (
     <div className="flex flex-col p-1 pb-2">
-      {groupedDeviceActions().map(({ group, items }, index) => (
-        <div key={group.id} className="flex flex-col gap-0.5">
-          {group.label === '' ? (
-            index > 0 && <div className="my-1 border-t border-line" />
-          ) : (
-            <p className="mt-2 px-2.5 pb-1 text-label tracking-wide text-faint uppercase">{group.label}</p>
-          )}
-          {items.map((item) => (
-            <div key={item.id}>
-              <ActionRow item={item} ctx={ctx} onDone={() => {}} expanded={item.kind === 'labels' && labelsOpen} onToggle={() => setLabelsOpen((v) => !v)} />
-              {item.kind === 'labels' && labelsOpen && (
-                <div className="mx-1 mt-1 mb-1 rounded-card border border-border-2 bg-panel p-1">
-                  <TargetLabels deviceIds={ctx.deviceIds} onDone={() => setLabelsOpen(false)} />
+      <div className="relative px-1 pt-1 pb-0.5">
+        <MagnifyingGlassIcon className="absolute left-3.5 top-1/2 size-3.5 -translate-y-1/2 text-faint" aria-hidden />
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search actions…"
+          aria-label="Search actions"
+          className="h-8 pl-8 text-[12.5px]"
+        />
+      </div>
+
+      {searching && rowsFound === 0 && <p className="px-3 py-3 text-meta text-faint">No action matches “{query.trim()}”.</p>}
+
+      {groups.map(({ group, items }, index) => {
+        if (group.label === '') {
+          return (
+            <div key={group.id} className="flex flex-col gap-0.5">
+              {index > 0 && <div className="my-1 border-t border-line" />}
+              {items.map((item) => (
+                <div key={item.id}>
+                  <ActionRow item={item} ctx={ctx} onDone={() => {}} expanded={item.kind === 'labels' && labelsOpen} onToggle={() => setLabelsOpen((v) => !v)} />
+                  {item.kind === 'labels' && labelsOpen && (
+                    <div className="mx-1 mt-1 mb-1 rounded-card border border-border-2 bg-panel p-1">
+                      <TargetLabels deviceIds={ctx.deviceIds} onDone={() => setLabelsOpen(false)} />
+                    </div>
+                  )}
                 </div>
-              )}
+              ))}
             </div>
-          ))}
-        </div>
-      ))}
+          )
+        }
+
+        // While searching, what matched is open — collapsing a hit would hide
+        // the answer to the thing just typed.
+        const expanded = searching || openGroups[group.id] === true
+        const GroupIcon = items[0]!.icon
+        return (
+          <div key={group.id} className="flex flex-col gap-0.5">
+            <button
+              type="button"
+              className={cn(ROW, 'mt-1 text-text hover:bg-muted', expanded && 'bg-muted')}
+              aria-expanded={expanded}
+              onClick={() => setOpenGroups((prev) => ({ ...prev, [group.id]: !expanded }))}
+            >
+              <GroupIcon className="size-4 shrink-0 text-faint" aria-hidden />
+              <span className="min-w-0 flex-1 truncate text-left">{group.label}</span>
+              <span className="shrink-0 text-label text-faint">{items.length}</span>
+              <CaretRightIcon className={cn('size-3 shrink-0 text-faint transition-transform', expanded && 'rotate-90')} aria-hidden />
+            </button>
+            {expanded && (
+              <div className="flex flex-col gap-0.5 pl-2.5">
+                {items.map((item) => (
+                  <ActionRow key={item.id} item={item} ctx={ctx} onDone={() => {}} />
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

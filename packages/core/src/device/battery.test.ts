@@ -218,3 +218,65 @@ describe('thermal quarantine — a manual release holds for the grace window', (
     expect(status()).toBe('quarantined')
   })
 })
+
+describe('manual quarantine', () => {
+  function monitorFor(db: Db, recorded: string[], tempDeciC = 300) {
+    const client = {
+      exec: async () => ({ stdout: dumpsysReply(80, tempDeciC), stderr: '', exitCode: 0 }),
+      stats: () => ({ maxConcurrent: 8, inFlight: 0, waiting: 0 }),
+    } as unknown as AdbClient
+    return createBatteryMonitor({
+      db,
+      client: () => client,
+      states: createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} }),
+      settings: createFarmSettingsStore(db),
+      log: createLogger('test'),
+      onBattery: () => {},
+      onMetrics: () => {},
+      record: (ev) => void recorded.push(`${ev.deviceId}:${ev.kind}`),
+    })
+  }
+
+  test('an online device is pulled with the operator’s reason, and only an operator puts it back', async () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    seedDevice(db, 'pulled', 'SER-PULL', 'online')
+    const recorded: string[] = []
+    // 30 °C: nothing thermal is in play, so the poll below can only ever
+    // release this device through the `thermal:` branch — which must not
+    // match a `manual:` reason.
+    const monitor = monitorFor(db, recorded)
+    const row = () => db.select().from(devices).where(eq(devices.id, 'pulled')).get()
+
+    expect(monitor.quarantine('pulled', '  battery swelling  ')).toBe(true)
+    expect(row()?.status).toBe('quarantined')
+    expect(row()?.quarantineReason).toBe('manual:battery swelling')
+    expect(recorded).toContain('pulled:device.quarantined')
+
+    await monitor.pollOnce()
+    expect(row()?.status).toBe('quarantined')
+
+    expect(monitor.unquarantine('pulled')).toBe(true)
+    expect(row()?.status).toBe('online')
+    expect(row()?.quarantineReason).toBeNull()
+  })
+
+  test('an empty reason still says something, and a device that is not online is refused', () => {
+    const opened = openDb(':memory:')
+    runMigrations(opened.db)
+    const db = opened.db
+    seedDevice(db, 'blank', 'SER-BLANK', 'online')
+    seedDevice(db, 'gone', 'SER-GONE', 'offline')
+    const monitor = monitorFor(db, [])
+
+    expect(monitor.quarantine('blank', '   ')).toBe(true)
+    expect(db.select().from(devices).where(eq(devices.id, 'blank')).get()?.quarantineReason).toBe('manual:pulled from the pool by an operator')
+
+    // Offline, so there is no QUARANTINE transition to make — the router
+    // reports this as `skipped`, not as a failure.
+    expect(monitor.quarantine('gone', 'unplugged')).toBe(false)
+    // And quarantining twice is the same non-transition.
+    expect(monitor.quarantine('blank', 'again')).toBe(false)
+  })
+})

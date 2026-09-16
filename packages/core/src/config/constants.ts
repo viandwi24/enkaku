@@ -160,6 +160,13 @@ export const ROTATION_REASSERT_INTERVAL_SEC = num('ENKAKU_ROTATION_REASSERT_INTE
 export const DEVICE_LABEL_SURFACE = pick('ENKAKU_DEVICE_LABEL_SURFACE', 'lock-screen', ['lock-screen', 'wallpaper'] as const)
 export const LABEL_WRITE_CONCURRENCY = num('ENKAKU_LABEL_WRITE_CONCURRENCY', 2, z.number().int().min(1).max(16))
 export const CONTROL_IDLE_SEC = num('ENKAKU_CONTROL_IDLE_SEC', 30, z.number().int().min(5).max(600))
+/**
+ * How many saved adb shortcuts one farm may hold (`registry/adb-shortcuts.ts`).
+ * A ceiling rather than a settings field for the reason plan 212 gives: it is
+ * a guard on a list that every device menu draws, not an operator preference —
+ * a hundred rows in a right-click submenu is not a shortcut any more.
+ */
+export const ADB_SHORTCUTS_MAX = num('ENKAKU_ADB_SHORTCUTS_MAX', 50, z.number().int().min(1).max(500))
 
 // ── adb transport and the shared server (replaces adb.*, adbControl.*, discovery.tcpPort) ──
 export const ADB_TCP_PORT = num('ENKAKU_ADB_TCP_PORT', 5555, z.number().int().min(1024).max(65535))

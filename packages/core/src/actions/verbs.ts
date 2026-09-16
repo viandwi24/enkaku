@@ -57,6 +57,12 @@ export const VERBS: Record<ActionVerb, VerbSpec> = {
   cutover:        { gate: { permission: 'device.enroll' },      policyKind: null,            offline: 'allow', mode: 'sync' },
   forget:         { gate: { permission: 'device.settings' },    policyKind: null,            offline: 'allow', mode: 'sync' },
   block:          { gate: { permission: 'device.settings' },    policyKind: null,            offline: 'allow', mode: 'sync' },
+  // `offline: 'skip'` where its partner allows: the state machine's
+  // `QUARANTINE` transition only leaves `online`, so dispatching an offline
+  // device would report a failure for something that is simply not a
+  // transition. `unquarantine` allows it because `quarantined` is reachable
+  // from either side of a disconnect.
+  quarantine:     { gate: { permission: 'device.quarantine' },  policyKind: null,            offline: 'skip',  mode: 'sync' },
   unquarantine:   { gate: { permission: 'device.quarantine' },  policyKind: null,            offline: 'allow', mode: 'sync' },
   'set-network':  { gate: { permission: 'device.network' },     policyKind: 'network-apply', offline: 'allow', mode: 'async' },
   'apply-screen-label': { gate: { permission: 'device.settings' },    policyKind: null,            offline: 'skip',  mode: 'sync' },

@@ -56,6 +56,12 @@ export function parseDumpsysBattery(raw: string): BatteryState | null {
 export interface BatteryMonitor {
   start(): void
   stop(): void
+  /**
+   * Manually pull a device out of the pool (from Studio). `false` means the
+   * transition was not available — the device is offline, or already
+   * quarantined — which the router reports as `skipped`.
+   */
+  quarantine(deviceId: string, reason: string | null): boolean
   /** Manually release a quarantine (from Studio). */
   unquarantine(deviceId: string): boolean
   pollOnce(): Promise<void>
@@ -190,11 +196,38 @@ export function createBatteryMonitor(deps: {
       if (timer) clearInterval(timer)
       timer = null
     },
+    /**
+     * The operator's own quarantine.
+     *
+     * It lives here, beside `unquarantine` and the thermal path, because the
+     * three share one invariant that is easy to break from a distance: the
+     * status and `quarantineReason` are written together, and the reason's
+     * PREFIX decides who may lift it. `manual:` is neither `thermal:` (which
+     * `pollDevice` above releases once the phone cools) nor `adb:` (which
+     * `health.ts`'s prober releases once it answers again), so a device an
+     * operator pulled stays pulled until an operator puts it back — which is
+     * the whole point of pulling it.
+     *
+     * The device is not disconnected and its session is not closed: it keeps
+     * streaming, keeps answering adb, and can still be controlled by hand.
+     * Only the scheduler stops choosing it (`queue/job-store.ts` refuses to
+     * enqueue onto a quarantined device, and `claimNext` never claims one).
+     */
+    quarantine(deviceId, reason) {
+      const applied = deps.states.apply(deviceId, 'QUARANTINE')
+      if (!applied) return false
+      const text = reason?.trim()
+      const stored = `manual:${text && text.length > 0 ? text : 'pulled from the pool by an operator'}`
+      deps.db.update(devices).set({ quarantineReason: stored }).where(eq(devices.id, deviceId)).run()
+      deps.record?.({ deviceId, stream: 'main', kind: 'device.quarantined', meta: { reason: stored, manual: true } })
+      return true
+    },
     unquarantine(deviceId) {
       const applied = deps.states.apply(deviceId, 'UNQUARANTINE')
       if (!applied) return false
       deps.db.update(devices).set({ quarantineReason: null }).where(eq(devices.id, deviceId)).run()
       deps.grace?.grant(deviceId)
+      deps.record?.({ deviceId, stream: 'main', kind: 'device.recovered', meta: { manual: true } })
       return true
     },
     pollOnce,

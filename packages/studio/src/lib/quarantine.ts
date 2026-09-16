@@ -27,6 +27,14 @@ export function explainQuarantine(reason: string, nowC?: number | null): string 
   if (reason === 'adb:unreachable') {
     return 'stopped answering over adb (several timeouts in a row). It returns on its own within a minute of answering again — check its USB cable and hub'
   }
+  const manual = /^manual:([\s\S]*)$/.exec(reason)
+  if (manual) {
+    // Said in full, because nothing will lift this one on its own: neither
+    // the thermal release nor the adb prober touches a `manual:` reason
+    // (`device/battery.ts`), so the operator's own words ARE the exit
+    // condition, and "it returns once it cools" would be a lie here.
+    return `${manual[1]!.trim() || 'pulled from the pool by an operator'}. It stays out of the pool until someone returns it`
+  }
   return reason
 }
 
@@ -42,5 +50,7 @@ export function quarantineShort(reason: string | null | undefined, nowC?: number
     return `Too hot · ${thermal[1]}°C${now}`
   }
   if (reason === 'adb:unreachable') return 'adb not answering'
+  const manual = /^manual:([\s\S]*)$/.exec(reason)
+  if (manual) return manual[1]!.trim() || 'pulled by an operator'
   return reason
 }

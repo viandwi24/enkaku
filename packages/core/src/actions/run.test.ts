@@ -5,6 +5,10 @@ import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
 import { createAuditLogger } from '../auth/audit'
 import { createOperationRegistry } from '../actions/operations'
+import { createBatteryMonitor } from '../device/battery'
+import { createDeviceStateMachine } from '../device/state-machine'
+import { createFarmSettingsStore } from '../settings/farm-settings'
+import { createLogger } from '../util/logger'
 import { runAction, type ActionsDeps } from './run'
 
 /**
@@ -366,5 +370,67 @@ describe('screen-off / screen-on (plan 227 §3.3)', () => {
     )
     expect(calls.map((c) => c.deviceId)).toEqual(['d-online'])
     expect(res.results.find((r) => r.deviceId === 'd-offline')?.status).toBe('skipped')
+  })
+})
+
+/**
+ * The quarantine pair, through `runAction` rather than through the monitor
+ * directly (`device/battery.test.ts` covers that half): what this adds is the
+ * router's own half — the verb reaches the monitor, its `false` becomes
+ * `skipped` rather than a failure, and a farm whose adb subsystem has not
+ * started says so instead of blaming the device.
+ */
+describe('quarantine / unquarantine', () => {
+  function withBattery(deps: ActionsDeps, db: Db): ActionsDeps {
+    const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
+    const monitor = createBatteryMonitor({
+      db,
+      client: () => null,
+      states,
+      settings: createFarmSettingsStore(db),
+      log: createLogger('test'),
+      onBattery: () => {},
+      onMetrics: () => {},
+    })
+    return { ...deps, battery: () => monitor }
+  }
+
+  const statusOf = (db: Db, id: string) => db.select().from(devices).where(eq(devices.id, id)).get()
+
+  test('an online device is pulled with its reason, and returning it clears both', async () => {
+    const { db, deps } = setUp()
+    const withMonitor = withBattery(deps, db)
+
+    const pulled = await runAction(withMonitor, { verb: 'quarantine', target: { deviceIds: ['d-online'] }, force: false, reason: 'screen cracked' } as ActionRequest, actor)
+    expect(pulled.results).toEqual([{ deviceId: 'd-online', status: 'done', detail: { quarantined: true } }])
+    expect(statusOf(db, 'd-online')).toMatchObject({ status: 'quarantined', quarantineReason: 'manual:screen cracked' })
+
+    const back = await runAction(withMonitor, { verb: 'unquarantine', target: { deviceIds: ['d-online'] }, force: false } as ActionRequest, actor)
+    expect(back.results[0]).toMatchObject({ deviceId: 'd-online', status: 'done' })
+    expect(statusOf(db, 'd-online')).toMatchObject({ status: 'online', quarantineReason: null })
+  })
+
+  test('an offline device is skipped before dispatch, and a second quarantine is skipped by the transition', async () => {
+    const { db, deps } = setUp()
+    const withMonitor = withBattery(deps, db)
+
+    const offline = await runAction(withMonitor, { verb: 'quarantine', target: { deviceIds: ['d-offline'] }, force: false } as ActionRequest, actor)
+    expect(offline.results[0]).toMatchObject({ deviceId: 'd-offline', status: 'skipped' })
+
+    // And a device that is ALREADY quarantined never reaches the monitor at
+    // all: `offline: 'skip'` treats quarantined as unavailable, so the answer
+    // is the pre-dispatch skip with that word in it.
+    await runAction(withMonitor, { verb: 'quarantine', target: { deviceIds: ['d-online'] }, force: false } as ActionRequest, actor)
+    const again = await runAction(withMonitor, { verb: 'quarantine', target: { deviceIds: ['d-online'] }, force: false } as ActionRequest, actor)
+    expect(again.results[0]).toMatchObject({ status: 'skipped', message: 'quarantined' })
+  })
+
+  test('with no battery monitor the answer names the subsystem, not the device', async () => {
+    const { deps } = setUp()
+    // `battery: () => null` is `setUp`'s own default — a core whose adb
+    // subsystem never started. Reporting "not quarantined" here would send an
+    // operator to look at a phone that is fine.
+    const res = await runAction(deps, { verb: 'unquarantine', target: { deviceIds: ['d-online'] }, force: false } as ActionRequest, actor)
+    expect(res.results[0]).toMatchObject({ status: 'failed', code: 'E_NOT_SUPPORTED' })
   })
 })

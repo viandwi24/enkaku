@@ -35,8 +35,10 @@ import {
   SunIcon,
   TagIcon,
   TerminalIcon,
+  TerminalWindowIcon,
   TrashIcon,
   UploadSimpleIcon,
+  WarningIcon,
   describeApiError,
   type Icon,
 } from '@enkaku/ui'
@@ -44,6 +46,7 @@ import { awaitOperation, groupResults, runAction } from '@/lib/actions'
 import { newId, ws } from '@/lib/ws'
 import { useActionDialogs, type ActionDialogVerb } from '@/components/actions/ActionDialogHost'
 import { VERB_DIALOGS } from '@/components/actions/verb-dialogs'
+import type { AdbShortcut } from '@/lib/adb-command-memory'
 
 /**
  * The device action registry: ONE typed list of everything an operator can
@@ -100,6 +103,16 @@ export const DEVICE_ACTION_GROUPS = [
   { id: 'screen', label: 'Screen' },
   { id: 'connection', label: 'Connection' },
   { id: 'device', label: 'Install & shell' },
+  /**
+   * The farm's saved adb commands, one row each — the only run in this list
+   * whose membership is DATA rather than code (`groupedDeviceActions`).
+   *
+   * It sits right under "Install & shell" because that is where its own row,
+   * Adb command, lives: a shortcut is that dialog with the answer already
+   * filled in. Empty when the farm has saved none, and `groupedDeviceActions`
+   * then drops the whole run rather than opening a submenu onto nothing.
+   */
+  { id: 'adb-shortcuts', label: 'Adb shortcuts' },
   { id: 'run', label: 'Run' },
   { id: 'files', label: 'Files & agent' },
   { id: 'config', label: 'Configure' },
@@ -381,7 +394,12 @@ export const DEVICE_ACTIONS: readonly DeviceAction[] = [
   verbRow('reconnect', 'Reconnect', ArrowsClockwiseIcon, 'connection'),
   verbRow('disconnect', 'Disconnect', PlugsIcon, 'connection'),
   verbRow('set-network', 'Network', PlugsIcon, 'connection'),
-  // The only way back from quarantine in Studio; skipped for a device that is not quarantined.
+  // The pair. Quarantine pulls a device out of the scheduler's pool without
+  // deleting or un-enrolling it — the reversible answer to a phone that must
+  // not be picked next, where Forget and Block are not — and is skipped for a
+  // device that is not online. Return is the way back, and is skipped for a
+  // device that is not quarantined.
+  verbRow('quarantine', 'Quarantine', WarningIcon, 'connection'),
   verbRow('unquarantine', 'Return from quarantine', ArrowCounterClockwiseIcon, 'connection'),
 
   verbRow('install', 'Install apk', DownloadSimpleIcon, 'device'),
@@ -411,9 +429,46 @@ export const DEVICE_ACTIONS: readonly DeviceAction[] = [
   }),
 ]
 
-/** The groups in render order, each with its rows; empty groups dropped. Every surface renders exactly this. */
-export function groupedDeviceActions(): { group: (typeof DEVICE_ACTION_GROUPS)[number]; items: DeviceAction[] }[] {
-  return DEVICE_ACTION_GROUPS.map((group) => ({ group, items: DEVICE_ACTIONS.filter((a) => a.group === group.id) })).filter((g) => g.items.length > 0)
+/**
+ * One row per saved adb shortcut.
+ *
+ * Clicking it opens the Adb command dialog with that command already in the
+ * box AND submits it (`autoRun`) — the owner's ask on 2026-09-16 was for the
+ * fast path: "langsung dieksekusi… dan langsung dijalankan". The dialog still
+ * opens rather than the command being fired silently in the background,
+ * because the OUTPUT is the reason to run an adb command, and a busy device's
+ * confirmation still has somewhere to appear.
+ *
+ * It reaches all three surfaces for free: the menus draw a labelled run as a
+ * hover submenu and Device Control draws it as a section, so "hover the
+ * shortcuts item to get the sub-items" is what a menu already does with
+ * Buttons, Screen and Connection.
+ */
+function shortcutRow(shortcut: AdbShortcut): RunDeviceAction {
+  return {
+    kind: 'run',
+    // Namespaced so a shortcut can never collide with a verb row's id.
+    id: `adb-shortcut:${shortcut.id}`,
+    label: shortcut.name,
+    icon: TerminalWindowIcon,
+    group: 'adb-shortcuts',
+    hint: `Runs \`${shortcut.cmd}\` straight away, through the Adb command action.`,
+    run: (ctx) => useActionDialogs().open('adb', { deviceIds: [...ctx.deviceIds] }, { cmd: shortcut.cmd }, { autoRun: true }),
+  }
+}
+
+/**
+ * The groups in render order, each with its rows; empty groups dropped. Every
+ * surface renders exactly this.
+ *
+ * `shortcuts` is the farm's saved adb commands (`lib/adb-command-memory.ts`),
+ * passed in rather than read here: this module is a plain registry with no
+ * hooks in it, and `DeviceActionList` — the ONE component all three surfaces
+ * draw through — is where the subscription belongs.
+ */
+export function groupedDeviceActions(shortcuts: readonly AdbShortcut[] = []): { group: (typeof DEVICE_ACTION_GROUPS)[number]; items: DeviceAction[] }[] {
+  const rows: DeviceAction[] = [...DEVICE_ACTIONS, ...shortcuts.map(shortcutRow)]
+  return DEVICE_ACTION_GROUPS.map((group) => ({ group, items: rows.filter((a) => a.group === group.id) })).filter((g) => g.items.length > 0)
 }
 
 /** The row's tooltip: its own hint (or its dialog's note), and how many devices it will reach. */

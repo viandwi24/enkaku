@@ -33,7 +33,7 @@ import type { OperationRegistry } from './operations'
 import { VERBS, actionFanout } from './verbs'
 import { setReadiness } from './impl/readiness'
 import { reconnectDevice, disconnectDevice, cutoverStart, cutoverCancel } from './impl/connection'
-import { forgetDevice, blockDevice, unquarantineDevice } from './impl/lifecycle'
+import { forgetDevice, blockDevice, quarantineDevice, unquarantineDevice } from './impl/lifecycle'
 import { setLabel, clearLabel } from './impl/labelling'
 import { setGroup, setLabels } from './impl/membership'
 import { installGuestAgent, prepareDevice, retryPrepareComponent, uninstallGuestAgent, type PreparationDeps } from './impl/preparation'
@@ -88,7 +88,7 @@ export interface ActionsDeps {
   sessions: () => Pick<SessionManager, 'closeDevice' | 'restartAt' | 'get' | 'setRotation' | 'deferRotationRelease'> | null
   cutover: () => CutoverManager | null
   lifecycle: DeviceLifecycle
-  battery: () => Pick<BatteryMonitor, 'unquarantine'> | null
+  battery: () => Pick<BatteryMonitor, 'quarantine' | 'unquarantine'> | null
   routeService: () => NetworkActionsDoor | null
   labelling: LabellingService | null
   preparation: PreparationDeps
@@ -136,7 +136,7 @@ function failedStatusOf(err: unknown): { status: 'forbidden' | 'skipped' | 'fail
   if (code === E_DEVICE_CONFLICT || code === 'device_busy' || code === 'device_in_use' || code === 'job_running') {
     return { status: 'forbidden', code, message }
   }
-  if (code === 'device_unavailable' || code === 'device_offline' || code === 'device_quarantined' || code === 'not_quarantined') {
+  if (code === 'device_unavailable' || code === 'device_offline' || code === 'device_quarantined' || code === 'not_quarantined' || code === 'not_online') {
     return { status: 'skipped', code, message }
   }
   return { status: 'failed', code, message }
@@ -475,8 +475,29 @@ async function dispatchSyncVerb(deps: ActionsDeps, request: ActionRequest, devic
       return forgetDevice(deps.lifecycle, deviceId, { deleteHistory: request.deleteHistory, actor: { userId: actor.id } })
     case 'block':
       return blockDevice(deps.lifecycle, deviceId, { ...(request.reason ? { reason: request.reason } : {}), actor: { userId: actor.id } })
+    /*
+      Both take the monitor through `requireDep` rather than the `?? false`
+      their impls fall back to.
+
+      `battery` is null until the adb subsystem has started (`daemon.ts`
+      builds the monitor there), and a farm whose adb is still provisioning —
+      or has failed to — would otherwise answer "only an online device can be
+      quarantined" for a device that IS online, and "not quarantined" for one
+      that plainly is. Both sentences send the operator to look at the device.
+      `requireDep` says the true thing instead: the subsystem is not ready.
+
+      Past that, a `false` really is "that transition was not available", and
+      is reported as `skipped` (`failedStatusOf`) rather than as an error: an
+      operator quarantining twenty phones wants the nineteen that moved
+      reported as done, not the whole call as a failure.
+    */
+    case 'quarantine': {
+      const ok = quarantineDevice(requireDep(deps.battery(), 'quarantine'), deviceId, request.reason ?? null)
+      if (!ok) throw new EnkakuError('not_online', 'only an online device can be quarantined')
+      return { quarantined: true }
+    }
     case 'unquarantine': {
-      const ok = unquarantineDevice(deps.battery(), deviceId)
+      const ok = unquarantineDevice(requireDep(deps.battery(), 'unquarantine'), deviceId)
       if (!ok) throw new EnkakuError('not_quarantined', 'not quarantined')
       return { unquarantined: true }
     }

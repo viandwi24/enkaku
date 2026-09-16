@@ -18,6 +18,15 @@ export async function blockDevice(
   return lifecycle.block(deviceId, opts)
 }
 
+/** `quarantine` — `false` means the device was not `online` (offline, or already quarantined), mapped to `skipped` by the router. */
+export function quarantineDevice(
+  battery: Pick<BatteryMonitor, 'quarantine'> | null,
+  deviceId: string,
+  reason: string | null,
+): boolean {
+  return battery?.quarantine(deviceId, reason) ?? false
+}
+
 /** `unquarantine` (plan 207 §4.2) — `false` means "not quarantined", mapped to `skipped` by the router. */
 export function unquarantineDevice(battery: Pick<BatteryMonitor, 'unquarantine'> | null, deviceId: string): boolean {
   return battery?.unquarantine(deviceId) ?? false
