@@ -976,6 +976,18 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.49.6 — the second swipe stops being the same swipe, and nothing deletes at zero milliseconds.
+  //   Three leftovers from the 2026-09-17 survey. (1) Both verified page-turns drew their first reach
+  //   at random and then fell back to a bare constant — 0.85 and 0.6 — so any feed that needed a
+  //   second push got a byte-identical gesture every time; both are ranges now. (2) `swipeUp` pinned
+  //   `easing: 'linear'` on every feed swipe, which is a shape of its own on the one gesture family
+  //   this pack has; it is drawn per swipe from the three the engine supports. `pullToRefresh` keeps
+  //   `easeInOutCubic` deliberately — that gesture must DRAG to trigger a refresh, not flick.
+  //   (3) `clearCaptionField` sent every DEL back to back with no delay whatsoever. A hand does
+  //   produce a fast repeat, because a person holds the key and Android repeats it; what it never
+  //   produces is a perfectly even zero, so the strokes are jittered with a longer beat every dozen,
+  //   as if the key were released and pressed again. `notification-activity` also pauses to read
+  //   between scrolls, the way `shop-browse` in this same pack already did.
   // 1.49.5 — the aim comes from the SDK now, and a search is typed like a person types. A survey of
   //   this pack against the Instagram and YouTube packs (2026-09-17) found all three carrying their own
   //   copy of the same jitter helper, each drawing from `Math.random` — so a seeded run replayed every
@@ -1346,7 +1358,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.49.5',
+  version: '1.49.6',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

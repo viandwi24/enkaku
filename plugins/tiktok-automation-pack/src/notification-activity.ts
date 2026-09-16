@@ -125,7 +125,12 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
         collect(await capture(ctx, 'activity'))
         for (let i = 0; i < ctx.params.scrolls && items.size < ctx.params.maxItems; i++) {
           ctx.progress({ items: items.size, steps })
-          if (await verifiedPageDown(ctx, frame, rng)) collect(await capture(ctx, `activity-${i + 2}`))
+          if (await verifiedPageDown(ctx, frame, rng)) {
+            collect(await capture(ctx, `activity-${i + 2}`))
+            // Read what just arrived before turning again (1.49.6) — `shop-browse` already does this
+            // between its own scrolls, and a list that turns the moment it lands reads as a machine.
+            await sleep(between(rng, 600, 1_600))
+          }
           else {
             steps.push(`scroll ${i + 1}: no change — end of list`)
             break

@@ -167,6 +167,17 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     let lastInteraction = Date.now()
     
     // Watch for a human-like duration with periodic interactions
+    /*
+      The dwell is drawn ONCE (0.39.9).
+
+      It used to be drawn inside the loop and compared against elapsed time, which reads as "one
+      sample per round" but is not: with a fresh draw every 5–15 s, the run stops as soon as ANY draw
+      falls under the time already spent, and the chance of that accumulates. The heavy tail this
+      model exists for — a 0.1 chance of watching 25–55 s — was therefore almost never reached, and
+      the longer the video ran the less likely it became to keep running. One draw, held for the
+      whole watch, is what the distribution actually means.
+    */
+    const watchTarget = pickWatchMs(rng)
     while (true) {
       // Check if we should interact (like/comment)
       if (like === 'not attempted' && rng() < likeP * 0.3) { // Reduced chance per check
@@ -185,7 +196,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
       await sleep(between(rng, 5_000, 15_000))
       
       // Decide watch duration using the same human-like buckets as scroll-shorts
-      const watchDecision = pickWatchMs(rng)
+      const watchDecision = watchTarget
       
       // If we've watched long enough, break
       const elapsed = Date.now() - watchStart

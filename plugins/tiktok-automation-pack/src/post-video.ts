@@ -252,7 +252,19 @@ export function captionTextToClear(field: Pick<UiNode, 'text'>): string {
 /** TikTok's caption placeholders, lowercased without trailing dots. Only seen text belongs here. */
 const CAPTION_PLACEHOLDERS = ['tambah deskripsi', 'add description']
 
-async function clearCaptionField(ctx: ScriptContext<unknown>, frame: { width: number; height: number }, field: UiNode): Promise<void> {
+/*
+  Deleting at a human rate (1.49.6).
+
+  This loop used to send every DEL back to back with no delay at all — two hundred keystrokes in the
+  time it takes to send them, which no hand produces. A hand DOES produce a fast repeat, because a
+  person holds backspace down and Android repeats it about thirty times a second; what it never
+  produces is a perfectly even zero. So the gap is short and jittered, with a longer one every dozen
+  or so strokes, as if the key were released and pressed again.
+
+  `rng` is optional for the same reason `aimInside`'s is: this function's callers hold no rng, and
+  demanding one would spread a signature change through a flow that needs no randomness of its own.
+*/
+async function clearCaptionField(ctx: ScriptContext<unknown>, frame: { width: number; height: number }, field: UiNode, rng: () => number = Math.random): Promise<void> {
   const had = captionTextToClear(field)
   if (had.length === 0) return
   let left = had
@@ -260,7 +272,11 @@ async function clearCaptionField(ctx: ScriptContext<unknown>, frame: { width: nu
   for (const key of [KEY_DEL, KEY_FORWARD_DEL]) {
     if (key === KEY_DEL) await ctx.device.key(KEY_MOVE_END)
     const strokes = Math.min([...left].length + 5, CLEAR_MAX_STROKES)
-    for (let i = 0; i < strokes; i += 1) await ctx.device.key(key)
+    for (let i = 0; i < strokes; i += 1) {
+      await ctx.device.key(key)
+      // A held key repeats at roughly this rate; every dozen strokes, a beat as if it were let go.
+      await sleep(i > 0 && i % 12 === 0 ? 160 + Math.round(rng() * 240) : 18 + Math.round(rng() * 28))
+    }
     tree = await readPostScreen(ctx, 'clearing the caption field')
     const now = onScreenCaptionField(tree, frame.width)
     if (!now) break

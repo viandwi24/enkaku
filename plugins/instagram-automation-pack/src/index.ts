@@ -52,7 +52,7 @@ import clearDrafts from './clear-drafts'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.10.7',
+  version: '0.10.8',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -61,6 +61,16 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.10.8 — the retry swipe stops being identical, and the easing is drawn.**
+   * Two leftovers from the 2026-09-17 survey. `verifiedSwipeUp` drew its first
+   * reach at random and then fell back to the bare constant `0.88`, so a feed
+   * that needed a second push got a byte-identical gesture every single time —
+   * the first swipe randomised, the second a signature. It is a range now. And
+   * the swipe pinned `easing: 'linear'` on every reel advance, which is a shape
+   * of its own; it is drawn per swipe from the three the engine supports.
+   * `pullToRefresh` keeps `easeInOutCubic` on purpose — that one must DRAG to
+   * trigger the refresh rather than flick past it.
    *
    * **0.10.7 — this pack stops only ever going forwards.** A survey against the
    * TikTok and YouTube packs (2026-09-17) found two behaviours missing here

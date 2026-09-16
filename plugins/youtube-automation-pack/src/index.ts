@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.8',
+  version: '0.39.9',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,18 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.9 — the watch dwell is drawn once, not until it comes up short.**
+   * `watch-video` drew `pickWatchMs` INSIDE its loop and compared each fresh
+   * draw against elapsed time. That reads as "one sample per round" and is not:
+   * with a new draw every 5–15 s, the watch ends as soon as ANY draw falls under
+   * the time already spent, and the chance of that accumulates with every round.
+   * The heavy tail the model exists for — a 0.1 chance of 25–55 s — was
+   * therefore almost never reached, and the longer a video ran the less likely
+   * it became to keep running, which is the opposite of how a person watches.
+   * One draw, held for the whole watch, is what the distribution actually means.
+   * Found by the 2026-09-17 survey; the per-check `likeP * 0.3` / `comP * 0.2`
+   * scaling in the same loop is left alone, being a choice rather than a defect.
    *
    * **0.39.8 — the back-scroll this pack already had is finally called.**
    * `swipeDownRandomised` has been in `behavior.ts` since the pack was written:

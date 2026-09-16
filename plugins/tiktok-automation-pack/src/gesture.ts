@@ -1,5 +1,5 @@
 import type { ScriptContext } from '@enkaku/sdk'
-import { aimInside } from '@enkaku/sdk'
+import { aimInside, pick } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { between, sleep, pngSize } from './human'
 import { flatten } from './tree'
@@ -246,7 +246,11 @@ export async function swipeUp(ctx: ScriptContext<unknown>, frame: Frame, rng: ()
   const endY = Math.max(Math.round(0.06 * frame.height), startY - Math.round(distance * frame.height))
   const ms = Math.round(between(rng, 140, 240) * (distance < 0.5 ? 1.4 : 1))
   await ctx.device.swipe({ x, y: startY }, { x: Math.round(x + between(rng, -12, 12)), y: endY }, ms, {
-    easing: 'linear',
+    // Drawn per swipe (1.49.6). A thumb has no single acceleration curve, and `linear` on every
+    // feed swipe is a shape of its own — the one gesture family this pack has, always released the
+    // same way. `pullToRefresh` below keeps `easeInOutCubic` deliberately: that one must DRAG to
+    // trigger the refresh, not flick.
+    easing: pick(rng, ['linear', 'easeOutQuad', 'easeInOutCubic'] as const),
     curvature: Number(between(rng, 0, 0.06).toFixed(3)),
   })
 }
@@ -256,7 +260,10 @@ export async function swipeUp(ctx: ScriptContext<unknown>, frame: Frame, rng: ()
  * left it byte-identical — the caller reports the stall, never hides it.
  */
 export async function verifiedSwipeUp(ctx: ScriptContext<unknown>, frame: Frame, rng: () => number): Promise<boolean> {
-  for (const distance of [between(rng, 0.58, 0.78), 0.85]) {
+  // The retry distance is drawn too (1.49.6). It used to be the bare constant 0.85, so a feed that
+  // needed a second push got a byte-identical reach every single time — the first swipe randomised,
+  // the second a signature. A harder push is still a harder push; it just is not the same one twice.
+  for (const distance of [between(rng, 0.58, 0.78), between(rng, 0.80, 0.92)]) {
     const before = await snapshot(ctx)
     await swipeUp(ctx, frame, rng, distance)
     await sleep(between(rng, 900, 1_600))
@@ -268,7 +275,7 @@ export async function verifiedSwipeUp(ctx: ScriptContext<unknown>, frame: Frame,
 
 /** A gentler, verified page-turn for CONTINUOUS lists (results grids, inbox) — 0.28–0.45 of a screen, slower release. */
 export async function verifiedPageDown(ctx: ScriptContext<unknown>, frame: Frame, rng: () => number): Promise<boolean> {
-  for (const distance of [between(rng, 0.28, 0.45), 0.6]) {
+  for (const distance of [between(rng, 0.28, 0.45), between(rng, 0.55, 0.68)]) {
     const before = await snapshot(ctx)
     await swipeUp(ctx, frame, rng, distance)
     await sleep(between(rng, 1_200, 2_400))

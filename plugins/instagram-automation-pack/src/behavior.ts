@@ -1,5 +1,5 @@
 import type { ScriptContext } from '@enkaku/sdk'
-import { aimInside } from '@enkaku/sdk'
+import { aimInside, pick } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { flatten } from './tree'
 
@@ -85,14 +85,21 @@ export async function frameOf(ctx: ScriptContext<unknown>): Promise<Frame> {
 /* ── Verified random up-swipe (same corridor rule as TikTok & YouTube) ─── */
 
 export async function verifiedSwipeUp(ctx: ScriptContext<unknown>, frame: Frame, rng: () => number): Promise<boolean> {
-  for (const dist of [between(rng, 0.55, 0.75), 0.88]) {
+  // The retry reach is drawn too (0.10.8): it used to be the bare constant 0.88, so a feed that
+  // needed a second push got a byte-identical swipe every time — the first randomised, the second a
+  // signature. A harder push stays a harder push; it just is not the same one twice.
+  for (const dist of [between(rng, 0.55, 0.75), between(rng, 0.82, 0.94)]) {
     const before = await ctx.device.screenshot()
     const x = Math.round(between(rng, 0.14, 0.55) * frame.width)
     const sy = Math.round(between(rng, 0.68, 0.80) * frame.height)
     const ey = Math.max(Math.round(0.06 * frame.height), sy - Math.round(dist * frame.height))
     const ms = Math.round(between(rng, 140, 260))
     await ctx.device.swipe({ x, y: sy }, { x: Math.round(x + between(rng, -12, 12)), y: ey }, ms, {
-      easing: 'linear', curvature: Number(between(rng, 0, 0.06).toFixed(3)),
+      // Drawn per swipe (0.10.8) — a thumb has no single acceleration curve, and one fixed easing on
+      // every reel advance is a shape of its own. `pullToRefresh` keeps `easeInOutCubic` on purpose:
+      // that gesture must DRAG to trigger the refresh rather than flick past it.
+      easing: pick(rng, ['linear', 'easeOutQuad', 'easeInOutCubic'] as const),
+      curvature: Number(between(rng, 0, 0.06).toFixed(3)),
     })
     await sleep(between(rng, 900, 1_600))
     if (!bytesEqual(before, await ctx.device.screenshot())) return true
