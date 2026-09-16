@@ -69,6 +69,8 @@ export function DevicesToolbar({
   onViewChange,
   cardWidth,
   onCardWidthChange,
+  showCardLabels,
+  onShowCardLabelsChange,
   filter,
   onFilterChange,
   labelState,
@@ -96,6 +98,9 @@ export function DevicesToolbar({
   /** The Screens card width in px. The presets are shortcuts onto the same number the slider sets. */
   cardWidth: number
   onCardWidthChange: (px: number) => void
+  /** Whether the Screens cards draw their labels. Shown in the labels menu, and only while the Screens view is up — a table row has its own Labels column. */
+  showCardLabels: boolean
+  onShowCardLabelsChange: (show: boolean) => void
   filter: DevicesFilter
   onFilterChange: (f: DevicesFilter) => void
   /** Every label in the farm, plus the reload the manager needs after a mutation (plan 225 §4.7). */
@@ -282,6 +287,17 @@ export function DevicesToolbar({
               </div>
             )}
             <div className="my-1 border-t border-line" />
+            {/*
+              Whether the CARDS show their labels (owner, 2026-09-16), beside the filter that decides
+              which devices are listed — one menu for "labels", both halves of it. Hidden in the table
+              view, where a row already has a Labels column of its own and the switch would mean nothing.
+            */}
+            {view === 'screens' && (
+              <button type="button" className={ROW} onClick={() => onShowCardLabelsChange(!showCardLabels)} aria-pressed={showCardLabels}>
+                <span className="min-w-0 flex-1 text-left">Show labels on the phones</span>
+                {showCardLabels && <CheckIcon className="size-3.5 text-accent" aria-hidden />}
+              </button>
+            )}
             {activeLabelIds.length > 0 && (
               <button type="button" className={cn(ROW, 'text-accent')} onClick={onClearLabels}>
                 Clear label filter

@@ -27,12 +27,15 @@ const DEFAULT_RAMP_CONCURRENCY = 12
 export function ScreensGrid({
   devices,
   cardWidth,
+  showLabels,
   selection,
   onItemContextMenu,
 }: {
   devices: DeviceInfo[]
   /** The card width in px — a preset or the View menu's slider. */
   cardWidth: number
+  /** Whether each card draws its device's labels — the labels menu's own switch, off by default. */
+  showLabels: boolean
   selection: DeviceSelection
   /** Right-click on a card: the same device context menu the table rows open. */
   onItemContextMenu: (id: string, e: React.MouseEvent) => void
@@ -68,6 +71,7 @@ export function ScreensGrid({
           <DeviceScreenCard
             key={device.id}
             device={device}
+            showLabels={showLabels}
             selected={selection.selected.has(device.id)}
             live={liveSet.live.has(device.id) && device.status === 'online'}
             tileRef={liveSet.tileRef(device.id)}

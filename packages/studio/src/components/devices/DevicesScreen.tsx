@@ -43,6 +43,8 @@ export function DevicesScreen() {
   const [view, setView] = useState<DevicesView>(() => (params.get('view') as DevicesView) || readSessionPrefs().devicesView || 'table')
   // The exact px the slider last set, or — for a browser that only ever saved
   // a preset — that preset's px.
+  // Off until the operator asks for it (owner, 2026-09-16) — see `showCardLabels` in `prefs.ts`.
+  const [showCardLabels, setShowCardLabels] = useState<boolean>(() => readLocalPrefs().showCardLabels)
   const [cardWidth, setCardWidth] = useState<number>(() => {
     const prefs = readLocalPrefs()
     return prefs.cardWidthPx ?? CARD_WIDTH_PX[prefs.cardWidth]
@@ -130,6 +132,11 @@ export function DevicesScreen() {
   const setCardWidthAndPersist = (px: number) => {
     setCardWidth(px)
     writeLocalPrefs({ cardWidthPx: px })
+  }
+
+  const setShowCardLabelsAndPersist = (show: boolean) => {
+    setShowCardLabels(show)
+    writeLocalPrefs({ showCardLabels: show })
   }
 
   const groupScoped = useMemo(
@@ -269,6 +276,8 @@ export function DevicesScreen() {
         onViewChange={setViewAndPersist}
         cardWidth={cardWidth}
         onCardWidthChange={setCardWidthAndPersist}
+        showCardLabels={showCardLabels}
+        onShowCardLabelsChange={setShowCardLabelsAndPersist}
         filter={filter}
         onFilterChange={setFilter}
         labelState={labelState}
@@ -297,7 +306,7 @@ export function DevicesScreen() {
           queuedFor={queuedFor}
         />
       ) : (
-        <ScreensGrid devices={filtered} cardWidth={cardWidth} selection={selection} onItemContextMenu={openContextMenu} />
+        <ScreensGrid devices={filtered} cardWidth={cardWidth} showLabels={showCardLabels} selection={selection} onItemContextMenu={openContextMenu} />
       )}
 
       {contextMenu && (

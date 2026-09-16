@@ -33,6 +33,7 @@ function idleLabelOf(device: DeviceInfo): string {
 
 export function DeviceScreenCard({
   device,
+  showLabels,
   selected,
   live,
   tileRef,
@@ -41,6 +42,8 @@ export function DeviceScreenCard({
   onContextMenu,
 }: {
   device: DeviceInfo
+  /** The labels menu's switch (owner, 2026-09-16). Off by default, so a wall is pictures until someone asks for chips. */
+  showLabels: boolean
   selected: boolean
   live: boolean
   tileRef: (node: Element | null) => void
@@ -140,7 +143,7 @@ export function DeviceScreenCard({
           Left-padded past the status dot, right-padded before the agent
           chip, so it can never sit under either.
         */}
-        {device.labels.length > 0 && (
+        {showLabels && device.labels.length > 0 && (
           <div className="pointer-events-none absolute inset-x-0 bottom-1.5 flex items-center justify-center gap-1 overflow-hidden px-7">
             <LabelChip name={device.labels[0]!.name} color={device.labels[0]!.color} />
             {device.labels.length > 1 && (

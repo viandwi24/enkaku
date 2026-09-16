@@ -86,6 +86,14 @@ const LocalPrefsSchema = z.object({
    */
   cardWidthPx: z.number().int().min(CARD_WIDTH_MIN_PX).max(CARD_WIDTH_MAX_PX).optional().catch(undefined),
   /**
+   * Whether the Screens cards draw their device's labels along the bottom
+   * (owner, 2026-09-16). OFF by default: a wall is read by scanning pictures,
+   * and the owner asked to choose whether the chips are there at all. The
+   * table's own Labels column is a different thing and is unaffected — this
+   * only decides what a CARD shows.
+   */
+  showCardLabels: z.boolean().default(false),
+  /**
    * Device Control's dragged height, in px. The width is derived from it and
    * the live aspect ratio (`device-control/geometry.ts`), so one number is the
    * whole size. A property of the screen someone is sitting in front of, like
