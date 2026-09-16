@@ -108,6 +108,34 @@ export function isSignedOut(tree: UiNode): boolean {
   return strings.some((s) => /^(masuk|log in|login)$/.test(s) || s.includes('buat akun baru') || s.includes('create new account'))
 }
 
+/**
+ * Instagram's own "confirm you are human" gate (0.10.4), and the handle it names.
+ *
+ * Measured on three production phones in one session (#4, #14, #59 on 2026-09-16, screenshots
+ * `ig-01-home`): a full screen carrying the Instagram wordmark, a shield glyph and one line —
+ * "Konfirmasikan bahwa Anda adalah manusia untuk menggunakan profil Anda, bitorexroom" — over a
+ * "Lanjut" button and "Perlu waktu sekitar 30 detik". There is no navigation on it, so every caller
+ * sees it as "the app never came up"; naming it is the whole point of this reader.
+ *
+ * Nothing in this pack presses that button. Working an app's bot check is not something automation
+ * here does, and a phone in this state is reported to the operator rather than driven through it.
+ *
+ * Returns the handle when the line names one, `'this account'` when the gate is up but unnamed, and
+ * null when it is not this screen. The English wording is UNMEASURED — it is matched on the chance
+ * the farm meets an English build, exactly as `isSignedOut` does.
+ */
+export function humanCheckAccount(tree: UiNode): string | null {
+  if (isReady(tree)) return null
+  const lines = flatten(tree)
+    .filter((n) => n.packageName === INSTAGRAM_PACKAGE)
+    .map((n) => `${n.text} ${n.desc}`.trim())
+    .filter((s) => s !== '')
+  const line = lines.find((s) => /konfirmasikan bahwa anda adalah manusia|confirm (that )?you(?:'re| are)? (?:a )?human/i.test(s))
+  if (!line) return null
+  const named = /,\s*@?([A-Za-z0-9._]{2,30})\s*$/.exec(line)
+  return named?.[1] ?? 'this account'
+}
+
 const MEDIA_PERMISSIONS = ['READ_MEDIA_VIDEO', 'READ_MEDIA_IMAGES', 'READ_MEDIA_VISUAL_USER_SELECTED', 'READ_EXTERNAL_STORAGE', 'POST_NOTIFICATIONS'] as const
 
 /**

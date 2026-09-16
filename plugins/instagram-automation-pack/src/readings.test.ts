@@ -37,7 +37,7 @@ import {
 import { MAX_REFRESHES_IN_A_ROW, PROFILE_PULL_BAND, makeRng, planConfirmStep, pullToRefreshPath } from './behavior'
 import type { ConfirmMove, ConfirmStep } from './behavior'
 import { rowsById, treeFrame } from './tree'
-import { isReady, isSignedOut, promoDismissButton, waitForTree, withheldByDialog } from './instagram'
+import { humanCheckAccount, isReady, isSignedOut, promoDismissButton, waitForTree, withheldByDialog } from './instagram'
 import { inboxItems, inboxStrings, onInbox } from './check-inbox'
 import { feedLikeState, feedPosts, onHomeFeed } from './scroll-feed'
 import { inStoryViewer, trayStories } from './watch-stories'
@@ -503,5 +503,26 @@ describe('warm-up readings', () => {
     expect(onActivity(tree)).toBe(true)
     expect(activitySections(tree).map((n) => n.text)).toContain('Disarankan untuk Anda')
     expect(activityItems(tree)).toEqual([])
+  })
+})
+
+describe('the "confirm you are human" gate (0.10.4)', () => {
+  test('the gate is recognised and names the account it holds', async () => {
+    const tree = await fixture('screen-human-check.json')
+    expect(isReady(tree)).toBe(false)
+    expect(humanCheckAccount(tree)).toBe('owner.account')
+  })
+
+  test('a home screen is not the gate', async () => {
+    expect(humanCheckAccount(await fixture('screen-home.json'))).toBeNull()
+  })
+
+  test('the gate without a handle still reports itself', async () => {
+    const tree = await fixture('screen-human-check.json')
+    const stripped = JSON.parse(JSON.stringify(tree)) as UiNode
+    const line = stripped.children[1] as UiNode
+    line.text = 'Konfirmasikan bahwa Anda adalah manusia'
+    line.desc = 'Konfirmasikan bahwa Anda adalah manusia'
+    expect(humanCheckAccount(stripped)).toBe('this account')
   })
 })

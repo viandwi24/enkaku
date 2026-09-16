@@ -52,7 +52,7 @@ import clearDrafts from './clear-drafts'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.10.3',
+  version: '0.10.4',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -61,6 +61,16 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.10.4 — a held account is named, not reported as a missing navigation.**
+   * Three phones in one production session (#4, #14, #59 on 2026-09-16) failed
+   * "Instagram's bottom navigation is not on screen after launch", and all three
+   * dumps were the same screen: Instagram holding the account behind
+   * "Konfirmasikan bahwa Anda adalah manusia untuk menggunakan profil Anda,
+   * &lt;handle&gt;". The failure now names the handle and says a person has to answer
+   * it on the phone. The pack does NOT press "Lanjut" — working an app's own bot
+   * check is not something this automation does — so this is a better report, not
+   * a recovered run.
    *
    * **0.10.3 — the Explore search box is found when it is a Button.** Seven
    * production runs (2026-09-16) failed "the Explore screen shows no search field"

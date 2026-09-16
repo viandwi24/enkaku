@@ -1,0 +1,93 @@
+{
+  "resourceId": "",
+  "text": "",
+  "desc": "",
+  "className": "android.widget.LinearLayout",
+  "packageName": "com.instagram.android",
+  "bounds": { "left": 0, "top": 0, "right": 720, "bottom": 1600 },
+  "clickable": false,
+  "enabled": true,
+  "focused": false,
+  "index": 0,
+  "children": [
+    {
+      "resourceId": "",
+      "text": "",
+      "desc": "Menu",
+      "className": "android.widget.Button",
+      "packageName": "com.instagram.android",
+      "bounds": { "left": 631, "top": 76, "right": 712, "bottom": 151 },
+      "clickable": true,
+      "enabled": true,
+      "focused": false,
+      "index": 0,
+      "children": []
+    },
+    {
+      "resourceId": "",
+      "text": "Konfirmasikan bahwa Anda adalah manusia untuk menggunakan profil Anda, owner.account",
+      "desc": "Konfirmasikan bahwa Anda adalah manusia untuk menggunakan profil Anda, owner.account",
+      "className": "android.widget.TextView",
+      "packageName": "com.instagram.android",
+      "bounds": { "left": 90, "top": 471, "right": 630, "bottom": 670 },
+      "clickable": false,
+      "enabled": true,
+      "focused": false,
+      "index": 1,
+      "children": []
+    },
+    {
+      "resourceId": "",
+      "text": "",
+      "desc": "Lanjut",
+      "className": "android.widget.Button",
+      "packageName": "com.instagram.android",
+      "bounds": { "left": 30, "top": 768, "right": 690, "bottom": 847 },
+      "clickable": true,
+      "enabled": true,
+      "focused": false,
+      "index": 2,
+      "children": [
+        {
+          "resourceId": "",
+          "text": "Lanjut",
+          "desc": "",
+          "className": "android.widget.TextView",
+          "packageName": "com.instagram.android",
+          "bounds": { "left": 321, "top": 791, "right": 400, "bottom": 824 },
+          "clickable": false,
+          "enabled": true,
+          "focused": false,
+          "index": 0,
+          "children": []
+        }
+      ]
+    },
+    {
+      "resourceId": "",
+      "text": "Perlu waktu sekitar 30 detik",
+      "desc": "Perlu waktu sekitar 30 detik",
+      "className": "android.widget.TextView",
+      "packageName": "com.instagram.android",
+      "bounds": { "left": 189, "top": 877, "right": 531, "bottom": 913 },
+      "clickable": false,
+      "enabled": true,
+      "focused": false,
+      "index": 3,
+      "children": []
+    },
+    {
+      "resourceId": "com.android.systemui:id/back",
+      "text": "",
+      "desc": "Kembali",
+      "className": "android.widget.ImageView",
+      "packageName": "com.android.systemui",
+      "bounds": { "left": 482, "top": 1510, "right": 641, "bottom": 1600 },
+      "clickable": true,
+      "enabled": true,
+      "focused": false,
+      "index": 4,
+      "children": []
+    }
+  ]
+}

@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { all, rowsById, treeFrame, within } from './tree'
 import { between, makeRng, planConfirmStep, pullToRefresh } from './behavior'
 import type { ConfirmMove, ConfirmPlan } from './behavior'
-import { INSTAGRAM_PACKAGE, backToNav, capture, centre, isReady, openTab, readableInstagramNodes, promoDismissButton, relaunch, sleep, waitForTree } from './instagram'
+import { INSTAGRAM_PACKAGE, backToNav, capture, centre, humanCheckAccount, isReady, openTab, readableInstagramNodes, promoDismissButton, relaunch, sleep, waitForTree } from './instagram'
 
 /**
  * `post-video` — upload one video as an Instagram Reel, for the Social Media
@@ -802,7 +802,24 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     if (frame.width > frame.height) {
       fail('E_SCREEN_LANDSCAPE', `Instagram opened in landscape (${frame.width}x${frame.height}). Set the device's rotation to lock-portrait and re-run — the caption tap is measured in portrait.`)
     }
-    if (!isReady(home)) fail('E_ANCHOR_NOT_FOUND', 'Instagram\'s bottom navigation is not on screen after launch — see artifact ig-01-home.')
+    if (!isReady(home)) {
+      /*
+        Name the challenge instead of the symptom (0.10.4). Three phones in one production session
+        (#4, #14, #59 on 2026-09-16) failed "the bottom navigation is not on screen", and all three
+        dumps were the same thing: Instagram holding the account behind "Konfirmasikan bahwa Anda
+        adalah manusia untuk menggunakan profil Anda, <handle>". No navigation can be on screen there,
+        and no amount of waiting or relaunching changes it — a person has to answer it on the phone.
+        This pack does not answer it: working through an app's own bot check is not something it may do.
+      */
+      const challenged = humanCheckAccount(home)
+      if (challenged !== null) {
+        fail(
+          'E_ACCOUNT_CHALLENGED',
+          `Instagram is holding ${challenged} behind its "confirm you are human" check, so the app never reached the home screen — nothing was posted, and this phone needs a person to answer it. See artifact ig-01-home.`,
+        )
+      }
+      fail('E_ANCHOR_NOT_FOUND', 'Instagram\'s bottom navigation is not on screen after launch — see artifact ig-01-home.')
+    }
     screens.push('home')
 
     const before = ctx.params.dryRun ? null : await readPostCount(ctx, 'ig-02-profile-before')
