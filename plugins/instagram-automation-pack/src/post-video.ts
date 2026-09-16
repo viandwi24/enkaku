@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { all, rowsById, treeFrame, within } from './tree'
 import { between, makeRng, planConfirmStep, pullToRefresh } from './behavior'
 import type { ConfirmMove, ConfirmPlan } from './behavior'
-import { INSTAGRAM_PACKAGE, backToNav, capture, centre, humanCheckAccount, isReady, openTab, readableInstagramNodes, promoDismissButton, relaunch, sleep, waitForTree } from './instagram'
+import { INSTAGRAM_PACKAGE, backToNav, capture, centre, humanCheckAccount, isReady, openTab, phoneNumberWallShowing, readableInstagramNodes, promoDismissButton, relaunch, sleep, waitForTree } from './instagram'
 
 /**
  * `post-video` — upload one video as an Instagram Reel, for the Social Media
@@ -816,6 +816,18 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         fail(
           'E_ACCOUNT_CHALLENGED',
           `Instagram is holding ${challenged} behind its "confirm you are human" check, so the app never reached the home screen — nothing was posted, and this phone needs a person to answer it. See artifact ig-01-home.`,
+        )
+      }
+      /*
+        The second wall (0.10.6). Six phones in the 18:34 session failed with the generic message below
+        while Instagram held them on "Enter your mobile number … Send code" — an account demand of its
+        own, and not the bot check above, which is why `humanCheckAccount` rightly said nothing. This
+        pack does not answer it either: no number is typed and "Send code" is never pressed.
+      */
+      if (phoneNumberWallShowing(home)) {
+        fail(
+          'E_ACCOUNT_CHALLENGED',
+          'Instagram is asking this account to add and confirm a phone number before the app can be used ("Enter your mobile number" → "Send code"), so it never reached the home screen — nothing was posted, and this phone needs a person to answer it. See artifact ig-01-home.',
         )
       }
       fail('E_ANCHOR_NOT_FOUND', 'Instagram\'s bottom navigation is not on screen after launch — see artifact ig-01-home.')

@@ -149,6 +149,34 @@ export function humanCheckAccount(tree: UiNode): string | null {
   return 'this account'
 }
 
+/**
+ * Instagram's "add and confirm a phone number" wall (0.10.6) — a SECOND demand, not the bot check.
+ *
+ * Measured on six production phones (#41, #46, #50, #51, #72, #73 on 2026-09-16; dumps carry 44
+ * Instagram nodes): an English screen reading "Enter your mobile number" over "You'll need to confirm
+ * this mobile number with a code via SMS or WhatsApp", a country chip "ID +62", a "Phone number"
+ * field, a "Send code" button and "Get support" in the top bar. Like the human gate it draws no
+ * navigation, so without this reader every caller reports "the app never came up" — which is how six
+ * phones spent a session looking like a farm bug.
+ *
+ * Nothing here fills that field in or presses "Send code". Entering contact details for an account is
+ * not something this automation does; the reader exists to name the wall so a person can answer it.
+ *
+ * Two sentences are required, not one: "Enter your mobile number" alone also appears in Instagram's
+ * ordinary settings, and a reader that fired there would mislabel a perfectly healthy screen. The
+ * Indonesian wording is UNMEASURED — matched on the chance the farm meets an id-ID build of it.
+ */
+export function phoneNumberWallShowing(tree: UiNode): boolean {
+  if (isReady(tree)) return false
+  const halves = flatten(tree)
+    .filter((n) => n.packageName === INSTAGRAM_PACKAGE)
+    .flatMap((n) => [n.text.trim(), n.desc.trim()])
+    .filter((s) => s !== '')
+  const asks = halves.some((s) => /enter your mobile number|masukkan nomor (ponsel|hp|telepon|seluler)/i.test(s))
+  const confirms = halves.some((s) => /confirm this mobile number|konfirmasi(kan)? nomor|cod(e|a) via sms|kode (lewat|via) sms/i.test(s))
+  return asks && confirms
+}
+
 const MEDIA_PERMISSIONS = ['READ_MEDIA_VIDEO', 'READ_MEDIA_IMAGES', 'READ_MEDIA_VISUAL_USER_SELECTED', 'READ_EXTERNAL_STORAGE', 'POST_NOTIFICATIONS'] as const
 
 /**

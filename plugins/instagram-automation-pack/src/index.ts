@@ -52,7 +52,7 @@ import clearDrafts from './clear-drafts'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.10.5',
+  version: '0.10.6',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -61,6 +61,20 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.10.6 — the phone-number wall is a wall of its own.** Six phones in one
+   * production session (#41, #46, #50, #51, #72, #73 on 2026-09-16) failed with
+   * the generic "bottom navigation is not on screen" while Instagram held them on
+   * an English screen: "Enter your mobile number" over "You'll need to confirm
+   * this mobile number with a code via SMS or WhatsApp", an "ID +62" chip, a
+   * "Phone number" field and "Send code". That is an account demand, not the bot
+   * check 0.10.4 named — `humanCheckAccount` rightly said nothing about it — so it
+   * now has its own reader and its own message. Two sentences are required to
+   * match, because "Enter your mobile number" alone also appears in ordinary
+   * settings. **Nothing types a number and nothing presses "Send code"**: entering
+   * contact details for an account is not something this automation does. The
+   * fixture's wording is verbatim from the production dumps; its bounds are
+   * reconstructed from the screenshot, which the reader does not use.
    *
    * **0.10.5 — the gate is read from either half of a node, in either language.**
    * The session that prompted 0.10.4 reached eight held phones by the evening, and

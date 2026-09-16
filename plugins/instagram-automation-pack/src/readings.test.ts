@@ -37,7 +37,7 @@ import {
 import { MAX_REFRESHES_IN_A_ROW, PROFILE_PULL_BAND, makeRng, planConfirmStep, pullToRefreshPath } from './behavior'
 import type { ConfirmMove, ConfirmStep } from './behavior'
 import { rowsById, treeFrame } from './tree'
-import { humanCheckAccount, isReady, isSignedOut, promoDismissButton, waitForTree, withheldByDialog } from './instagram'
+import { humanCheckAccount, isReady, isSignedOut, phoneNumberWallShowing, promoDismissButton, waitForTree, withheldByDialog } from './instagram'
 import { inboxItems, inboxStrings, onInbox } from './check-inbox'
 import { feedLikeState, feedPosts, onHomeFeed } from './scroll-feed'
 import { inStoryViewer, trayStories } from './watch-stories'
@@ -503,6 +503,33 @@ describe('warm-up readings', () => {
     expect(onActivity(tree)).toBe(true)
     expect(activitySections(tree).map((n) => n.text)).toContain('Disarankan untuk Anda')
     expect(activityItems(tree)).toEqual([])
+  })
+})
+
+describe('the phone-number wall (0.10.6)', () => {
+  test('the wall six production phones met is recognised', async () => {
+    const tree = await fixture('screen-phone-number-wall.json')
+    expect(isReady(tree)).toBe(false)
+    expect(phoneNumberWallShowing(tree)).toBe(true)
+    // It is NOT the bot check, and must not be reported as one.
+    expect(humanCheckAccount(tree)).toBeNull()
+  })
+
+  test('the human-check gate is not the phone wall either', async () => {
+    expect(phoneNumberWallShowing(await fixture('screen-human-check.json'))).toBe(false)
+  })
+
+  test('a home screen is neither', async () => {
+    expect(phoneNumberWallShowing(await fixture('screen-home.json'))).toBe(false)
+  })
+
+  test('one sentence alone is not the wall — a settings screen that only asks for a number is left alone', async () => {
+    const tree = await fixture('screen-phone-number-wall.json')
+    const stripped = JSON.parse(JSON.stringify(tree)) as UiNode
+    const confirmLine = stripped.children[3] as UiNode
+    confirmLine.text = ''
+    confirmLine.desc = ''
+    expect(phoneNumberWallShowing(stripped)).toBe(false)
   })
 })
 
