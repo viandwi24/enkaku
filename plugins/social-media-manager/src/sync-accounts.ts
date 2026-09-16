@@ -84,12 +84,37 @@ function labelled(tree: UiNode, labels: readonly string[]): UiNode | null {
 }
 
 /** Tap a labelled node and wait for what it opens. Returns the tree it reached, or null when the label was not there. */
-async function tapLabel(ctx: ScriptContext<unknown>, tree: UiNode, labels: readonly string[], ready: (t: UiNode) => boolean, budgetMs = 10_000): Promise<UiNode | null> {
-  const node = labelled(tree, labels)
-  if (!node) return null
+async function tapLabel(
+  ctx: ScriptContext<unknown>,
+  tree: UiNode,
+  labels: readonly string[],
+  ready: (t: UiNode) => boolean,
+  budgetMs = 10_000,
+): Promise<{ tree: UiNode | null; ok: boolean }> {
+  /*
+    Aim from a tree read JUST NOW, and hand back what the wait ended on (0.44.0).
+
+    Measured on the moto, 2026-09-16, with nine leftover drafts on the account. Tapping TikTok's
+    "Profile menu" from a tree captured moments earlier opened the VIDEO EDITOR; tapping the very same
+    point — [632,80][706,150], centre (669,115) — on a profile screen that had settled opened the
+    drawer properly, "Settings and privacy" and all. The editor never appeared on its own: eight
+    seconds untouched, nothing moved. So the tap was not wrong about where the button is, it was wrong
+    about WHEN: the profile of an account with drafts keeps drawing after its labels exist, and a point
+    aimed from the older tree lands on a draft cell instead.
+
+    That is both production messages in one — "the profile menu did not open" on this phone and "the
+    switch-account sheet did not open" on the farm's — and it is why they moved around between steps.
+
+    A caller that gets `ok: false` also gets the last tree, so a failure can save the screen it really
+    ended on rather than a fresh dump taken after the app has moved on again.
+  */
+  const fresh = await ctx.device.dump().catch(() => null)
+  const from = fresh !== null && labelled(fresh, labels) !== null ? fresh : tree
+  const node = labelled(from, labels)
+  if (!node) return { tree: from, ok: false }
   await ctx.device.tap({ point: centre(node) })
   const got = await waitFor(ctx, ready, budgetMs)
-  return got.ok ? got.tree : null
+  return { tree: got.tree, ok: got.ok }
 }
 
 /**
@@ -172,24 +197,24 @@ async function readTikTok(ctx: ScriptContext<unknown>): Promise<Reading> {
     throw new Error('TikTok did not show its bottom navigation')
   }
   const profile = await tapLabel(ctx, home.tree, ['Profile', 'Profil'], (t) => labelled(t, ['Profile menu', 'Menu profil']) !== null, 15_000)
-  if (!profile) {
-    await capture(ctx, 'accounts-tiktok-no-profile', home.tree)
+  if (!profile.ok || !profile.tree) {
+    await capture(ctx, 'accounts-tiktok-no-profile', profile.tree)
     throw new Error('the TikTok profile did not open')
   }
-  const drawer = await tapLabel(ctx, profile, ['Profile menu', 'Menu profil'], (t) => labelled(t, ['Settings and privacy', 'Pengaturan dan privasi']) !== null, 12_000)
-  if (!drawer) {
-    await capture(ctx, 'accounts-tiktok-no-profile-menu', profile)
+  const drawer = await tapLabel(ctx, profile.tree, ['Profile menu', 'Menu profil'], (t) => labelled(t, ['Settings and privacy', 'Pengaturan dan privasi']) !== null, 12_000)
+  if (!drawer.ok || !drawer.tree) {
+    await capture(ctx, 'accounts-tiktok-no-profile-menu', drawer.tree)
     throw new Error('the TikTok profile menu did not open')
   }
-  const settings = await tapLabel(ctx, drawer, ['Settings and privacy', 'Pengaturan dan privasi'], (t) => flatten(t).some((n) => onScreen(n) && n.desc.trim() !== ''), 12_000)
-  if (!settings) {
-    await capture(ctx, 'accounts-tiktok-no-settings', drawer)
+  const settings = await tapLabel(ctx, drawer.tree, ['Settings and privacy', 'Pengaturan dan privasi'], (t) => flatten(t).some((n) => onScreen(n) && n.desc.trim() !== ''), 12_000)
+  if (!settings.ok || !settings.tree) {
+    await capture(ctx, 'accounts-tiktok-no-settings', settings.tree)
     throw new Error('TikTok settings did not open')
   }
 
   // "Switch account" sits at the very bottom of settings, under "Login" — measured at four swipes on
   // the moto. Each swipe is followed by a read, so a shorter list stops as soon as the row shows.
-  let tree: UiNode | null = settings
+  let tree: UiNode | null = settings.tree
   let row = tree ? labelled(tree, ['Switch account', 'Beralih akun']) : null
   for (let swipe = 0; swipe < 6 && !row; swipe++) {
     await ctx.device.swipe({ x: 360, y: 1_300 }, { x: 360, y: 400 }, 500)
@@ -242,10 +267,16 @@ async function readYouTube(ctx: ScriptContext<unknown>): Promise<Reading> {
   const home = await waitFor(ctx, (t) => labelled(t, ['Anda', 'You']) !== null, 25_000)
   if (!home.ok || !home.tree) throw new Error('YouTube did not show its bottom navigation')
   const you = await tapLabel(ctx, home.tree, ['Anda', 'You'], (t) => labelled(t, ['Akun', 'Account']) !== null, 15_000)
-  if (!you) throw new Error('the YouTube You tab did not open')
-  const sheet = await tapLabel(ctx, you, ['Akun', 'Account'], (t) => youtubeAccountSheetShowing(t), 12_000)
-  if (!sheet) throw new Error('the YouTube account sheet did not open')
-  const rows = youtubeAccountRows(sheet)
+  if (!you.ok || !you.tree) {
+    await capture(ctx, 'accounts-youtube-no-you-tab', you.tree)
+    throw new Error('the YouTube You tab did not open')
+  }
+  const sheet = await tapLabel(ctx, you.tree, ['Akun', 'Account'], (t) => youtubeAccountSheetShowing(t), 12_000)
+  if (!sheet.ok || !sheet.tree) {
+    await capture(ctx, 'accounts-youtube-no-account-sheet', sheet.tree)
+    throw new Error('the YouTube account sheet did not open')
+  }
+  const rows = youtubeAccountRows(sheet.tree)
   if (rows.length === 0) throw new Error('the YouTube account sheet listed no channel')
   const marked = rows.findIndex((r) => r.selected)
   return numberAccounts(

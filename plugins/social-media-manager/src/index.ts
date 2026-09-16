@@ -77,6 +77,23 @@ import {
  *
  * ## Changelog
  *
+ * - **0.44.0 — a tap is aimed from a tree read just now, not from an older one.**
+ *   0.43.0's per-step evidence found it in one run. The capture the failing step
+ *   saved is the PROFILE screen with "Profile menu" plainly in it — so the label
+ *   was never missing — while the dump taken afterwards showed the video editor.
+ *   Driven by hand on the moto (nine leftover drafts on the account): tapping that
+ *   button from a tree captured moments earlier opens the EDITOR; tapping the very
+ *   same point, `[632,80][706,150]`, on a profile that has settled opens the drawer
+ *   properly, "Settings and privacy" and all. The editor never appears by itself —
+ *   eight seconds untouched, nothing moved. The tap was not wrong about WHERE the
+ *   button is, it was wrong about WHEN: a profile with drafts keeps drawing after
+ *   its labels exist, and a point aimed from the older tree lands on a draft cell.
+ *   That is both production messages in one — "the profile menu did not open" here
+ *   and "the switch-account sheet did not open" on the farm — and why they moved
+ *   between steps. `tapLabel` now re-reads the screen immediately before pressing,
+ *   and hands back the tree its wait ended on so a failure saves what was really
+ *   there. The YouTube walk uses the same helper and gets the same two fixes.
+ *
  * - **0.43.0 — each step of the TikTok walk saves the screen IT was looking at,
  *   and 0.42.0's claim is corrected.** Re-run on the moto with a leftover edit
  *   deliberately left behind: 0.42.0's BACK recovery **never fired**, and the run
@@ -1364,7 +1381,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.43.0',
+  version: '0.44.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
