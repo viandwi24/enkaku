@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.15',
+  version: '0.39.16',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,49 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.16 — the title was typed through the slowest path there is, because
+   * one walk's finding was generalised past what it measured.**
+   * The owner, 2026-09-17: "pas ngetik youtube caption keyboardnya cuman
+   * bergetar, ibarat kaya textbox fokus, muncul keyboard, terus sedetik
+   * fokusnya hilang, terus di fokuskan lagi dan begitu seterusnya sampai
+   * akhirnya back dan jadi draft."
+   *
+   * The title went `via: 'adb'`. That flag does not pick a faster adb route —
+   * it short-circuits the text ladder entirely (`device-executor.ts`, the
+   * `call.args.via === 'adb'` branch runs before `resolveTextRoute` is ever
+   * called), so the title was delivered as five separate `input text` commands,
+   * each its own adb round trip and its own `app_process` start.
+   *
+   * MEASURED, on the owner's moto g06 power (720x1640, Android 15):
+   *
+   * - On the real details screen, a 100-character title through `adb-ascii`:
+   *   **6608 ms** (job 212d9f3e, run dac11dd8, the script's own `type` action).
+   *   The walk measured the field's focus window at about **two seconds**.
+   * - The same 97-character text into a real focused field, alternating twice:
+   *   ladder **587 ms** and **708 ms**, `via: 'adb'` **2457 ms** and **2550 ms**
+   *   — all four landing 97 of 97 characters. The route is ~3.6x faster and
+   *   loses nothing.
+   *
+   * So the title now goes with no `via`, which lets the ladder pick rung 2 —
+   * scrcpy `INJECT_TEXT`, the WHOLE string in one control message. The TAPS are
+   * unchanged and still `via: 'adb'`: the 2026-09-11 finding that a scrcpy UHID
+   * tap never focuses this field stands, and nothing here touches it.
+   *
+   * Two paths were checked before trusting this, because both could have
+   * delivered the text somewhere else instead:
+   *
+   * - `ui-server-set-text` (the `inspector.setText` shortcut) cannot fire here:
+   *   a `{ point }` tap sets `lastTarget = null` (`device-executor.ts`), and the
+   *   shortcut requires a truthy one. The moto's inspector is `ui-tree`, which
+   *   implements no `setText` at all.
+   * - Rung 1 (the guest agent IME) cannot win either: the phone's active IME is
+   *   Google's LatinIME, so `imeCurrent` is false.
+   *
+   * **`instagram/post-video` is deliberately NOT changed.** Its own comment
+   * records a production run (2026-09-14) where the session text engine ate the
+   * hashtags — "#fyp #tra rtro". That is a measured reason to force adb there,
+   * and it is not this bug.
    *
    * **0.39.15 — one overflowing node put the bottom navigation back in the
    * search results, and 0.39.11's fix could not stop it.**
