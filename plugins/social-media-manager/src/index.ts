@@ -78,6 +78,27 @@ import {
  *
  * ## Changelog
  *
+ * - **0.46.0 — four activities the packs already shipped were never wired into
+ *   the rotation, and one style's title named an activity it did not run.**
+ *   The owner (2026-09-17) asked for every platform's activities to be complete
+ *   and connected to the warm-up rotation. An audit of what the packs register
+ *   against what this document calls found four members that existed, were
+ *   maintained, and had never once been dispatched by a warm-up:
+ *   `tiktok/shop-browse`, `tiktok/live-browse`, `youtube/scroll-live` and
+ *   `youtube/search-channel`. They now join existing shuffles as extra members
+ *   — `tt-a` (shop), `tt-b` (LIVE), `yt-a` (live) and `yt-c` (a channel).
+ *
+ *   Added as MEMBERS, not as new styles, and the reason is a measured limit:
+ *   `WORKFLOW_LIMITS.maxNodes` is 50 and this document already held 39 nodes. A
+ *   new style costs a switch case, a shuffle and its members; four extra member
+ *   nodes cost four. 43 leaves room, a fifth style would not have.
+ *
+ *   `tt-c` was titled "TikTok: search + inbox + videos" while its members are
+ *   search, NOTIFICATIONS and videos — there is no inbox member in this pack at
+ *   all. A style whose title names an activity it never runs is how a fleet
+ *   looks warmed on a screen while an app has never been opened, so the title
+ *   now says what it does.
+ *
  * - **0.45.2 — the app's own buttons were being stored as accounts, and they
  *   took SLOTS.** The owner found "Go to Meta Account settings" in the accounts
  *   table as Instagram slot 2, and reported the same shape on TikTok and YouTube
@@ -1461,7 +1482,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.45.2',
+  version: '0.46.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
