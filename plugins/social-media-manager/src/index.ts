@@ -78,6 +78,63 @@ import {
  *
  * ## Changelog
  *
+ * - **0.45.2 — the app's own buttons were being stored as accounts, and they
+ *   took SLOTS.** The owner found "Go to Meta Account settings" in the accounts
+ *   table as Instagram slot 2, and reported the same shape on TikTok and YouTube
+ *   in production (those strings were not captured). A slot is what
+ *   `switch-account` selects by, so a phantom row is not only untidy — it can move
+ *   which account a later run picks.
+ *   Every reader already dropped the rows it knew BY NAME, and that list has been
+ *   widened twice and missed anyway: `buka pengaturan` missed **Buka Pusat Akun**
+ *   (0.41.0 — five production phones each reported one account too many), and the
+ *   widened pattern then missed **"Go to Meta Account settings"**, because the
+ *   English row opens with "Go to" and the pattern expected "open". A blacklist of
+ *   sentences cannot be finished; the next build writes a new sentence.
+ *   So this is a SHAPE rule — what a username IS — and it lives in
+ *   `numberAccounts`, which all three readers pass through: one filter, three
+ *   platforms, including wordings nobody has seen yet. A handle has no spaces on
+ *   Instagram or TikTok; YouTube falls back to a CHANNEL NAME when a row carries
+ *   no `@handle`, and a channel name can be two words ("Hendi sunadi"), which is
+ *   why the bar is three words rather than "contains a space".
+ *   The trade is stated rather than hidden: a three-word channel name with no
+ *   handle would be dropped. That is rare, and the opposite error is worse.
+ *   One subtlety the tests pin down: `markedIndex` is a POSITION in the unfiltered
+ *   list, so the signed-in account is remembered by name and relocated after the
+ *   filter. Dropping a row without that moves the "Signed in" tick onto a
+ *   different account — a worse bug than the one being fixed.
+ *
+ * - **0.45.1 — YouTube's account control is "Accounts", plural. One of the
+ *   reasons the reader failed, and NOT the whole of it.**
+ *   Stated plainly because the first draft of this note claimed the fix: after
+ *   publishing 0.45.1 the member STILL failed with "no platform could be read
+ *   (youtube)". The plural is real and measured, the predicate really was wrong,
+ *   and something else in that walk is wrong too. The table an operator sees kept
+ *   showing a YouTube row throughout, because `mergeAccountReading` holds the last
+ *   good reading beside a failure — which is correct behaviour and made the fix
+ *   look like it had worked. It had not.
+ *   `sync-accounts` reported "the YouTube You tab
+ *   did not open" and saved an artifact named `accounts-youtube-no-you-tab` over a
+ *   tab that was plainly on screen. The tab opened fine; the PREDICATE waiting on
+ *   it did not: it looked for `['Akun', 'Account']`, and `labelled` matches a label
+ *   EXACTLY (`wanted.includes(n.desc.trim().toLowerCase())`), so `account` can
+ *   never match `accounts`.
+ *   Walked by hand on the owner's moto g06 with YouTube in `en-US` (2026-09-17):
+ *   the control reads `desc='Accounts'`, clickable, at (105,112), with NO
+ *   resourceId at all — that description is the only way to find it. Tapping it
+ *   produces a sheet carrying every id the reader wants (`title`='Accounts',
+ *   `add_account`, `name`, `channel_handle`, `selection_checkmark`, and a row whose
+ *   desc reads "Selected account: …", which its bilingual regex already matched).
+ *   So `accounts-youtube.ts` was correct the whole time — the misleading artifact
+ *   NAME is what sent me to read it first, twice.
+ *   Confirmed on hardware twice with the network verified up (ping 8.8.8.8, 0%
+ *   loss), because an earlier run of this same failure happened while the phone
+ *   had no route out and that reading could not be trusted.
+ *   `Akun` and `Account` are KEPT, not replaced: the Indonesian spelling of this
+ *   control has not been measured, and dropping a spelling that may still be in use
+ *   is how a fix for one language quietly breaks the other. Same shape as TikTok's
+ *   `Video` → `Videos` earlier the same day: the obvious translation is the wrong
+ *   one, and only a device dump settles it.
+ *
  * - **0.45.0 — a platform can be skipped for a phone, and enabled again.** The
  *   owner (2026-09-16): twenty videos over twenty phones, three platforms each —
  *   but #2 has no YouTube channel and #3 was never signed in to TikTok. Those two
@@ -1404,7 +1461,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.45.0',
+  version: '0.45.2',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

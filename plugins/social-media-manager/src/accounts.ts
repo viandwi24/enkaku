@@ -117,11 +117,62 @@ export function mergeAccountReading(
  * measured so far puts the signed-in account at, so a disagreement is recorded as `moved` — the mark
  * wins, since it is the app SAYING so, while slot 1 is only a convention this farm measured.
  */
+/*
+  A row of the app's own UI, not an account (0.45.2).
+
+  The owner found "Go to Meta Account settings" stored as an Instagram account, holding SLOT 2 — and
+  a slot is what `switch-account` selects by, so this is not only untidy, it can switch to the wrong
+  thing. Production has the same on TikTok and YouTube; the exact strings were not captured.
+
+  Each reader already drops the rows it knows by name, and that list has now been widened twice and
+  missed anyway. `accounts-instagram.ts` matched `buka pengaturan`, missed **Buka Pusat Akun**
+  (0.41.0, every one of five phones reported one account too many), was widened, and then missed
+  **"Go to Meta Account settings"** because the English row begins "Go to" and the pattern expected
+  "open". A blacklist of sentences can never be finished — the next build writes a new sentence.
+
+  So this is a SHAPE rule, and it lives in `numberAccounts` because all three readers pass through
+  it: one filter, three platforms, including the variants nobody has seen yet.
+
+  What a username is on these apps: a handle. No spaces on Instagram or TikTok. YouTube falls back to
+  a CHANNEL NAME when a row carries no `@handle`, and a channel name can be two words ("Hendi
+  sunadi") — which is why the bar is three words and not "contains a space".
+
+  The trade accepted, openly: a three-word channel name with no handle would be dropped. That is rare,
+  and the opposite error is worse — a phantom row takes a slot, and the slot decides which account a
+  later run switches to.
+*/
+const ACTION_PHRASE =
+  /^(tambah\w*|add|buka|open|go to|kelola|manage|lihat|view|beralih|switch|masuk|log ?in|sign ?in|keluar|log ?out|buat|create|pelajari|learn|aktifkan|turn on|nonaktifkan|turn off|setelan|settings|pengaturan)\b/i
+/** Longer than any handle these apps allow, and long enough that a sentence is the likelier reading. */
+const MAX_USERNAME_LENGTH = 40
+/** A channel name may be two words; three is prose. */
+const MAX_USERNAME_WORDS = 2
+
+/** True when this string reads as one of the app's own controls rather than an account it names. */
+export function looksLikeUiRow(value: string): boolean {
+  const v = value.trim()
+  if (v === '') return true
+  if (v.length > MAX_USERNAME_LENGTH) return true
+  if (v.split(/\s+/).length > MAX_USERNAME_WORDS) return true
+  return ACTION_PHRASE.test(v)
+}
+
 export function numberAccounts(
   handles: readonly { username: string; displayName?: string | null; accountId?: string | null }[],
   markedIndex: number | null,
 ): { accounts: Account[]; evidence: AccountEvidence } {
   if (handles.length === 0) return { accounts: [], evidence: 'none' }
+  /*
+    Filter FIRST, then find the marked account again by name (0.45.2). `markedIndex` is a position in
+    the unfiltered list: dropping a row without re-locating it moves the "signed in" tick onto a
+    different account, which is a worse bug than the one this filter fixes.
+  */
+  const markedUsername = markedIndex === null ? null : (handles[markedIndex]?.username ?? null)
+  const kept = handles.filter((h) => !looksLikeUiRow(h.username))
+  if (kept.length === 0) return { accounts: [], evidence: 'none' }
+  handles = kept
+  const relocated = markedUsername === null ? null : kept.findIndex((h) => h.username === markedUsername)
+  markedIndex = relocated === null || relocated === -1 ? null : relocated
   const currentIndex = markedIndex ?? 0
   const evidence: AccountEvidence = markedIndex === null ? 'assumed' : markedIndex === 0 ? 'confirmed' : 'moved'
   return {

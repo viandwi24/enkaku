@@ -266,12 +266,34 @@ async function readYouTube(ctx: ScriptContext<unknown>): Promise<Reading> {
   await launch(ctx, PACKAGES.youtube)
   const home = await waitFor(ctx, (t) => labelled(t, ['Anda', 'You']) !== null, 25_000)
   if (!home.ok || !home.tree) throw new Error('YouTube did not show its bottom navigation')
-  const you = await tapLabel(ctx, home.tree, ['Anda', 'You'], (t) => labelled(t, ['Akun', 'Account']) !== null, 15_000)
+  /*
+    'Accounts' — PLURAL — and it is the whole bug (0.45.0).
+
+    `labelled` matches a label EXACTLY (`wanted.includes(n.desc.trim().toLowerCase())`), so 'account'
+    can never match 'accounts'. Walked by hand on the owner's moto g06 with YouTube in `en-US` on
+    2026-09-17: the You tab opens fine, and its control reads `desc='Accounts'`, clickable, at
+    (105,112) with NO resourceId at all — only that description to find it by.
+
+    So this predicate said the tab had not opened, `you.ok` came back false, and the member reported
+    "the YouTube You tab did not open" over a tab that was plainly on screen, saving an artifact
+    named `accounts-youtube-no-you-tab`. That wrong name is what sent me looking at the READER first;
+    the reader was always correct — tapping 'Accounts' by hand produced a sheet carrying every id it
+    wants (`title`='Accounts', `add_account`, `name`, `channel_handle`, `selection_checkmark`, and a
+    row whose desc reads "Selected account: …", which its bilingual regex already matches).
+
+    Confirmed on hardware TWICE with the network up (ping 8.8.8.8, 0% loss), so this is not the
+    connectivity outage that clouded the earlier run.
+
+    'Akun' and 'Account' are KEPT: the Indonesian spelling of this control has not been measured, and
+    dropping a spelling that may still be in use is how a fix for one language breaks another.
+  */
+  const ACCOUNTS_LABELS = ['Akun', 'Account', 'Accounts'] as const
+  const you = await tapLabel(ctx, home.tree, ['Anda', 'You'], (t) => labelled(t, ACCOUNTS_LABELS) !== null, 15_000)
   if (!you.ok || !you.tree) {
     await capture(ctx, 'accounts-youtube-no-you-tab', you.tree)
     throw new Error('the YouTube You tab did not open')
   }
-  const sheet = await tapLabel(ctx, you.tree, ['Akun', 'Account'], (t) => youtubeAccountSheetShowing(t), 12_000)
+  const sheet = await tapLabel(ctx, you.tree, ACCOUNTS_LABELS, (t) => youtubeAccountSheetShowing(t), 12_000)
   if (!sheet.ok || !sheet.tree) {
     await capture(ctx, 'accounts-youtube-no-account-sheet', sheet.tree)
     throw new Error('the YouTube account sheet did not open')
