@@ -6,8 +6,21 @@ import type { JobTraceEvent } from '@enkaku/protocol'
 import { cn } from '@enkaku/ui'
 import { coreBase } from '@/lib/ws'
 import { STRIPE } from '../job-view'
+import type { TimelineTouch } from '@/lib/trace-touch'
 import { stepLabel } from '@/lib/useJobTrace'
 import { formatOffset } from './lane-math'
+import { TouchOverlay } from './TouchOverlay'
+
+/** How much larger a mark is drawn on a thumbnail than on the Frame panel. */
+const THUMB_MARK_SCALE = 1.8
+
+/**
+ * The screen a striped (frameless) card stands in for, in the card's own
+ * 9:19.5 proportion. Only a NORMALISED touch is drawn on it: a recorded touch
+ * knows where on the screen it landed without a picture, while an estimate in
+ * device pixels has no screen size to be placed against.
+ */
+const NOMINAL_SCREEN = { width: 900, height: 1950 }
 
 /**
  * Card 3 (design handoff): "*Frames*: "Frames · 18 events · frames captured
@@ -29,6 +42,7 @@ export function FrameStrip({
   jobId,
   runId,
   actions,
+  touches,
   selected,
   onSelect,
   originMs,
@@ -37,6 +51,8 @@ export function FrameStrip({
   jobId: string
   runId: string
   actions: JobTraceEvent[]
+  /** `touchOf` for each of `actions`, index for index — each card draws its own step's touch. */
+  touches: readonly (TimelineTouch | null)[]
   selected: number
   onSelect: (index: number) => void
   originMs: number
@@ -55,17 +71,17 @@ export function FrameStrip({
           <button key={e.id} type="button" onClick={() => onSelect(i)} className="w-[76px] flex-none text-left">
             <div
               className={cn(
-                'flex aspect-[9/19.5] w-[76px] items-end justify-center overflow-hidden rounded-small border-2 pb-[5px]',
+                'relative flex aspect-[9/19.5] w-[76px] items-end justify-center overflow-hidden rounded-small border-2 pb-[5px]',
                 i === selected ? 'border-accent' : e.kind === 'error' ? 'border-danger' : 'border-line-2',
               )}
               style={e.frameHash ? undefined : STRIPE}
             >
               {e.frameHash && !failed.has(e.frameHash) ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
+                <StripImage
+                  key={e.frameHash}
                   src={`${coreBase()}/api/jobs/${jobId}/runs/${runId}/trace/frames/${e.frameHash}`}
                   alt={`Screen at ${formatOffset(e.atMs, originMs)}`}
-                  className="size-full object-cover"
+                  touch={touches[i] ?? null}
                   /*
                    * A frame the run recorded but the farm no longer has —
                    * retention swept it, or the file went missing — used to
@@ -78,6 +94,11 @@ export function FrameStrip({
                   onError={() => setFailed((prev) => new Set(prev).add(e.frameHash!))}
                 />
               ) : (
+                <>
+                {/* No picture, but a recorded touch still knows where on the screen it landed. */}
+                {touches[i]?.space === 'norm' && (
+                  <TouchOverlay touches={[{ touch: touches[i]!, current: true, order: 1 }]} frame={NOMINAL_SCREEN} scale={THUMB_MARK_SCALE} fit="cover" />
+                )}
                 <span className="text-center font-mono text-[9px] leading-tight text-faint">
                   {formatOffset(e.atMs, originMs)}
                   <br />
@@ -92,6 +113,7 @@ export function FrameStrip({
                   */}
                   {e.frameHash ? 'frame gone' : e.uiHash ? 'ui tree' : 'no frame'}
                 </span>
+                </>
               )}
             </div>
             <div
@@ -105,6 +127,31 @@ export function FrameStrip({
           </button>
         ))}
       </div>
+    </div>
+  )
+}
+
+/**
+ * One thumbnail, with its step's own touch drawn on it. A frame captured for
+ * an action is the screen AFTER it, so this is the Frame panel's "After" view
+ * in miniature. Keyed by hash by the caller: the natural size belongs to one
+ * picture.
+ */
+function StripImage({ src, alt, touch, onError }: { src: string; alt: string; touch: TimelineTouch | null; onError: () => void }) {
+  const [natural, setNatural] = useState<{ width: number; height: number } | null>(null)
+  return (
+    <div className="absolute inset-0">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt={alt}
+        className="size-full object-cover"
+        onLoad={(ev) => setNatural({ width: ev.currentTarget.naturalWidth, height: ev.currentTarget.naturalHeight })}
+        onError={onError}
+      />
+      {natural && touch && (
+        <TouchOverlay touches={[{ touch, current: true, order: 1 }]} frame={natural} scale={THUMB_MARK_SCALE} fit="cover" />
+      )}
     </div>
   )
 }

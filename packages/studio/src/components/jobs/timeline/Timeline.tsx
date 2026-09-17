@@ -139,6 +139,7 @@ export function Timeline({ jobId, runId, runStatus }: { jobId: string; runId: st
         jobId={jobId}
         runId={runId}
         actions={actions}
+        touches={touches}
         selected={selected}
         onSelect={select}
         originMs={originMs}

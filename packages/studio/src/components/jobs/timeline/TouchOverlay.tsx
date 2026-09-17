@@ -30,17 +30,29 @@ export interface DrawnTouch {
  * Every mark is drawn twice, a wide `panel`-coloured halo under an `accent`
  * stroke, so it stays readable on a white screen and a black one.
  */
-export function TouchOverlay({ touches, frame }: { touches: DrawnTouch[]; frame: { width: number; height: number } }) {
+export function TouchOverlay({
+  touches,
+  frame,
+  scale = 1,
+  fit = 'contain',
+}: {
+  touches: DrawnTouch[]
+  frame: { width: number; height: number }
+  /** Multiplies every mark's size — a 76px strip thumbnail needs marks about twice as large, relative to the picture, as the 148px Frame panel. */
+  scale?: number
+  /** The `object-fit` of the image underneath: `contain` maps to `meet`, `cover` (which crops) to `slice`. */
+  fit?: 'contain' | 'cover'
+}) {
   const markerId = useId().replace(/:/g, '')
   if (touches.length === 0 || frame.width <= 0 || frame.height <= 0) return null
-  const unit = frame.width / 100
+  const unit = (frame.width / 100) * scale
   const numbered = touches.length > 1
 
   return (
     <svg
       className="pointer-events-none absolute inset-0 size-full"
       viewBox={`0 0 ${frame.width} ${frame.height}`}
-      preserveAspectRatio="xMidYMid meet"
+      preserveAspectRatio={fit === 'cover' ? 'xMidYMid slice' : 'xMidYMid meet'}
       aria-hidden
     >
       <defs>
