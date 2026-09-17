@@ -329,6 +329,8 @@ export class AdbClient {
   /** Per-serial verdict on `shell,v2,raw` support (plan 53 §3.4); unset means "not yet known". */
   private shellFramedSupported = new Map<string, boolean>()
   private tracker: DeviceTracker | null = null
+  /** The in-flight `ensureServer()` attempt, shared by every concurrent caller — see that method. */
+  private ensuring: Promise<void> | null = null
   private onLog?: (level: 'debug' | 'warn', msg: string) => void
   private onMetric?: AdbClientOptions['onMetric']
 
@@ -392,8 +394,32 @@ export class AdbClient {
     }
   }
 
-  /** Connect to the adb server; if it is not running, spawn `adb start-server` and retry. */
+  /**
+   * Connect to the adb server; if it is not running, spawn `adb start-server` and retry.
+   *
+   * ### Single-flight, because this is no longer a boot-only call (2026-09-17)
+   *
+   * This used to be called exactly twice in the workspace, both during boot, and a
+   * farm whose adb server died later never called it again: the tracker reconnected
+   * against a refused socket every 5 s for ever, the recovery prober's `getprop`
+   * failed every 60 s for ever, and 73 phones sat quarantined `adb:unreachable`
+   * until a human restarted the core. Measured on the owner's farm, 2026-09-17:
+   * three such collapses in 72 core restarts, the earliest on 2026-09-06.
+   *
+   * Now the tracker and the prober call it on a refused connection, which means
+   * several callers can arrive at once — and each would otherwise spawn its own
+   * `start-server` and sleep its own backoff. One in-flight attempt is shared by
+   * everyone who asks while it runs; the next caller after it settles starts a
+   * fresh one, so this is a concurrency guard, NOT a cache of the result.
+   */
   async ensureServer(): Promise<void> {
+    this.ensuring ??= this.ensureServerImpl().finally(() => {
+      this.ensuring = null
+    })
+    return this.ensuring
+  }
+
+  private async ensureServerImpl(): Promise<void> {
     const maxAttempts = 3
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -892,7 +918,15 @@ export class AdbClient {
 
   trackDevices(): DeviceTracker {
     if (!this.tracker) {
-      this.tracker = new DeviceTracker({ host: this.host, port: this.port, onLog: this.onLog })
+      this.tracker = new DeviceTracker({
+        host: this.host,
+        port: this.port,
+        onLog: this.onLog,
+        // The farm's canary: it is the one long-lived connection that notices a
+        // dead adb server within seconds, so it is also the right place to try
+        // bringing it back. Single-flighted inside `ensureServer` itself.
+        ensureServer: () => this.ensureServer(),
+      })
     }
     return this.tracker
   }

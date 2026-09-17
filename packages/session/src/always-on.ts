@@ -157,6 +157,14 @@ export interface AlwaysOnDeps {
   activities: ActivityPort
   buildsPerUsbRoot: () => number
   farmCeiling?: () => number
+  /**
+   * Is the adb server answering at all? (2026-09-17) Returning `false` stops
+   * this builder starting NEW sessions — every one of them would fail at the
+   * first adb call anyway, and on a 73-device farm the storm of doomed
+   * rebuilds is what kept the server from coming back. Omitted means "assume
+   * reachable", so an embedder that cannot tell behaves exactly as before.
+   */
+  adbReachable?: () => boolean
   log: Logger
   /** Injectable for tests; default `setTimeout`/`clearTimeout`/`Date.now`. */
   timers?: { set: (fn: () => void, ms: number) => unknown; clear: (h: unknown) => void; now: () => number }
@@ -217,6 +225,13 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
   const rng = deps.rng ?? Math.random
   /** The last device given a build slot — `rebuildOrder` starts the next pass just after it. */
   let lastStarted: BuildKey | null = null
+  /**
+   * Whether the "adb is not answering" hold has already been said. `pump()` is
+   * called on every rebuild timer and every device event, so without this the
+   * brake would write one line per call per device — the log storm it exists
+   * to prevent, in a different file.
+   */
+  let adbBrakeLogged = false
 
   /**
    * Write where a recovering build is into its activity (`meta.step`). Only
@@ -385,6 +400,28 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
 
   function pump(): void {
     if (!started) return
+    /*
+      The brake (2026-09-17). A build against a dead adb server cannot
+      succeed: it reaches step 4, never gets a first frame, and 30 s later
+      `FIRST_FRAME_TIMEOUT_MS` closes it and queues another — times 73
+      phones, each rebuild also spending five rotation-lock calls and a crash
+      watch. That is the storm the owner's farm sat in for 20 minutes.
+
+      This SKIPS a pass, it does not stop the builder: everything stays
+      queued, and the rebuild timers already armed (plus `deviceOnline`, which
+      the tracker fires the moment adb answers again) call `pump()` again.
+    */
+    if (deps.adbReachable?.() === false) {
+      if (!adbBrakeLogged) {
+        adbBrakeLogged = true
+        deps.log.warn(`always-on: the adb server is not answering — holding ${queued.length} queued build(s) until it is back`)
+      }
+      return
+    }
+    if (adbBrakeLogged) {
+      adbBrakeLogged = false
+      deps.log.info('always-on: the adb server is answering again — resuming builds')
+    }
     void refreshUsbRoots().then(() => {
       for (const deviceId of rebuildOrder(queued, deps.deviceNumber, lastStarted)) {
         if (running.size >= farmCeiling()) return

@@ -100,6 +100,18 @@ export function createDeviceHealth(deps: {
       .all()
       .filter((row) => row.quarantineReason?.startsWith('adb:'))
     if (candidates.length === 0) return
+    /*
+      Every `adb:`-quarantined device on the farm has the same possible cause
+      as the last: the adb server itself. Try to bring it back BEFORE spending
+      one `getprop` per phone against a socket that is refusing everyone —
+      otherwise this prober runs every 60 s for ever and releases nothing,
+      which is exactly what 73 phones did on 2026-09-17 until a human
+      restarted the core. Single-flighted, so the tracker doing the same thing
+      at the same moment costs one attempt between them, not two.
+
+      Swallowed: if it fails, the probes below fail too and say so per device.
+    */
+    await client.ensureServer().catch(() => {})
     const limit = Math.max(1, Math.min(8, client.stats().maxConcurrent))
     await mapWithConcurrency(candidates, limit, async (row) => {
       try {

@@ -64,6 +64,14 @@ export interface DeviceTrackerOptions {
   port: number
   /** Called for internal logging (reconnects and so on) — injected by the core. */
   onLog?: (level: 'debug' | 'warn', msg: string) => void
+  /**
+   * `AdbClient.ensureServer` — tried once per dropped connection before the
+   * backoff sleep (2026-09-17). Without it this loop reconnects against a
+   * refused socket for ever and nothing in a running farm ever restarts the
+   * adb server; see `ensureServer`'s own comment for the measured incident.
+   * Optional so a test (and any other embedder) can leave it out.
+   */
+  ensureServer?: () => Promise<void>
 }
 
 /**
@@ -114,6 +122,8 @@ export class DeviceTracker {
 
   private async runLoop(): Promise<void> {
     let backoffMs = 1000
+    /** Set by the catch below; cleared once the restart attempt has been made. */
+    let serverMayBeDown = false
     while (!this.stopped) {
       try {
         const socket = await AdbSocket.connect(this.opts.host, this.opts.port)
@@ -134,11 +144,26 @@ export class DeviceTracker {
       } catch (err) {
         if (this.stopped) return
         this.opts.onLog?.('warn', `track-devices dropped, reconnecting in ${backoffMs}ms: ${String(err)}`)
+        serverMayBeDown = true
       } finally {
         this.socket?.close()
         this.socket = null
       }
       if (this.stopped) return
+      /*
+        A dropped tracker usually means the adb server is gone, not that this
+        one socket was unlucky — every other consumer is failing at the same
+        moment. `ensureServer` connects first and only spawns `start-server`
+        when the connection is actually refused, so this costs one socket on
+        an adb that is merely busy, and repairs the farm when it is not there.
+
+        Failure is swallowed on purpose: the backoff below is the retry, and a
+        second error line per cycle would say nothing the first did not.
+      */
+      if (serverMayBeDown) {
+        serverMayBeDown = false
+        await this.opts.ensureServer?.().catch(() => {})
+      }
       await Bun.sleep(backoffMs)
       backoffMs = Math.min(backoffMs * 2, 5000)
     }

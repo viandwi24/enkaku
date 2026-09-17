@@ -100,9 +100,17 @@ export interface AdbServerHealthMonitor {
  * this file has no dependency on anything that can stop adb.
  *
  * Five symptoms, because "stuck" is not one condition (plan 88 §3.9):
- *   - `server-unreachable` — the socket is refused. Restart does NOT help:
- *     `AdbClient.ensureServer()` already self-heals a truly dead server on
- *     the farm's next command (F22) — this just names what is happening.
+ *   - `server-unreachable` — the socket is refused. This used to say a restart
+ *     does not help, because "`AdbClient.ensureServer()` already self-heals a
+ *     truly dead server on the farm's next command (F22)". That premise was
+ *     false: until 2026-09-17 `ensureServer` had exactly two callers, both at
+ *     boot, and every live path (`runOneShot`, `withSocket`, `openRaw`, the
+ *     tracker) connected raw — so nothing in a running farm ever restarted
+ *     adb. The owner's farm took three such collapses in 72 core restarts,
+ *     the earliest on 2026-09-06, each ending with a human restarting the
+ *     core. The tracker and the recovery prober now call `ensureServer` on a
+ *     refused connection, which is where the self-heal actually lives. This
+ *     monitor still only names what is happening: it starts nothing.
  *   - `server-unresponsive` — it connects but `host:version` does not
  *     answer twice in a row. This is the case the restart button exists for.
  *   - `transports-wedged` — several serials, not just one, have a streak of

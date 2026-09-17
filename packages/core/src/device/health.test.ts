@@ -151,6 +151,17 @@ describe('DeviceHealth — the recovery prober (plan 23 §3.5, §4.4.4, §6.5, �
         return 'HW-SERIAL-1'
       },
       stats: () => ({ maxConcurrent: 6, inFlight: 0, waiting: 0 }),
+      /*
+        `probeOnce` asks the client to bring a dead adb server back before it
+        spends one `getprop` per quarantined phone (2026-09-17). A no-op here:
+        these tests drive reachability through `opts.succeeds` on `exec`, and
+        the restart path itself belongs to `AdbClient`, not to this prober.
+
+        It is stubbed rather than made optional at the call site on purpose —
+        `deps.client()` is an `AdbClient`, and the `as unknown as` cast below
+        is what let this fake go missing a method the code really calls.
+      */
+      ensureServer: async () => {},
     } as unknown as AdbClient
   }
 

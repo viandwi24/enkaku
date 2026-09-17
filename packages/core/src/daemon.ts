@@ -4760,6 +4760,18 @@ let blobGc: BlobGc | null = null
           activities: activityPortAdapter,
           buildsPerUsbRoot: () => settingsStore.get().advanced.sessionBuildsPerUsbRoot,
           farmCeiling: () => Number(process.env.ENKAKU_SESSION_BUILD_CEILING ?? SESSION_BUILD_FARM_CEILING),
+          /*
+            The adb-server health monitor is already probing `host:version`
+            every `adbHealthIntervalSec` (30 s by default) and naming
+            `server-unreachable` when the socket is refused. That verdict is
+            exactly the brake always-on needs, so it is read rather than
+            probed a second time — one more connection per tick to an adb
+            that is already refusing everyone would be the opposite of help.
+
+            Before the first tick `current()` is `ZERO_HEALTH` (no symptoms),
+            so this reads `true` and the builder behaves as it always did.
+          */
+          adbReachable: () => !(adbHealthMonitor?.current().symptoms ?? []).some((s) => s.symptom === 'server-unreachable'),
           log: log.child('always-on'),
         })
 
