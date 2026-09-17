@@ -1,6 +1,6 @@
 {
   "name": "@enkaku/plugin-youtube",
-  "version": "0.39.14",
+  "version": "0.39.15",
   "private": true,
   "type": "module",
   "description": "YouTube automation pack — search and browse the YouTube app on a farm device",

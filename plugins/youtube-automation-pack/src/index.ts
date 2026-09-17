@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.14',
+  version: '0.39.15',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,40 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.15 — one overflowing node put the bottom navigation back in the
+   * search results, and 0.39.11's fix could not stop it.**
+   * `search-play` is the warm-up rotation's worst member on the owner's farm:
+   * 19 of 78 runs succeeded, and 36 of the failures read "a result was tapped
+   * but nothing that looks like a player appeared". 21 of those 36 ended on
+   * the HOME screen — the exact symptom, in the exact words, that 0.39.11's
+   * `resultRowsOf` comment says it had fixed by teaching the thumbnail branch
+   * to apply `inContentBand`.
+   *
+   * It had. The filter was never the problem: in five of six sampled runs the
+   * nav bar at y1429 was rejected correctly. The sixth is why the symptom
+   * survived — `screenHeightOf` returned **3110 on a 1600-tall screen**.
+   *
+   * MEASURED from production run 9840de90 (`03-results`, 2026-09-17): the
+   * YouTube window is `y0-1600`, and six of its own descendants —
+   * `action_bar_root`, `content`, `more_drawer_container` and their wrappers —
+   * are drawn `y1510-3110`, overflowing their window by 1510px. `isVisible`
+   * does not catch that (it only rejects degenerate bounds), so the deepest
+   * `bottom` in the tree was 3110. The band's lower edge is `height - 200`, so
+   * it moved from 1400 to 2910 and the nav bar sailed through. The other two
+   * dumps of that same run read 1600, which rules out a 3110-tall phone.
+   *
+   * `screenHeightOf` now reads the WINDOWS (the root's own children), the way
+   * `post-video.ts`'s `frameOf` always has, and keeps the whole-tree walk as
+   * the fallback for a root with no windows — the case it was written for.
+   * Verified against all five checked-in real fixtures: every one still reads
+   * 1640, so nothing but the overflowing tree changes.
+   *
+   * Three other shapes hide under the same error message and are NOT fixed
+   * here, because each is one or six of 36: a tap landing on a row's overflow
+   * menu (1), on a sponsored card that opens Chrome (1), and on a channel card
+   * that opens the account page (1). Naming them is not fixing them; they need
+   * their own measurements.
    *
    * **0.39.14 — five members blamed five different things for one Play Store
    * sheet, and a channel row that was a video row.**

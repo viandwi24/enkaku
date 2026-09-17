@@ -268,7 +268,36 @@ const BOTTOM_NAV_BAND = 200
  * field that looked safe to read.
  */
 export function screenHeightOf(tree: UiNode): number {
+  /*
+    The WINDOWS say the height, not the deepest node (0.39.15).
+
+    Taking the furthest `bottom` in the whole tree trusts every descendant to
+    stay inside its own window, and on this app they do not. MEASURED from
+    production run 9840de90 (`03-results`, 2026-09-17): the YouTube window is
+    `y0-1600`, and six of its own descendants — `action_bar_root`, `content`,
+    `more_drawer_container` and their wrappers — are drawn `y1510-3110`,
+    overflowing their window by 1510px. `isVisible` does not catch it (it only
+    rejects degenerate bounds), so the height read 3110 on a 1600-tall screen.
+
+    That number is the input to `inContentBand` and `isTappable`, so the band's
+    lower edge moved from 1400 to 2910 and the BOTTOM NAVIGATION at y1429 —
+    which 0.39.11 had just taught `resultRowsOf` to exclude — passed straight
+    back through it. `search-play` then drew a nav icon as row 0, tapped
+    **Home**, and failed "a result was tapped but nothing that looks like a
+    player appeared" while sitting on the home screen: the exact symptom, and
+    the exact wording, that 0.39.11's own comment says it had fixed.
+
+    The other artifacts of that same run (`01-home`, `02-search-open`) read
+    1600 correctly, which is what rules out "this phone is 3110 tall".
+
+    The windows are the root's own children, and `post-video.ts`'s `frameOf`
+    has always read them this way for the same reason. The old whole-tree walk
+    stays as the fallback for a root that carries no windows at all — that case
+    is what this function was originally written for, and it is still real.
+  */
   let height = 0
+  for (const window of tree.children) if (window.bounds.bottom > height) height = window.bounds.bottom
+  if (height > 0) return height
   for (const node of flatten(tree)) if (node.bounds.bottom > height) height = node.bounds.bottom
   return height
 }

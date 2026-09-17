@@ -33,6 +33,45 @@ describe('screenHeightOf', () => {
     expect(results.bounds.bottom).toBe(0)
     expect(screenHeightOf(results)).toBe(1640)
   })
+
+  /*
+    The windows say the height, not the deepest node (0.39.15).
+
+    MEASURED from production run 9840de90 (`03-results`, 2026-09-17, a 720x1600
+    phone): the YouTube window is `y0-1600`, and six of its own descendants —
+    `action_bar_root`, `content`, `more_drawer_container` and their wrappers —
+    are drawn `y1510-3110`, overflowing their window by 1510px. The other two
+    dumps of that same run (`01-home`, `02-search-open`) read 1600, which is
+    what rules out "the phone is 3110 tall".
+
+    The height is the input to `inContentBand`, so 3110 moved the band's lower
+    edge from 1400 to 2910 and the bottom navigation at y1429 passed back
+    through the filter 0.39.11 had just added. `search-play` drew a nav icon as
+    row 0, tapped Home, and failed "a result was tapped but nothing that looks
+    like a player appeared" — 21 of 36 such failures landed on the home screen.
+
+    Hand-built, unlike every fixture above it, because the tree behind it is a
+    production artifact this repo has no read path to. What is hand-built is
+    only the GEOMETRY, and every number in it was measured rather than guessed.
+  */
+  const node = (partial: Partial<UiNode>): UiNode => ({
+    resourceId: '', text: '', desc: '', className: 'android.widget.FrameLayout', packageName: 'com.google.android.youtube',
+    bounds: { left: 0, top: 0, right: 720, bottom: 1600 }, clickable: false, enabled: true, focused: false, index: 0, children: [], ...partial,
+  })
+
+  test('a descendant drawn past its own window does not inflate the screen height', () => {
+    const overflow = node({ resourceId: 'com.google.android.youtube:id/action_bar_root', bounds: { left: 0, top: 1510, right: 720, bottom: 3110 } })
+    const tree = node({ className: 'hierarchy', packageName: '', bounds: { left: 0, top: 0, right: 0, bottom: 0 }, children: [node({ children: [overflow] })] })
+    // Not vacuous: the overflowing node really is in the tree, and really does reach 3110.
+    expect(overflow.bounds.bottom).toBe(3110)
+    expect(screenHeightOf(tree)).toBe(1600)
+  })
+
+  test('a root carrying no windows still falls back to the deepest node', () => {
+    // The case this function was originally written for, kept working.
+    const tree = node({ className: 'hierarchy', packageName: '', bounds: { left: 0, top: 0, right: 0, bottom: 0 }, children: [] })
+    expect(screenHeightOf(tree)).toBe(0)
+  })
 })
 
 describe('hasResultRows — the readiness test that three earlier versions got wrong', () => {
