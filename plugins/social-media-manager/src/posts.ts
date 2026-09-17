@@ -280,6 +280,21 @@ export const PlatformStateSchema = z
     /** Why it is in this state, shown verbatim in the Posts table. Null when there is nothing to explain. */
     note: z.string().max(500).nullable(),
     /**
+     * When this platform first had a turn it could not take (0.47.0), unix seconds.
+     *
+     * It exists because nothing else on a row that has never been sent carries a
+     * clock: `at` is "the moment of the dispatch" and stays null, and the row's
+     * `notBeforeAt` is when its TURN came, which on a session started hours ago
+     * says nothing about how long the phone has actually been unreachable.
+     *
+     * Optional, not defaulted into `PENDING_STATE`: every state in this file is
+     * built as a literal in eight places and asserted whole in the tests, so a
+     * required field would mean touching all of them to add a value none of them
+     * has an opinion about. The same shape `startedAt` and `manual` take on
+     * `AttemptSchema` for the same reason.
+     */
+    waitingSince: z.number().int().nonnegative().nullable().optional(),
+    /**
      * WHERE it ran and HOW it went, in one line — `#3 moto g06 power · posted`,
      * `2 phones · 1 posted, 1 failed`.
      *
@@ -431,6 +446,22 @@ export function withDeviceNames(state: PlatformState, names: ReadonlyMap<string,
   })
   return changed ? { ...state, attempts: next } : state
 }
+
+/**
+ * How long a row whose OWN phone is unreachable keeps waiting before the router
+ * stops waiting and records a failure (0.47.0).
+ *
+ * The owner's production farm, 2026-09-17: rows pinned to phones that were
+ * offline — or gone from the farm entirely — sat at "Waiting" indefinitely with
+ * no way out. Start only stamps rows that have no turn yet, and "Retry failed"
+ * only re-sends attempts that actually failed, so a row that had never been sent
+ * was reachable by neither button.
+ *
+ * Long on purpose. A phone is routinely offline for a few minutes — a reboot, a
+ * cable, a warm-up run holding it — and calling that a failure would invent one.
+ * Three quarters of an hour is longer than any of those and shorter than a shift.
+ */
+export const GIVE_UP_AFTER_SEC = 45 * 60
 
 export const PENDING_STATE: PlatformState = withSummary({ state: 'pending', at: null, deviceCount: 0, attempts: [], history: [], note: null, summary: null })
 
@@ -1180,9 +1211,12 @@ export function planDispatch(input: {
    * own phone reads "busy", never "not connected any more".
    */
   busy?: ReadonlySet<string>
+  /** Overrides `GIVE_UP_AFTER_SEC` — the tests set it small; nothing in the product does. */
+  giveUpAfterSec?: number
 }): DispatchPlan {
   const { post, devices, now, maxDevicesPerPlatform } = input
   const busy = input.busy ?? new Set<string>()
+  const giveUpAfterSec = input.giveUpAfterSec ?? GIVE_UP_AFTER_SEC
   const plan: DispatchPlan = { dispatches: [], states: {}, note: null }
   // The first explanation any platform produces this tick wins the post-level
   // note. First rather than last, and rather than a joined list of all of
@@ -1288,11 +1322,74 @@ export function planDispatch(input: {
         : devices.some((d) => deviceCarriesPlatform(d.labels, platform))
         ? `Every phone labelled "${platform.label}" is offline or busy. Waiting.`
         : `No phone carries the "${platform.label}" label yet. Add it on the Devices screen and this will send itself.`
+      /*
+        How long this platform has been unable to take its turn.
+
+        Carried on the state rather than recomputed, because the only other
+        clocks on an unsent row answer different questions (see `waitingSince`).
+        A wait that is already running keeps its start: the phone going from
+        "offline" to "not in the farm at all" changes the WORDING, not the fact
+        that the same row has been standing still since the same moment.
+      */
+      const since = current.state === 'pending' && current.waitingSince != null ? current.waitingSince : now
+      /*
+        Waits that can end on their own, and waits that cannot.
+
+        A phone that is merely BUSY — a job, a warm-up, an operator watching it —
+        frees itself, and calling that a failure would invent one. A phone that is
+        OFFLINE, or no longer part of this farm, will not free itself by waiting:
+        it needs a person. Only the second kind is given up on, and only for a row
+        that has a phone of its OWN. A row that named several phones has no single
+        account to record a failure against, and guessing one would write the
+        wrong phone into a real post's history.
+      */
+      const ownPhone = assigned !== null
+      const phoneGone = ownPhone && allowed.length === 0
+      const phoneOffline = ownPhone && allowed.length > 0 && allowed.every((d) => d.status !== 'online')
+      if ((phoneGone || phoneOffline) && now - since >= giveUpAfterSec) {
+        const waitedMin = Math.round((now - since) / 60)
+        /*
+          Recorded as an attempt, not as a bare `failed` state, and that is the
+          whole point of the shape: `failedDevices` reads ATTEMPTS, so a state
+          word alone would leave the row red and still unreachable by "Retry
+          failed". `unqueued:` is this file's existing prefix for an attempt that
+          never reached the farm's queue (`retry-failed.ts`), and `isJobGone`
+          already reads it as settled, so no reconciler ever asks `job.get` about
+          a job that was never created.
+        */
+        const attempt: Attempt = {
+          jobId: `unqueued:${assigned as string}`,
+          deviceId: assigned as string,
+          deviceName: null,
+          state: 'failed',
+          error: phoneGone
+            ? `Its phone has not been part of this farm for ${waitedMin} minutes, so nothing was sent. Reconnect that phone and press Retry failed, or use Edit to give this video a different one.`
+            : `Its phone has been offline for ${waitedMin} minutes, so nothing was sent. Bring it back online and press Retry failed.`,
+          at: now,
+          settledAt: now,
+          round: nextRound(current),
+        }
+        const attempts = [attempt]
+        const settled = rollUp(attempts)
+        plan.states[platformId] = withSummary({
+          state: settled,
+          at: now,
+          deviceCount: 1,
+          attempts,
+          history: current.history,
+          note: platformNote(settled, attempts, note),
+          summary: null,
+        })
+        noteOnce(attempt.error as string)
+        continue
+      }
       // Only write when the WORDING changes — the two notes above distinguish
       // "you have not labelled anything" from "they are all busy", which is the
       // difference between a setup mistake and a normal, self-resolving wait.
-      if (current.state !== 'pending' || current.note !== note) {
-        plan.states[platformId] = withSummary({ state: 'pending', at: null, deviceCount: 0, attempts: [], history: current.history, note, summary: null })
+      // `waitingSince` joins that test: a row that has never carried one is
+      // stamped once, so the clock above starts the first tick it stands still.
+      if (current.state !== 'pending' || current.note !== note || current.waitingSince == null) {
+        plan.states[platformId] = withSummary({ state: 'pending', at: null, deviceCount: 0, attempts: [], history: current.history, note, summary: null, waitingSince: since })
       }
       noteOnce(note)
       continue

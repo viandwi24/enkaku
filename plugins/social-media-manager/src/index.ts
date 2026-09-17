@@ -78,6 +78,50 @@ import {
  *
  * ## Changelog
  *
+ * - **0.47.0 — the router read one page of post rows, so a farm that outgrew
+ *   that page had rows it could never see; and a row whose own phone was gone
+ *   waited for it forever.** Both were found on the owner's production farm,
+ *   2026-09-17, on one session that read "waiting" and would not move.
+ *
+ *   **The invisible rows.** `runTick` called `storage.global.list({ prefix:
+ *   'post:', limit: 200 })` once and stopped, while `start-group`,
+ *   `retry-group`, `update-group` and `resolve-attempt` all walked every page.
+ *   The store sorts keys ascending, so the TAIL of the ordering simply did not
+ *   exist as far as the router was concerned. Measured: 224 rows from 8
+ *   sessions sharing the prefix, and six DUE rows of the newest session sat at
+ *   positions 202-218 — four of them with an online, idle phone already
+ *   assigned. No button could reach them either: Start only stamps rows with no
+ *   turn yet (all 73 already had one, so it reported "nothing to start"), and
+ *   Retry failed only re-sends attempts that actually failed, and these had
+ *   never been sent at all. `readAllPostRows` now pages like its four siblings.
+ *
+ *   **The endless wait.** A row pinned to a phone that is offline, or no longer
+ *   in the farm, cannot be rescued by waiting — it needs a person — but nothing
+ *   said so and nothing ended it. After `GIVE_UP_AFTER_SEC` (45 minutes) the
+ *   router now records a failure against that phone, carrying the reason and
+ *   the way out ("bring it back online and press Retry failed", or "use Edit to
+ *   give this video a different one"). The cell turns red, and Retry failed
+ *   picks it up beside the genuine failures — which is the whole point of the
+ *   SHAPE: it is written as an ATTEMPT, not as a bare `failed` word, because
+ *   `failedDevices` reads attempts. A state word alone would have left the row
+ *   red and still unreachable. The `unqueued:` job id is this plugin's existing
+ *   prefix for an attempt that never reached the queue (`retry-failed.ts`), and
+ *   `isJobGone` already reads it as settled, so no reconciler ever asks the farm
+ *   about a job that was never created. The router leaves `failed` alone, so
+ *   this escalates once and never loops.
+ *
+ *   **What it deliberately does NOT do**, each pinned by a test proven to fail
+ *   when the guard is removed: a phone that is merely BUSY frees itself, so it
+ *   is never given up on however long the wait; and a label-routed row has no
+ *   single phone to blame, so no failure is written against one. Both would
+ *   have meant inventing a failure on a real account's history.
+ *
+ *   `waitingSince` is the clock this needed and the row did not have: `at` means
+ *   "the moment of the dispatch" and stays null on a row never sent, and
+ *   `notBeforeAt` is when the TURN came, which says nothing about how long a
+ *   phone has been unreachable. Optional, so none of the eight places that build
+ *   a `PlatformState` literal had to change and every stored row still parses.
+ *
  * - **0.46.0 — four activities the packs already shipped were never wired into
  *   the rotation, and one style's title named an activity it did not run.**
  *   The owner (2026-09-17) asked for every platform's activities to be complete
@@ -860,8 +904,31 @@ const DEFAULT_AUTO_POST_SETTINGS: AutoPostSettings = { version: 1, enabled: fals
  */
 const POLL_MS = 15_000
 
-/** How many post rows one tick will consider. A farm with more than this has a backlog problem the router cannot fix by reading harder. */
-const MAX_POSTS_PER_TICK = 200
+/**
+ * How many post rows one PAGE of the router's read carries. It is not a ceiling
+ * on what a tick considers: `readAllPostRows` below walks every page.
+ *
+ * It used to be that ceiling, and the ceiling was a silent trap. The store sorts
+ * keys ascending (`kv/store.ts`), so a farm whose `post:` rows outgrew one page
+ * had the TAIL of that ordering permanently invisible to the router — never
+ * dispatched, never even given a note saying why, and reachable by no button:
+ * Start only stamps rows that have no turn yet, and Retry only re-sends attempts
+ * that actually failed. Measured on the owner's farm (2026-09-17): 224 rows from
+ * 8 sessions sharing this prefix, and six DUE rows of the newest session sat at
+ * positions 202-218 — four of them with an online, idle phone already assigned.
+ *
+ * `start-group`, `retry-group`, `update-group` and `resolve-attempt` all paged
+ * correctly; the router was the one reader that did not.
+ */
+const POST_PAGE_SIZE = 200
+
+/**
+ * The most rows one tick will hold in memory, across all pages. A farm past this
+ * has a real backlog the router cannot fix by reading harder — but the limit is
+ * stated here rather than hidden in a page size, and it is far above any farm
+ * this plugin has seen (the owner's busiest held 224).
+ */
+const MAX_POST_ROWS_PER_TICK = 5_000
 
 /**
  * Enough of `device.list`'s output to route, declared locally rather than
@@ -1079,6 +1146,27 @@ async function readGroups(ctx: PluginServiceContext): Promise<Map<string, Group>
  * `queued` forever — the platform pinned at `dispatched`, the retry's outcome
  * invisible on the very screen that offered the button.
  */
+type PostRowEntries = Awaited<ReturnType<PluginServiceContext['storage']['global']['list']>>['items']
+
+/**
+ * Every `post:` row, across every page the store has — the same `do/while`
+ * cursor walk `start-group`, `retry-group`, `update-group` and `resolve-attempt`
+ * already use. See `POST_PAGE_SIZE` for what reading one page only did to a
+ * farm that outgrew it.
+ */
+async function readAllPostRows(ctx: PluginServiceContext): Promise<PostRowEntries> {
+  const items: PostRowEntries = []
+  let cursor: string | null = null
+  do {
+    const opts: { prefix: string; limit: number; cursor?: string } = { prefix: POST_PREFIX, limit: POST_PAGE_SIZE }
+    if (cursor !== null) opts.cursor = cursor
+    const page = await ctx.storage.global.list(opts)
+    items.push(...page.items)
+    cursor = page.nextCursor
+  } while (cursor !== null && items.length < MAX_POST_ROWS_PER_TICK)
+  return items
+}
+
 async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, options: { dispatch: boolean; enabled: boolean }): Promise<void> {
   let fleet: z.infer<typeof DeviceListOutput>
   try {
@@ -1095,9 +1183,9 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
   }
   const names = fleetNames(fleet)
 
-  let listed: Awaited<ReturnType<typeof ctx.storage.global.list>>
+  let listed: { items: PostRowEntries }
   try {
-    listed = await ctx.storage.global.list({ prefix: POST_PREFIX, limit: MAX_POSTS_PER_TICK })
+    listed = { items: await readAllPostRows(ctx) }
   } catch (err) {
     ctx.log.warn('router tick could not read the post rows — skipping this tick', { error: messageOf(err) })
     return
@@ -1482,7 +1570,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.46.0',
+  version: '0.47.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

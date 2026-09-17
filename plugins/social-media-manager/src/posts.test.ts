@@ -21,6 +21,7 @@ import {
   unassignedNote,
   HISTORY_LIMIT,
   nextRound,
+  GIVE_UP_AFTER_SEC,
   pickAssignment,
   withRetired,
   postKeyFor,
@@ -211,6 +212,125 @@ describe('planDispatch — the routing rules', () => {
     expect(plan.dispatches.map((d) => `${d.platform}:${d.deviceId}`)).toEqual(['tiktok:d1', 'instagram:d2'])
     expect(plan.states.tiktok?.state).toBe('dispatched')
     expect(plan.states.instagram?.state).toBe('dispatched')
+  })
+})
+
+describe('planDispatch — giving up on a wait that cannot end (0.47.0)', () => {
+  /*
+    The owner's production farm, 2026-09-17: rows pinned to a phone that was
+    offline — or gone from the farm — sat at "Waiting" with no way out. Start
+    only stamps rows that have no turn yet; "Retry failed" only re-sends
+    attempts that actually failed. A row that had never been sent was reachable
+    by neither button, so it waited forever.
+
+    Two of the tests below are GUARDS, not features: a phone that is merely busy
+    frees itself, and a label-routed row has no single phone to blame. Escalating
+    either would invent a failure on a real account's history.
+  */
+  const mine = (over: Partial<Post> = {}): Post => post({ assignedDeviceId: 'd1', maxDevices: 1, ...over })
+  const waited = (state: Partial<PlatformState> = {}): Partial<Post> => ({
+    dispatch: { tiktok: { state: 'pending', at: null, deviceCount: 0, attempts: [], history: [], note: 'waiting', summary: null, waitingSince: NOW - 3600, ...state } },
+  })
+
+  test('its own phone offline past the deadline becomes a failure a retry can pick up', () => {
+    const plan = planDispatch({
+      post: mine(waited()),
+      devices: [device({ id: 'd1', status: 'offline' })],
+      now: NOW,
+      maxDevicesPerPlatform: 5,
+      giveUpAfterSec: 600,
+    })
+    expect(plan.dispatches).toEqual([])
+    const state = plan.states.tiktok
+    expect(state?.state).toBe('failed')
+    // The shape is what makes it reachable: `failedDevices` reads ATTEMPTS, so a
+    // bare `failed` word would leave the row red and still un-retryable.
+    expect(state?.attempts).toHaveLength(1)
+    expect(state?.attempts[0]?.jobId).toBe('unqueued:d1')
+    expect(state?.attempts[0]?.state).toBe('failed')
+    expect(state?.attempts[0]?.error).toContain('offline for 60 minutes')
+    expect(failedDevices(state as PlatformState)).toEqual(['d1'])
+  })
+
+  test('a phone the farm no longer has says so in different words, and names the way out', () => {
+    const plan = planDispatch({ post: mine(waited()), devices: [], now: NOW, maxDevicesPerPlatform: 5, giveUpAfterSec: 600 })
+    expect(plan.states.tiktok?.state).toBe('failed')
+    expect(plan.states.tiktok?.attempts[0]?.error).toContain('not been part of this farm')
+    expect(plan.states.tiktok?.attempts[0]?.error).toContain('Edit')
+  })
+
+  test('before the deadline it is still waiting, and the clock is stamped on the state', () => {
+    const plan = planDispatch({
+      post: mine(waited({ waitingSince: NOW - 60 })),
+      devices: [device({ id: 'd1', status: 'offline' })],
+      now: NOW,
+      maxDevicesPerPlatform: 5,
+      giveUpAfterSec: 600,
+    })
+    expect(plan.states.tiktok?.state ?? 'pending').toBe('pending')
+    expect(plan.states.tiktok?.attempts ?? []).toEqual([])
+  })
+
+  test('a row that has never carried a clock is stamped once, and the stamp starts the wait', () => {
+    const plan = planDispatch({
+      post: mine({ dispatch: { tiktok: { state: 'pending', at: null, deviceCount: 0, attempts: [], history: [], note: null, summary: null } } }),
+      devices: [device({ id: 'd1', status: 'offline' })],
+      now: NOW,
+      maxDevicesPerPlatform: 5,
+      giveUpAfterSec: 600,
+    })
+    expect(plan.states.tiktok?.state).toBe('pending')
+    expect(plan.states.tiktok?.waitingSince).toBe(NOW)
+  })
+
+  /** GUARD. A busy phone frees itself; calling that a failure would invent one. */
+  test('a phone that is merely BUSY is never given up on, however long the wait', () => {
+    const plan = planDispatch({
+      post: mine(waited({ waitingSince: NOW - 86_400 })),
+      devices: [device({ id: 'd1', status: 'online', activities: [{ kind: 'job' }] })],
+      now: NOW,
+      maxDevicesPerPlatform: 5,
+      giveUpAfterSec: 600,
+    })
+    expect(plan.states.tiktok?.state ?? 'pending').toBe('pending')
+    expect(plan.states.tiktok?.attempts ?? []).toEqual([])
+  })
+
+  /**
+   * GUARD. No single phone to blame, so no failure is written against one.
+   *
+   * The phone here is OFFLINE, deliberately: with a merely busy one this test
+   * would pass on the busy guard above and prove nothing about this one.
+   */
+  test('a label-routed row is never given up on, even when its whole fleet is offline', () => {
+    const plan = planDispatch({
+      post: post(waited() as Partial<Post>),
+      devices: [device({ id: 'd1', status: 'offline' })],
+      now: NOW,
+      maxDevicesPerPlatform: 5,
+      giveUpAfterSec: 600,
+    })
+    expect(plan.states.tiktok?.state ?? 'pending').toBe('pending')
+    expect(plan.states.tiktok?.attempts ?? []).toEqual([])
+  })
+
+  test('the clock does not restart when only the WORDING of the wait changes', () => {
+    const started = NOW - 500
+    const plan = planDispatch({
+      post: mine(waited({ waitingSince: started, note: 'Waiting for this video\'s phone, which is offline or busy.' })),
+      devices: [],
+      now: NOW,
+      maxDevicesPerPlatform: 5,
+      giveUpAfterSec: 600,
+    })
+    // The phone went from "offline" to "not in the farm at all" — a different
+    // sentence about the same unbroken wait, so the deadline has not moved.
+    expect(plan.states.tiktok?.state).toBe('pending')
+    expect(plan.states.tiktok?.waitingSince).toBe(started)
+  })
+
+  test('the product default is long enough that a reboot is never called a failure', () => {
+    expect(GIVE_UP_AFTER_SEC).toBeGreaterThanOrEqual(30 * 60)
   })
 })
 
