@@ -1298,4 +1298,66 @@ describe('SessionManager — silence watchdog wiring', () => {
     expect(makes).toBe(1)
     await manager.closeAll()
   })
+
+  /*
+    A failed restart must reject ONCE (2026-09-17).
+
+    `restartAt` hands `pending` to two consumers: the `await` its callers wrap in
+    try/catch, and the housekeeping chain that clears `upgrading`. `finally`
+    FORWARDS a rejection, so a rebuild that failed rejected twice — once into
+    `restartSilentEntry`, which handled it and logged "video stalled and the
+    restart failed", and once out of the bookkeeping branch, which nobody was
+    listening to. That second copy hit `process.on('unhandledRejection')`, could
+    not be attributed to a plugin, and `runtime-host.ts`'s rethrow — correctly
+    restoring what the runtime does bare — killed the whole core.
+
+    Measured on the owner's farm, 2026-09-17 06:44: one phone's adb went quiet
+    for 3 s and the process exited with four jobs still running on OTHER phones.
+  */
+  test('a restart that fails rejects into its caller and NOT as an unhandled rejection', async () => {
+    const { timers, advance } = fakeTimers()
+    const first = countingScrcpy()
+    let makes = 0
+    const ended: string[] = []
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => void unhandled.push(reason)
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const manager = createSessionManager({
+        client: fakeClient(),
+        devices,
+        log: silentLog(),
+        timers,
+        // The first build succeeds; the REBUILD fails, the way a phone whose adb
+        // stopped answering fails it.
+        makeScrcpy: async () => {
+          if (makes++ === 0) return first.session
+          throw new Error('no adb status within 3000ms')
+        },
+        onSessionEnded: (_id, reason) => void ended.push(reason),
+        silenceWatchdog: { keyframeAfterMs: 15_000, restartAfterMs: 10_000 },
+      })
+      await manager.build(DEVICE_ID, { requireScrcpy: true })
+      await manager.attachViewer(DEVICE_ID, 'wall', () => {})
+      first.emit('config')
+      first.emit('keyframe')
+
+      // Past the keyframe nudge, then past the restart deadline.
+      advance(SILENCE_CHECK_EVERY_MS * 7)
+      advance(SILENCE_CHECK_EVERY_MS * 4)
+      // Long enough for the rejection to settle AND for an unhandled-rejection
+      // tick to fire if one was going to.
+      await new Promise((r) => setTimeout(r, 120))
+
+      // Not vacuous, twice over: the rebuild really was attempted, and it really
+      // did fail into the caller that owns the failure.
+      expect(makes).toBe(2)
+      expect(ended.some((r) => r.includes('video stalled and the restart failed'))).toBe(true)
+      // The whole point: exactly one delivery, to the owner of the failure.
+      expect(unhandled).toEqual([])
+      await manager.closeAll()
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
 })

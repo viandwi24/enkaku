@@ -755,7 +755,30 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         entries.set(key, fresh)
       })()
       upgrading.set(key, pending)
-      void pending.finally(() => upgrading.delete(key))
+      /*
+        The bookkeeping branch must NOT re-raise (2026-09-17).
+
+        `pending` has two consumers: the `await` below, which every caller
+        wraps (`restartSilentEntry` catches it, `reprofile` and the quality
+        upgrade await it inside their own try), and this housekeeping chain.
+        `finally` FORWARDS a rejection, so a failed rebuild rejected twice:
+        once into the caller, which handled it, and once out of here, which
+        nobody was listening to. That second copy reached
+        `process.on('unhandledRejection')`, could not be attributed to a
+        plugin, and `runtime-host.ts`'s rethrow — correctly restoring what the
+        runtime does bare — took the WHOLE CORE down with it.
+
+        Measured on the owner's farm, 2026-09-17 06:44: one phone's adb went
+        quiet for 3 s, `restartSilentEntry` logged "video stalled and the
+        restart failed" exactly as designed, and one second later the process
+        exited with four jobs still running on other phones. A single device's
+        transient failure must never be able to do that.
+
+        `.catch` before `.finally`, the same shape `rotationInFlight` above
+        already uses. The caller still sees the real rejection; only this
+        branch is silenced, because it has nothing to say.
+      */
+      void pending.catch(() => undefined).finally(() => upgrading.delete(key))
     }
     await pending
   }
