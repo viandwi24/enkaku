@@ -84,7 +84,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.16',
+  version: '0.39.17',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -93,6 +93,47 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.39.17 — 0.39.16 is reverted: the text ladder cannot carry this title,
+   * and the reason is worth more than the revert.**
+   * 0.39.16 dropped `via: 'adb'` from the title's `type` so the ladder would
+   * pick rung 2 (scrcpy `INJECT_TEXT`). On the host it looked like a large win
+   * — the call returned in 855 ms where `adb-ascii` took 6608 ms for the same
+   * 100 characters on the same screen.
+   *
+   * It is not a win, and the dry runs said so twice:
+   *
+   * - 0.39.14 (`adb-ascii`), same phone, same video, same title: SUCCEEDED,
+   *   reaching `details` and leaving without Upload (job 212d9f3e).
+   * - 0.39.16 (`scrcpy-text`), same everything: FAILED, twice, identically —
+   *   "waiting for the keyboard to close left the details screen" with the
+   *   phone in YouTube's THUMBNAIL EDITOR (jobs aec223df and a90d26e4, runs
+   *   87802933 and d477c4bc; the captured tree carries `edit_thumbnail_back`
+   *   "Exit thumbnail editor" and a "Processing" spinner).
+   *
+   * Why: `injectText` hands ONE message to the scrcpy control socket and
+   * returns. The text then arrives through the device's IME as COMPOSING text.
+   * `yt-09-titled`, taken 1.5 s AFTER that call returned, shows 29 of 100
+   * characters in the field, a live cursor, and Gboard's suggestion strip open
+   * on "scalpi | scalping". So 855 ms is the host handing over a message, not
+   * the text landing — the two numbers were never comparable, and every check
+   * after the call races characters still on their way. The stray characters
+   * and their spaces reach the thumbnail once focus moves, and a space there
+   * opens the thumbnail editor: exactly the failure above.
+   *
+   * And it is not a sleep away. Composing text means a later space commits
+   * what the IME SUGGESTS rather than what was typed —
+   * `instagram-automation-pack` recorded the same damage from the same rung on
+   * a production run, "#fyp #tra rtro" (2026-09-14). That pack was left alone
+   * in 0.39.16 for that reason; this entry is the second, independent
+   * confirmation of it.
+   *
+   * `input text` is slow precisely because it COMMITS: when `AdbInput.text()`
+   * returns, the title is in the field. That is what this screen needs, and
+   * 6608 ms inside a ~2 s focus window is a separate, real problem that this
+   * revert does NOT solve — it is still the owner's reported "keyboard
+   * bergetar … akhirnya back dan jadi draft". Whatever fixes it must keep
+   * synchronous delivery.
    *
    * **0.39.16 — the title was typed through the slowest path there is, because
    * one walk's finding was generalised past what it measured.**

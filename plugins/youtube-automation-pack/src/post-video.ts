@@ -219,23 +219,37 @@ const FOCUS_SETTLE_MS = 400
 const KEYBOARD_GONE_MS = 3_500
 
 /**
- * ADB_ONLY — the details screen TAPS go through Android's own injection.
+ * ADB_ONLY — the details screen takes input only through Android's own injection.
  *
  * Measured on the owner's moto, 2026-09-11, five routed runs and a bench
  * session: a farm tap (scrcpy UHID) on the title field never focused it, and
  * even once focused the guest agent's keyboard committed nothing — the typed
  * keys then reached the focused thumbnail and a space opened the thumbnail
- * editor. `input tap` focused the field at once. So the details-screen taps
- * (title, keyboard dismissal, Upload) go `via: 'adb'`, and that finding is
- * untouched.
+ * editor. `input tap` focused the field at once and `input text` typed into
+ * it. So the details-screen taps (title, keyboard dismissal, Upload) and the
+ * title text go `via: 'adb'`, and nowhere else in this member does.
  *
- * The TITLE TEXT no longer does (0.39.16). That walk tested two things — a
- * scrcpy UHID *tap* and the guest agent's *IME* — and neither is the text
- * ladder's rung 2, `INJECT_TEXT`, which hands the whole string to the scrcpy
- * control socket in one message. `via: 'adb'` short-circuits the ladder
- * before it is ever consulted (`packages/session/src/device-executor.ts`, the
- * `call.args.via === 'adb'` branch), so rung 2 had never run on this screen.
- * Measured here 2026-09-17 — see the 0.39.16 changelog entry.
+ * **The text ladder was tried here and it does not work — do not try it again
+ * without reading this.** 0.39.16 dropped `via` from the title's `type` so the
+ * ladder would pick rung 2 (scrcpy `INJECT_TEXT`, the whole string in one
+ * control message). It is much cheaper on the host: the call returned in
+ * 855 ms where `adb-ascii` took 6608 ms. Both dry runs that used it FAILED
+ * identically, and the baseline run on the same phone, video and title
+ * succeeded (0.39.14). See 0.39.17's changelog entry for the measurements.
+ *
+ * The reason is that `injectText` is not a synchronous delivery at all — it
+ * hands ONE message to the control socket and returns, and the text then
+ * arrives through the device's IME as COMPOSING text. `yt-09-titled`, taken
+ * 1.5 s after that call returned, shows 29 of 100 characters in the field, a
+ * live cursor and Gboard's suggestion strip open on "scalpi | scalping". So
+ * the 855 ms measures the host handing over a message, never the text landing
+ * — and every check after it races characters still arriving.
+ *
+ * Composing text is also why this is not merely a timing bug to sleep through:
+ * a later space commits whatever the IME is suggesting rather than what was
+ * typed. `instagram-automation-pack`'s own comment records the same damage
+ * from the same rung on a production run — "#fyp #tra rtro" (2026-09-14) —
+ * which is independent evidence from another app's caption field.
  */
 
 /** The title as `input text` can carry it: printable ASCII, whitespace collapsed. */
@@ -1579,23 +1593,18 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     await ctx.device.tap({ point: titlePoint }, { via: 'adb' })
     await sleep(FOCUS_SETTLE_MS)
     /*
-      The whole title in ONE control message (0.39.16). With no `via`, the text ladder picks rung 2
-      — scrcpy `INJECT_TEXT` — and `ScrcpyInput.text()` is a single `injectText(s)`: no per-character
-      key events, no `input text` invocations, no adb round trips. That matters because this screen
-      is where the focus window bites: a 100-character title measured 6608 ms here through
-      `adb-ascii` (run dac11dd8, 2026-09-17) against a focus window the walk measured at about two
-      seconds, while the same text through the ladder landed whole in 587-708 ms.
+      A long title (0.31.0). A ~100-character spaced title is seconds of `input text` on a slow
+      SM-A075F — it can outlast the focus window. The adb driver now sends it in pieces of at most
+      20 characters cut at spaces (`packages/drivers/src/input/adb-input.ts`, `TEXT_CHUNK`), each a
+      short command. Focus is deliberately NOT re-checked between pieces: the only reading that could
+      say "still focused" is this hidden window, which says nothing, so a check would cost a dump per
+      piece and prove nothing. A title that outlasts the window uploads cut, and the channel check
+      then finds no cell carrying the whole title — `unverified`, never `posted`.
 
-      Focus still cannot be re-checked between anything — the only reading that could say "still
-      focused" is this window, which says nothing. The point is that there is now almost nothing to
-      check BETWEEN: one message replaces five `input text` commands. A title that still outlasts
-      the window uploads cut, and the channel check then finds no cell carrying the whole title —
-      `unverified`, never `posted`.
-
-      `asciiTitle` stays. Rung 2 is unicode-clean and would carry more, but the channel check
-      compares what it typed against what the cell shows, and ASCII is what both sides agreed on.
+      Slow, and deliberately so: `input text` COMMITS each piece before returning, so when this call
+      returns the whole title is in the field. The ladder's rung 2 does not (see ADB_ONLY above).
     */
-    const typed = await ctx.device.type(title, { instant: true })
+    const typed = await ctx.device.type(title, { via: 'adb', instant: true })
     ctx.log.info('typed the title', { via: typed.via })
     await sleep(1_500)
     await ctx.artifact.screenshot('yt-09-titled')
@@ -1679,7 +1688,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         if (held === '') {
           await ctx.device.tap({ point: titlePoint }, { via: 'adb' })
           await sleep(FOCUS_SETTLE_MS)
-          await ctx.device.type(title, { instant: true })
+          await ctx.device.type(title, { via: 'adb', instant: true })
           ctx.log.info('typed the title again, into a field read empty')
           await sleep(1_500)
         } else if (held !== null && sameTitle(held, title)) {
