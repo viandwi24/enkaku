@@ -13,34 +13,37 @@ import { hasOverlay, useOverlay } from '@/lib/overlays'
  */
 
 /**
- * How long a COLLAPSE waits to see whether a second click is coming.
+ * Clicking an item TOGGLES it, and nothing else on the surface does
+ * (owner, 2026-09-17).
  *
- * This used to gate every click on every row, so selecting a device the
- * operator had not selected yet — the common gesture, and the one with
- * nothing to disambiguate — cost 200ms of visible lag (owner, 2026-09-06).
- * Now it gates only the one gesture that genuinely cannot be told apart from
- * the start of a double-click: a plain click on a device that is ALREADY in
- * the selection, whose meaning is "drop the other members".
+ * The row and the card used to behave like a file manager: a plain click
+ * replaced the whole selection, and building a multi-select meant either
+ * holding a modifier or finding the table's checkbox column. So an operator
+ * who clicked one phone and then another was left holding the second one
+ * alone — the first selection gone, with nothing on screen saying why — and
+ * the only reliable way to pick five phones was five checkboxes, a control
+ * the Screens grid never had at all.
  *
- * That distinction is what fixes retargeting the control window. With three
- * devices selected and the window on one of them, double-clicking a second
- * one used to fire this timer first: the selection collapsed to that single
- * device, and the double-click then retargeted against a mirror that no
- * longer existed — so the host appeared not to change at all when the
- * operator double-clicked the device the window was already on. The collapse
- * is now pending when `onItemDoubleClick` cancels it, so the mirror survives
- * and `retargetSelection` sees the set the operator actually has.
+ * Now the whole item IS the checkbox: a click adds a device that is not in
+ * the selection and removes one that is, in both views, with or without a
+ * modifier. The table's per-row checkbox column is gone with it (plan 214's
+ * grid, minus its first column), because a checkbox inside a surface that
+ * already toggles is a second control for the same act.
+ *
+ * Two gestures are left untouched and must stay that way: a marquee still
+ * REPLACES the selection with what it covers (shift keeps the base), and a
+ * double-click still opens Device Control without disturbing the selection
+ * at all — see `lastToggleRef`.
  */
-export const CLICK_DEFER_MS = 200
 /** "A 5px threshold distinguishes a drag from a click." */
 export const DRAG_THRESHOLD_PX = 5
 
 /**
  * Controls that own their own mousedown. A press on one of these is never a
- * row/card click and never the start of a marquee: the table's checkboxes,
- * a card's agent chip, any link or field. Without this, a press on the
- * header's select-all checkbox started a marquee that cleared the selection
- * on mouseup, a moment before the checkbox's own click re-applied it.
+ * row/card click and never the start of a marquee: the table header's
+ * select-all checkbox, a card's agent chip, any link or field. Without this,
+ * a press on that checkbox started a marquee that cleared the selection on
+ * mouseup, a moment before the checkbox's own click re-applied it.
  */
 const INTERACTIVE_SELECTOR =
   'button, a[href], input, textarea, select, label, [role="checkbox"], [role="button"], [role="menuitem"], [contenteditable=""], [contenteditable="true"], [data-no-marquee]'
@@ -67,11 +70,9 @@ export interface DeviceSelection {
   /** Replaces the whole set. */
   set: (ids: string[]) => void
   clear: () => void
-  /** A direct, immediate toggle — the table's own checkbox, never the deferred row click. */
-  toggle: (id: string) => void
-  /** Row/card `onMouseDown`: applies the selection (immediately, unless the gesture could still be a double-click) and starts the potential marquee. */
+  /** Row/card `onMouseDown`: toggles the device in or out of the selection, and starts the potential marquee. */
   onItemMouseDown: (id: string, e: React.MouseEvent) => void
-  /** Row/card `onDoubleClick`: cancels a pending collapse and calls `onOpenControl` with the selection as it stands. */
+  /** Row/card `onDoubleClick`: undoes the toggle its own first click applied, then calls `onOpenControl` with the selection the operator actually had. */
   onItemDoubleClick: (id: string) => void
   /**
    * The scroller's `onMouseDown` — the table's and the Screens grid's alike:
@@ -113,7 +114,19 @@ export function useDeviceSelection(opts: {
   const selectedRef = useRef<ReadonlySet<string>>(selected)
   selectedRef.current = selected
 
-  const pendingRef = useRef<{ id: string; x: number; y: number; timer: ReturnType<typeof setTimeout> } | null>(null)
+  /**
+   * What the last item click did, so a double-click can put it back.
+   *
+   * A double-click is two clicks, and the first one has already toggled the
+   * device by the time the second arrives — a device the operator
+   * double-clicks to OPEN would otherwise land in the selection (or drop out
+   * of it) as a side effect. `onItemDoubleClick` reverts exactly this entry,
+   * which is why the mirror it hands to Device Control is the selection as it
+   * stood before the gesture: `retargetSelection` can then keep a
+   * multi-select the device belonged to, and collapse to the one device when
+   * it did not (design handoff README:243-245, unchanged by this rewrite).
+   */
+  const lastToggleRef = useRef<{ id: string; added: boolean } | null>(null)
   const dragRef = useRef<{
     origin: { x: number; y: number }
     base: string[]
@@ -123,21 +136,6 @@ export function useDeviceSelection(opts: {
 
   const set = useCallback((ids: string[]) => setSelected(new Set(ids)), [])
   const clear = useCallback(() => setSelected(new Set()), [])
-  const toggle = useCallback((id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }, [])
-
-  const clearPending = useCallback(() => {
-    if (pendingRef.current) {
-      clearTimeout(pendingRef.current.timer)
-      pendingRef.current = null
-    }
-  }, [])
 
   /**
    * The live drag's listener subscription.
@@ -243,77 +241,70 @@ export function useDeviceSelection(opts: {
   const onItemMouseDown = useCallback(
     (id: string, e: React.MouseEvent) => {
       if (e.button !== 0 || isInteractiveTarget(e.target)) return
-      clearPending()
-      const additive = e.shiftKey || e.metaKey || e.ctrlKey
       const x = e.clientX
       const y = e.clientY
 
       /**
-       * Two gestures, only one of which is ambiguous.
+       * One rule for every click: toggle. No modifier changes it, because
+       * the surface itself is the checkbox now (see the header of this file),
+       * and there is nothing left for a modifier to mean on an item.
        *
-       * A click that ADDS (shift/cmd/ctrl, or a plain click on a device not
-       * currently selected) can only mean one thing, so it applies now — that
-       * is the gesture an operator makes constantly, and deferring it was the
-       * whole of the felt lag.
-       *
-       * A plain click on a device already in the selection means "drop the
-       * others", and is indistinguishable from the first half of a
-       * double-click, whose meaning is the opposite: keep the others and move
-       * the window here (`retargetSelection`). Only that one waits.
+       * `e.detail` is the click count the browser has already worked out for
+       * this mousedown, so the SECOND press of a double-click is skipped here
+       * rather than deferred: the 200ms `CLICK_DEFER_MS` timer this replaces
+       * had to guess, and made every ambiguous click feel slow. The first
+       * press still toggles — `onItemDoubleClick` puts that back.
        */
-      const collapses = !additive && selectedRef.current.has(id)
-
-      if (!collapses) {
+      if (e.detail < 2) {
+        const added = !selectedRef.current.has(id)
+        lastToggleRef.current = { id, added }
         setSelected((prev) => {
-          if (!additive) return new Set([id])
           const next = new Set(prev)
-          if (next.has(id)) next.delete(id)
-          else next.add(id)
+          if (added) next.add(id)
+          else next.delete(id)
           return next
         })
-        // Still tracked below, so a drag started from this row promotes to a
-        // marquee exactly as before.
-        pendingRef.current = null
       }
 
-      const timer = collapses
-        ? setTimeout(() => {
-            pendingRef.current = null
-            // `size === 1` and already holding this id: the click is a
-            // deselect, unchanged from before.
-            setSelected((prev) => (prev.has(id) && prev.size === 1 ? new Set() : new Set([id])))
-          }, CLICK_DEFER_MS)
-        : null
-      if (timer) pendingRef.current = { id, x, y, timer }
-
-      // A move past the threshold before the timer fires promotes this
-      // gesture to a marquee instead (rule 1).
-      // One subscription, torn down by whichever of the three exits comes
+      // A move past the threshold promotes this gesture to a marquee. The
+      // toggle above stands (it is already in `base`), but it is no longer
+      // revertible: a drag is not the first half of a double-click.
+      // One subscription, torn down by whichever of the two exits comes
       // first — the same reason `startDrag` uses one (see `dragListenersRef`).
       const ac = new AbortController()
       const onMoveCheck = (ev: MouseEvent) => {
         const dx = ev.clientX - x
         const dy = ev.clientY - y
         if (Math.hypot(dx, dy) <= DRAG_THRESHOLD_PX) return
-        clearPending()
+        lastToggleRef.current = null
         ac.abort()
         startDrag(e)
       }
       document.addEventListener('mousemove', onMoveCheck, { signal: ac.signal })
       document.addEventListener('mouseup', () => ac.abort(), { signal: ac.signal, once: true })
     },
-    [clearPending, startDrag],
+    [startDrag],
   )
 
   const onItemDoubleClick = useCallback(
     (id: string) => {
-      // Cancels the pending collapse FIRST, so the set handed over is the one
-      // the operator built, not the single device the collapse was about to
-      // leave behind.
-      clearPending()
-      onOpenControl?.(id, [...selectedRef.current])
+      // Reverts this gesture's own first click, so opening the window leaves
+      // the selection exactly as the operator built it — and so the set
+      // handed over is the one `retargetSelection` has to read to tell
+      // "already part of the selection" from "not".
+      const last = lastToggleRef.current
+      lastToggleRef.current = null
+      let before = selectedRef.current
+      if (last && last.id === id) {
+        const reverted = new Set(before)
+        if (last.added) reverted.delete(id)
+        else reverted.add(id)
+        before = reverted
+        setSelected(reverted)
+      }
+      onOpenControl?.(id, [...before])
     },
-    [clearPending, onOpenControl],
+    [onOpenControl],
   )
 
   const onMarqueeMouseDown = useCallback(
@@ -345,7 +336,6 @@ export function useDeviceSelection(opts: {
 
   useEffect(() => {
     return () => {
-      clearPending()
       // Same fix as `endDrag`: the two `removeEventListener` calls that used
       // to live here named render-0's functions and removed nothing, so a
       // screen unmounted mid-drag left its listeners on `document` forever.
@@ -356,7 +346,7 @@ export function useDeviceSelection(opts: {
   }, [])
 
   return useMemo(
-    () => ({ selected, set, clear, toggle, onItemMouseDown, onItemDoubleClick, onMarqueeMouseDown, rect }),
-    [selected, set, clear, toggle, onItemMouseDown, onItemDoubleClick, onMarqueeMouseDown, rect],
+    () => ({ selected, set, clear, onItemMouseDown, onItemDoubleClick, onMarqueeMouseDown, rect }),
+    [selected, set, clear, onItemMouseDown, onItemDoubleClick, onMarqueeMouseDown, rect],
   )
 }
