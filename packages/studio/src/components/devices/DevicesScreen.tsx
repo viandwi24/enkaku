@@ -301,7 +301,6 @@ export function DevicesScreen() {
           onItemDoubleClick={selection.onItemDoubleClick}
           onMarqueeMouseDown={selection.onMarqueeMouseDown}
           onItemContextMenu={openContextMenu}
-          onToggle={selection.toggle}
           onSelectAll={(checked) => (checked ? selection.set(filteredIds) : selection.clear())}
           queuedFor={queuedFor}
         />

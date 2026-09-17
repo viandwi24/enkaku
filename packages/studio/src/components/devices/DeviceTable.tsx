@@ -1,13 +1,22 @@
 'use client'
 
 import { connectionBadge, type DeviceInfo } from '@enkaku/protocol'
-import { Checkbox, LabelChip, StatusDot, cn, formatDeviceName } from '@enkaku/ui'
+import { Checkbox, LabelChip, StatusDot, cn } from '@enkaku/ui'
 import { dotStateOf, dotTooltipOf } from './device-state'
 import { TaskCell } from './TaskCell'
 
-/** The handoff's grid, character for character. Two `fr` columns, so it cannot be a `<table>` (plan 214 §4.8). */
+/**
+ * The handoff's grid, character for character, minus its first column. Two
+ * `fr` columns, so it cannot be a `<table>` (plan 214 §4.8).
+ *
+ * The 38px checkbox gutter is gone (owner, 2026-09-17): clicking the row
+ * toggles it, so a checkbox on every row was a second control for the same
+ * act, and the Screens grid never had one to match. Select-all survives in
+ * the `#` header cell, which is why that column is wider than the two digits
+ * it holds.
+ */
 const COLS =
-  'grid grid-cols-[38px_44px_1.3fr_1fr_108px_92px_138px_70px_74px_62px_62px_62px_76px_1.1fr] items-center'
+  'grid grid-cols-[70px_1.3fr_1fr_108px_92px_138px_70px_74px_62px_62px_62px_76px_1.1fr] items-center'
 
 const HEAD = 'px-2 text-left text-label font-medium text-faint'
 const MONO = 'px-2 font-mono text-[12px] text-text-3'
@@ -37,7 +46,6 @@ export function DeviceTable({
   onItemDoubleClick,
   onMarqueeMouseDown,
   onItemContextMenu,
-  onToggle,
   onSelectAll,
   queuedFor,
 }: {
@@ -54,8 +62,6 @@ export function DeviceTable({
   onMarqueeMouseDown: (e: React.MouseEvent) => void
   /** Right-click on a row: opens the device context menu at the cursor. */
   onItemContextMenu: (id: string, e: React.MouseEvent) => void
-  /** The checkbox's own direct toggle — immediate, not the deferred row click. */
-  onToggle: (id: string) => void
   onSelectAll: (checked: boolean) => void
   queuedFor: (deviceId: string) => number
 }) {
@@ -63,12 +69,12 @@ export function DeviceTable({
 
   return (
     <div className="min-h-0 flex-1 select-none overflow-auto" onMouseDown={onMarqueeMouseDown}>
-      <div role="table" className="min-w-[1460px]">
+      <div role="table" className="min-w-[1448px]">
         <div role="row" className={cn(COLS, 'sticky top-0 z-10 h-[38px] border-b border-line bg-panel-2')}>
-          <div className="flex items-center justify-center">
-            <Checkbox checked={allSelected} onCheckedChange={(v) => onSelectAll(Boolean(v))} />
+          <div className="flex items-center gap-2 px-2">
+            <Checkbox checked={allSelected} onCheckedChange={(v) => onSelectAll(Boolean(v))} aria-label="Select all devices" />
+            <span className="text-label font-medium text-faint">#</span>
           </div>
-          <span className={HEAD}>#</span>
           <span className={HEAD}>Device</span>
           <span className={HEAD}>Labels</span>
           <span className={HEAD}>Serial</span>
@@ -83,7 +89,7 @@ export function DeviceTable({
           <span className={HEAD}>Task</span>
         </div>
 
-        {devices.map((device, index) => {
+        {devices.map((device) => {
           const isSelected = selected.has(device.id)
           const offline = device.status === 'offline'
           return (
@@ -103,25 +109,29 @@ export function DeviceTable({
               )}
             >
               {/*
-                `onMouseDown` as well as `onClick`, and the mousedown is the one
-                that matters. The row's own `onMouseDown` starts the deferred
-                200ms click (`useDeviceSelection`), and stopping only `click`
-                let that timer through: the checkbox toggled the device IN, then
-                the row's deferred handler replaced the whole selection with
-                that one device — or, when it was already the only one selected,
-                cleared it. So a checkbox could not build a multi-selection at
-                all, and ticking a single box selected then instantly
-                deselected it. Found while wiring the right-click menu, which
-                is meant to act on exactly the selection a checkbox builds.
+                The device's OWN number, not its position in this list.
+
+                This cell used to render `index + 1`, which looked right on the
+                All tab and was wrong everywhere else: switching to a group tab
+                renumbered the whole fleet from 01, so `#03` meant a different
+                phone under every tab, and matched nothing written on the
+                phone's own label (owner, 2026-09-17). `device.number` is the
+                durable key (`device_numbers.number`, CLAUDE.md's
+                `$device.number` rule); a device with no reservation shows `—`
+                rather than inventing one.
+
+                It carries the `#` because it is now the only place the number
+                appears on the row — the Device cell beside it dropped
+                `formatDeviceName`'s `#N ` prefix, which was printing the
+                number twice on a row that already had a column for it.
               */}
-              <div className="flex items-center justify-center" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
-                <Checkbox checked={isSelected} onCheckedChange={() => onToggle(device.id)} />
-              </div>
-              <span className="px-2 font-mono text-[11.5px] text-faint">{String(index + 1).padStart(2, '0')}</span>
+              <span className="px-2 font-mono text-[12px] font-medium text-text-3">
+                {device.number == null ? <span className="text-faint-2">—</span> : `#${String(device.number).padStart(2, '0')}`}
+              </span>
               <div className="flex min-w-0 items-center gap-2 px-2">
                 <StatusDot state={dotStateOf(device)} title={dotTooltipOf(device)} />
                 <div className="min-w-0">
-                  <div className="truncate text-row font-medium text-text">{formatDeviceName(device.number, device.label)}</div>
+                  <div className="truncate text-row font-medium text-text">{device.label}</div>
                   <div className="truncate text-label text-faint">{device.model ?? device.stableId}</div>
                 </div>
               </div>
