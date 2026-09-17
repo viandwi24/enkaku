@@ -172,11 +172,72 @@ const escapeForRegex = (v: string): string => v.replace(/[.*+?^${}()|[\]\\]/g, '
  * that already matched, never on every video, because a session that opens every comment section is
  * neither a useful signal nor a human-looking one.
  */
-/** The comment sheet's own title — the one word that says the sheet is still up (1.49.0). */
-const COMMENT_SHEET_TITLES = ['Komentar', 'Comments', 'Comment']
+/**
+ * Strip the bidirectional marks Android puts in front of counted labels, which `trim()` does not
+ * (1.50.0). MEASURED on the owner's moto g06 (`screen-comment-sheet.json`): the sheet's own title is
+ * `"‎16 komentar"` — a LEFT-TO-RIGHT MARK, then the count. `"‎16 komentar".trim()` still
+ * begins with U+200E, so every comparison against it failed silently.
+ */
+function plain(s: string): string {
+  return s.replace(/[‎‏؜⁦-⁩]/g, '').trim()
+}
 
-function commentSheetShowing(tree: UiNode): boolean {
-  return flatten(tree).some((n) => COMMENT_SHEET_TITLES.includes(n.text.trim()) || COMMENT_SHEET_TITLES.includes(n.desc.trim()))
+/**
+ * Is the comment sheet up? (rewritten 1.50.0)
+ *
+ * 1.49.0 looked for a node whose whole text was `Komentar`. There is no such node. The real sheet,
+ * dumped from the owner's phone with the sheet plainly open, carries `"‎16 komentar"` (the
+ * COUNT, bidi-marked) as its title and `"Tambahkan komentar..."` as its input — so the predicate
+ * answered `false` on the very screen it exists to recognise, `leaveCommentSheet` returned without
+ * pressing anything, and the phone sat in the comments until the run ended. The owner's wall showed
+ * a dozen phones parked there at once, some with the reply field focused.
+ *
+ * Matched on a CONTAINED word, not an exact one, because the title is a count in every locale, and
+ * on the sheet's own close button as a second, independent witness. Deliberately NOT on the obfuscated
+ * ids this dump also carries (`id/w5r`, `id/bqo`): TikTok regenerates those every build, so pinning to
+ * them would make this fail again on the next update, silently, exactly as 1.49.0 did.
+ */
+const COMMENT_SHEET_WORDS = /\b(komentar|comments?)\b/i
+
+export function commentSheetShowing(tree: UiNode): boolean {
+  return flatten(tree).some((n) => {
+    const text = plain(n.text)
+    /*
+      Only sheet-shaped nodes count, and only their `text`.
+
+      NOT the close button on its own: "Tutup"/"Close" is `interruptions.ts`'s `CLOSE_LABELS`, carried
+      by every modal this app raises, and a false positive here costs a BACK press on the bare feed —
+      which leaves TikTok, the one recovery this member must never invent.
+
+      NOT `desc` either: the FEED's own rail button is `desc: "Baca atau tambahkan komentar. 279
+      komentar"`, so reading descriptions would call the closed feed an open sheet.
+
+      What is left is the sheet's own two nodes: the counted title (`text`, not clickable, has a
+      digit) and the input placeholder (an EditText).
+    */
+    if (n.className === 'android.widget.EditText' && COMMENT_SHEET_WORDS.test(text)) return true
+    return !n.clickable && COMMENT_SHEET_WORDS.test(text) && /\d/.test(text)
+  })
+}
+
+/** The sheet's own close control — `content-desc` "Tutup"/"Close", clickable. The one thing that closes it without BACK. */
+export function closeButton(n: UiNode): boolean {
+  const d = plain(n.desc).toLowerCase()
+  return n.clickable && (d === 'tutup' || d === 'close')
+}
+
+/**
+ * Is a reply being composed? (1.50.0)
+ *
+ * This pack NEVER replies to a comment — comments are opened, read, and closed, on every platform.
+ * So a focused input, or TikTok's "Membalas <name>" placeholder, is always an accident that must be
+ * backed out of rather than something to finish. Three phones on the owner's wall were sitting in
+ * exactly this state with the farm's keyboard up.
+ */
+export function replyComposerShowing(tree: UiNode): boolean {
+  return flatten(tree).some(
+    (n) => (n.className === 'android.widget.EditText' && n.focused) || /^membalas\b|^replying to\b/i.test(plain(n.text)) || /^membalas\b|^replying to\b/i.test(plain(n.desc)),
+  )
 }
 
 /**
@@ -192,7 +253,7 @@ function commentSheetShowing(tree: UiNode): boolean {
  * member must never invent.
  */
 async function leaveCommentSheet(ctx: ScriptContext<unknown>, rng: () => number): Promise<void> {
-  for (let step = 0; step < 3; step++) {
+  for (let step = 0; step < 4; step++) {
     let tree: UiNode | null = null
     try {
       tree = await ctx.device.dump()
@@ -206,12 +267,26 @@ async function leaveCommentSheet(ctx: ScriptContext<unknown>, rng: () => number)
       return
     }
     const keyboard = keyboardWindowShowing(tree)
-    if (!keyboard && !commentSheetShowing(tree)) return
-    ctx.log.info(keyboard ? 'closing the keyboard the comment field opened' : 'closing the comment sheet')
-    await ctx.device.key('BACK')
+    const replying = replyComposerShowing(tree)
+    if (!keyboard && !replying && !commentSheetShowing(tree)) return
+
+    /*
+      The sheet's own close button, when it is there (1.50.0). BACK closes the KEYBOARD first when one
+      is up, which is what left 1.49.0 pressing once and leaving the sheet behind; tapping "Tutup"
+      closes the sheet itself in one move and needs no guess about what BACK will hit. This is the
+      ladder `youtube-automation-pack`'s `COMMENTS_CLOSE_RUNGS` has always had and this member did not.
+    */
+    const closer = !keyboard && !replying ? flatten(tree).find(closeButton) : undefined
+    if (closer) {
+      ctx.log.info('closing the comment sheet with its own close button')
+      await ctx.device.tap({ point: { x: Math.round((closer.bounds.left + closer.bounds.right) / 2), y: Math.round((closer.bounds.top + closer.bounds.bottom) / 2) } })
+    } else {
+      ctx.log.info(replying ? 'backing out of a reply this member never meant to start' : keyboard ? 'closing the keyboard the comment field opened' : 'closing the comment sheet')
+      await ctx.device.key('BACK')
+    }
     await sleep(Math.round(between(rng, 500, 1_100)))
   }
-  ctx.log.warn('the comment sheet was still readable after three BACK presses — carrying on, the feed check below decides')
+  ctx.log.warn('the comment sheet was still readable after four attempts — carrying on, the feed check below decides')
 }
 
 async function browseComments(
@@ -235,14 +310,24 @@ async function browseComments(
     await sleep(Math.round(between(rng, 900, 2_600)))
     const x = Math.round(between(rng, 0.25, 0.7) * frame.width)
     /*
-      Both ends stay ABOVE the input box (1.49.0). "Tambahkan komentar…" sits at roughly 0.50–0.57h
-      with its emoji row just above it, and a swipe that ended there put the caret in the field and
-      brought the farm's keyboard up — the phone the owner found parked in the comments. Ending at
-      0.30–0.42h reads the same list without ever finishing on the field.
+      Clear of the "Balas" column (1.50.0), which is what 1.49.0 actually walked into.
+
+      1.49.0 moved this swipe to 0.72h → 0.30–0.42h "because Tambahkan komentar sits at roughly
+      0.50–0.57h". That measurement was wrong. MEASURED from a real dump of the open sheet
+      (`screen-comment-sheet.json`, moto g06, 720×1640): the input box is at y1465–1519 (0.89–0.93h),
+      far BELOW where the comment said — and the five "Balas" buttons sit at y802, y944, y1086,
+      y1228 and y1370, x170–262. So 1.49.0 dragged the finger from 1180 up through three of them,
+      inside the x-range it draws from (0.25–0.7w = 180–504). A touch that begins or settles on one
+      opens the reply composer, which is why the owner's wall showed phones sitting on
+      "Membalas <name>" with the keyboard up.
+
+      This pack never replies to a comment. So the swipe now stays in the band ABOVE the topmost
+      reply button and below the sheet's title: 0.46h → 0.26–0.36h. Same list, same reading, no
+      clickable control anywhere in the path.
     */
     await ctx.device.swipe(
-      { x, y: Math.round(0.72 * frame.height) },
-      { x, y: Math.round(between(rng, 0.30, 0.42) * frame.height) },
+      { x, y: Math.round(0.46 * frame.height) },
+      { x, y: Math.round(between(rng, 0.26, 0.36) * frame.height) },
       Math.round(between(rng, 220, 420)),
       { easing: 'easeInOutCubic' },
     )
@@ -976,6 +1061,37 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.50.0 — the comment sheet is recognised, closed with its own button, and no longer swiped
+  //   across "Balas". The owner's wall, 2026-09-17: a dozen phones parked in TikTok's comments mid
+  //   warm-up, several sitting on "Membalas <name>" with the farm's keyboard up — a reply this pack
+  //   must never start. Comments are opened, read and closed, on every platform. Three faults, all
+  //   measured against a dump of the real open sheet (`screen-comment-sheet.json`, moto g06, 720×1640,
+  //   id-ID), which is also the first fixture of that screen this repo has ever had:
+  //
+  //   1. `commentSheetShowing` looked for a node whose whole text is "Komentar". No such node exists.
+  //      The title is the COUNT — `"‎16 komentar"`, a LEFT-TO-RIGHT MARK then the number — and
+  //      `trim()` does not remove U+200E, so the comparison could never hold. The predicate answered
+  //      `false` on the very screen it exists to recognise, `leaveCommentSheet` returned without
+  //      pressing anything, and `auto-scroll`'s recovery (which hangs its second BACK on the same
+  //      predicate) never fired either. The phone then read a screen that is not the feed, round and
+  //      round, which is the minute-long stall the owner saw. It now matches a CONTAINED word on the
+  //      sheet's own two nodes — the counted title and the input placeholder — never on `desc` (the
+  //      FEED's rail button is `desc: "Baca atau tambahkan komentar. 279 komentar"`) and never on a
+  //      close button alone (every modal has one; a false positive costs a BACK on the bare feed,
+  //      which leaves TikTok).
+  //   2. The sheet has a real close control (`content-desc` "Tutup", clickable) and this member never
+  //      used it, unlike `youtube-automation-pack`'s `COMMENTS_CLOSE_RUNGS`. `leaveCommentSheet` now
+  //      taps it when no keyboard is in the way, falls back to BACK, and gets a fourth attempt.
+  //   3. The swipe crossed the reply buttons. 1.49.0 moved it to 0.72h → 0.30–0.42h "because
+  //      Tambahkan komentar sits at roughly 0.50–0.57h". That measurement was wrong: the input is at
+  //      y1465–1519 (0.89–0.93h), and the five "Balas" buttons are at y802, y944, y1086, y1228 and
+  //      y1370, x170–262 — inside the 0.25–0.7w the swipe draws from. So it dragged through three of
+  //      them every pass. The band is now 0.46h → 0.26–0.36h, above the topmost one, and
+  //      `comments.test.ts` asserts the old band crossed three and the new one crosses none.
+  //
+  //   `replyComposerShowing` is new and backs out of a composer whatever opened it, so a stray tap
+  //   from any source ends in a BACK rather than a focused field. There were no tests for any of
+  //   this before — not for the predicate, not for the close, not for the geometry.
   // 1.49.13 — the tree is saved at the step that actually broke, not only at the end.
   //   1.49.12 captured a dump in `list-accounts`' own failure paths, and it paid immediately — but it
   //   revealed the gap it did not close. `openSwitchAccountSheet` fails through `sheet.ts`'s
@@ -1495,7 +1611,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.49.13',
+  version: '1.50.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
