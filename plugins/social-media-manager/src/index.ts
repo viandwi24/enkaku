@@ -78,6 +78,35 @@ import {
  *
  * ## Changelog
  *
+ * - **0.50.0 — thirty phones read as "the YouTube You tab did not open" while
+ *   their You tab was wide open and signed in.** The account chip is called
+ *   `Ganti akun` on an Indonesian build, and `YOUTUBE_ACCOUNT_LABELS` knew only
+ *   `Akun` / `Account` / `Accounts`. `labelled` matches a whole label, so none
+ *   of them matched, the wait timed out, and the run blamed the tab.
+ *
+ *   This is the SAME defect 0.45.0 fixed for English (`account` never matched
+ *   the plural `Accounts`) reappearing in the other language — which is why the
+ *   farm split almost exactly in half: every English phone succeeded, every
+ *   Indonesian one failed.
+ *
+ *   Measured, not guessed: the tree a failing run had already saved (job
+ *   ffa62df6, artifact `accounts-youtube-no-you-tab`) carries
+ *   `desc='Ganti akun'`, clickable, `[23,350][214,410]`, on a page showing
+ *   `Lihat channel` and a real signed-in channel. The evidence was sitting in
+ *   the artifact the whole time; the error message is what kept anyone from
+ *   reading it.
+ *
+ *   The match stays EXACT. `Akun Google` is clickable 16 px away and opens
+ *   Google's account settings, not YouTube's sheet — a substring match on
+ *   "akun" would tap it. `Switch account` is added unmeasured, as the English
+ *   wording of the same chip.
+ *
+ *   And the message now tells the two failures apart: the page carries
+ *   `Lihat channel` / `View channel` whether or not its chip is one we know, so
+ *   a tab that opened with an unfamiliar chip says exactly that and saves
+ *   `accounts-youtube-no-account-chip`, rather than claiming the tab never
+ *   opened.
+ *
  * - **0.49.0 — YouTube finally looks at its own notifications and account page,
  *   like the other two platforms already did.** The rotation was lopsided and
  *   had been since it was written: TikTok reaches `notification-activity`,
@@ -1615,7 +1644,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.49.0',
+  version: '0.50.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

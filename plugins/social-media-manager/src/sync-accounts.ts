@@ -261,39 +261,70 @@ async function readInstagram(ctx: ScriptContext<unknown>): Promise<Reading> {
   return { accounts: numbered.accounts, evidence: 'confirmed' }
 }
 
+/**
+ * Every spelling the You page's account chip has been MEASURED to carry.
+ *
+ * ## Why this list keeps growing, and why it stays exact
+ *
+ * `labelled` matches a whole label, lowercased — never a substring. That is not fussiness: on the
+ * Indonesian build the chip `Ganti akun` sits 16 px from a clickable `Akun Google`, and a loose
+ * match on "akun" taps Google's account settings instead of YouTube's sheet. Exact matching is what
+ * keeps those apart, and the cost of it is that every real spelling has to be listed here.
+ *
+ * - `Accounts` — owner's moto g06, `en-US`, 2026-09-17 (0.45.0 added it; `account` singular never
+ *   matched the plural and every English phone failed until it did).
+ * - `Ganti akun` — production farm, Indonesian build, 2026-09-18, from the tree saved by a failing
+ *   run (job ffa62df6, `accounts-youtube-no-you-tab`): `desc='Ganti akun'`, clickable,
+ *   `[23,350][214,410]`, with `Akun Google` clickable at `[230,350][442,410]` beside it. That
+ *   screen was signed in as a real channel and its You tab was plainly open — the run still
+ *   reported "the YouTube You tab did not open", which is why roughly thirty phones read as
+ *   unreadable while every English phone succeeded.
+ * - `Switch account` — the English wording of `Ganti akun`. NOT measured; listed because a farm
+ *   that meets it should work rather than wait for another round of this.
+ * - `Akun` / `Account` — kept. Neither has been measured on a build that also lacks the others, and
+ *   dropping a spelling that may still be in use is how a fix for one language breaks another.
+ */
+export const YOUTUBE_ACCOUNT_LABELS = ['Akun', 'Account', 'Accounts', 'Ganti akun', 'Switch account'] as const
+
+/**
+ * Proof the You page itself is on screen, whatever its account chip happens to be called.
+ *
+ * `Lihat channel` / `View channel` is on that page in both builds captured so far and nowhere else
+ * this member walks, so it separates "the tab never opened" from "the tab opened and the chip had a
+ * name we do not know" — two failures that shared one misleading message until 2026-09-18.
+ */
+export const YOUTUBE_YOU_PAGE_LABELS = ['Lihat channel', 'View channel'] as const
+
+/** The You page's account chip, or null when none of the known spellings is on screen. */
+export function youtubeAccountChip(tree: UiNode): UiNode | null {
+  return labelled(tree, YOUTUBE_ACCOUNT_LABELS)
+}
+
+/** Is the You page itself on screen? */
+export function onYouTubeYouPage(tree: UiNode): boolean {
+  return labelled(tree, YOUTUBE_YOU_PAGE_LABELS) !== null
+}
+
 /** YouTube: the You tab's account chip opens the account sheet. */
 async function readYouTube(ctx: ScriptContext<unknown>): Promise<Reading> {
   await launch(ctx, PACKAGES.youtube)
   const home = await waitFor(ctx, (t) => labelled(t, ['Anda', 'You']) !== null, 25_000)
   if (!home.ok || !home.tree) throw new Error('YouTube did not show its bottom navigation')
-  /*
-    'Accounts' — PLURAL — and it is the whole bug (0.45.0).
-
-    `labelled` matches a label EXACTLY (`wanted.includes(n.desc.trim().toLowerCase())`), so 'account'
-    can never match 'accounts'. Walked by hand on the owner's moto g06 with YouTube in `en-US` on
-    2026-09-17: the You tab opens fine, and its control reads `desc='Accounts'`, clickable, at
-    (105,112) with NO resourceId at all — only that description to find it by.
-
-    So this predicate said the tab had not opened, `you.ok` came back false, and the member reported
-    "the YouTube You tab did not open" over a tab that was plainly on screen, saving an artifact
-    named `accounts-youtube-no-you-tab`. That wrong name is what sent me looking at the READER first;
-    the reader was always correct — tapping 'Accounts' by hand produced a sheet carrying every id it
-    wants (`title`='Accounts', `add_account`, `name`, `channel_handle`, `selection_checkmark`, and a
-    row whose desc reads "Selected account: …", which its bilingual regex already matches).
-
-    Confirmed on hardware TWICE with the network up (ping 8.8.8.8, 0% loss), so this is not the
-    connectivity outage that clouded the earlier run.
-
-    'Akun' and 'Account' are KEPT: the Indonesian spelling of this control has not been measured, and
-    dropping a spelling that may still be in use is how a fix for one language breaks another.
-  */
-  const ACCOUNTS_LABELS = ['Akun', 'Account', 'Accounts'] as const
-  const you = await tapLabel(ctx, home.tree, ['Anda', 'You'], (t) => labelled(t, ACCOUNTS_LABELS) !== null, 15_000)
+  const you = await tapLabel(ctx, home.tree, ['Anda', 'You'], (t) => youtubeAccountChip(t) !== null, 15_000)
   if (!you.ok || !you.tree) {
-    await capture(ctx, 'accounts-youtube-no-you-tab', you.tree)
-    throw new Error('the YouTube You tab did not open')
+    /*
+      Two different failures wore one name until 2026-09-18, and the wrong one sent every
+      investigation to the wrong place. Say which happened.
+    */
+    const reached = you.tree !== null && onYouTubeYouPage(you.tree)
+    await capture(ctx, reached ? 'accounts-youtube-no-account-chip' : 'accounts-youtube-no-you-tab', you.tree)
+    throw new Error(
+      reached
+        ? 'the YouTube You tab opened but no account chip on it carried a label this pack knows — see artifact accounts-youtube-no-account-chip'
+        : 'the YouTube You tab did not open',
+    )
   }
-  const sheet = await tapLabel(ctx, you.tree, ACCOUNTS_LABELS, (t) => youtubeAccountSheetShowing(t), 12_000)
+  const sheet = await tapLabel(ctx, you.tree, YOUTUBE_ACCOUNT_LABELS, (t) => youtubeAccountSheetShowing(t), 12_000)
   if (!sheet.ok || !sheet.tree) {
     await capture(ctx, 'accounts-youtube-no-account-sheet', sheet.tree)
     throw new Error('the YouTube account sheet did not open')
