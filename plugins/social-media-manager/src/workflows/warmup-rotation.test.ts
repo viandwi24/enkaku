@@ -41,7 +41,7 @@ describe('smm/warmup-rotation — the document itself', () => {
    */
   test('stays under the node limit, with the headroom named', () => {
     expect(doc.nodes.length).toBeLessThanOrEqual(WORKFLOW_LIMITS.maxNodes)
-    expect({ nodes: doc.nodes.length, limit: WORKFLOW_LIMITS.maxNodes }).toEqual({ nodes: 41, limit: 50 })
+    expect({ nodes: doc.nodes.length, limit: WORKFLOW_LIMITS.maxNodes }).toEqual({ nodes: 43, limit: 50 })
   })
 
   test('every shuffle member names a node that exists', () => {
@@ -103,6 +103,28 @@ describe('smm/warmup-rotation — what each platform actually runs (0.46.0)', ()
   test('the two members proven to fail on hardware are NOT wired', () => {
     expect(refs.has('tiktok/live-browse@latest')).toBe(false)
     expect(refs.has('youtube/scroll-live@latest')).toBe(false)
+  })
+
+  /*
+    0.49.0 — the gap that made this rotation lopsided.
+
+    TikTok reaches `notification-activity` and Instagram reaches
+    `check-activity` and `check-profile`, while YouTube reached neither: it
+    could search, scroll, watch and download, but never once looked at its own
+    notifications or account page. Both members existed in the pack from
+    youtube@0.41.0 and simply were not wired here — which is the failure mode
+    this whole test file exists for, an activity that is maintained and never
+    dispatched.
+  */
+  test('YouTube reaches its notifications and its profile, like the other two platforms do', () => {
+    expect(refs.has('youtube/check-notifications@latest')).toBe(true)
+    expect(refs.has('youtube/check-profile@latest')).toBe(true)
+  })
+
+  test('every platform in the rotation looks at its own notifications', () => {
+    expect(refs.has('tiktok/notification-activity@latest')).toBe(true)
+    expect(refs.has('instagram/check-activity@latest')).toBe(true)
+    expect(refs.has('youtube/check-notifications@latest')).toBe(true)
   })
 
   test('all three platforms are still reachable, and only those three', () => {

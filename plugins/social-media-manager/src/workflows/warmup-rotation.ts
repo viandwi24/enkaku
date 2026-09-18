@@ -243,12 +243,25 @@ export const warmupRotation: WorkflowDocInput = {
       { to: 'yt-b', label: 'Search & play' },
       { to: 'yt-c', label: 'Watch & home' },
     ]),
-    shuffle('yt-a', 'YouTube: Shorts + search', 480, ['yt-a-shorts', 'yt-a-search']),
+    shuffle('yt-a', 'YouTube: Shorts + search + notifications', 480, ['yt-a-shorts', 'yt-a-search', 'yt-a-notif']),
     script('yt-a-shorts', 'Scroll Shorts', 'youtube/scroll-shorts@latest', 480, 500, { videos: scaled('6 + rand(10)'), keywords: KEYWORDS }),
     script('yt-a-search', 'Search and play', 'youtube/search-play@latest', 480, 570, {
       query: KEYWORD,
       watchMs: scaled('20000 + rand(40000)'),
       keywords: KEYWORDS,
+    }),
+    /*
+      The bell (0.49.0). Until now YouTube was the ONE platform in this rotation
+      with no notifications activity — TikTok has `notification-activity` and
+      Instagram has `check-activity`, and a warm-up where one platform never
+      looks at what the app has to tell it is the shape the owner asked to close.
+
+      `max(5, …)` rather than the `scaled()` helper beside it: `scaled` floors at
+      1, and this member's `maxItems` has a minimum of 5, so a low `amount` would
+      draw a value its own schema refuses at dispatch.
+    */
+    script('yt-a-notif', 'Check notifications', 'youtube/check-notifications@latest', 480, 640, {
+      maxItems: { expr: 'max(5, round((10 + rand(20)) * $params.amount))' },
     }),
     shuffle('yt-b', 'YouTube: search + Shorts', 720, ['yt-b-search', 'yt-b-shorts']),
     script('yt-b-search', 'Search and play', 'youtube/search-play@latest', 720, 500, {
@@ -257,10 +270,14 @@ export const warmupRotation: WorkflowDocInput = {
       keywords: KEYWORDS,
     }),
     script('yt-b-shorts', 'Scroll Shorts (short)', 'youtube/scroll-shorts@latest', 720, 570, { videos: scaled('3 + rand(6)'), keywords: KEYWORDS }),
-    shuffle('yt-c', 'YouTube: watch + home + a channel', 960, ['yt-c-watch', 'yt-c-home', 'yt-c-channel']),
+    shuffle('yt-c', 'YouTube: watch + home + a channel + profile', 960, ['yt-c-watch', 'yt-c-home', 'yt-c-channel', 'yt-c-profile']),
     script('yt-c-watch', 'Search and watch', 'youtube/watch-video@latest', 960, 500, { query: KEYWORD, keywords: KEYWORDS }),
     script('yt-c-home', 'Home feed', 'youtube/download-home@latest', 960, 570, { videos: scaled('1 + rand(2)') }),
     script('yt-c-channel', 'Open a channel', 'youtube/search-channel@latest', 960, 640, { query: KEYWORD }),
+    /* Same gap on the other side: Instagram's `ig-c` ends on `check-profile`, YouTube's ended on a channel search. */
+    script('yt-c-profile', 'Check profile', 'youtube/check-profile@latest', 960, 710, {
+      maxRows: { expr: 'max(3, round((8 + rand(12)) * $params.amount))' },
+    }),
 
     {
       id: 'no-number',

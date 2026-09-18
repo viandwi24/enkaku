@@ -78,6 +78,32 @@ import {
  *
  * ## Changelog
  *
+ * - **0.49.0 — YouTube finally looks at its own notifications and account page,
+ *   like the other two platforms already did.** The rotation was lopsided and
+ *   had been since it was written: TikTok reaches `notification-activity`,
+ *   Instagram reaches `check-activity` and `check-profile`, and YouTube reached
+ *   neither — it could search, scroll, watch and download, but never once
+ *   opened the bell or the "You" tab.
+ *
+ *   `youtube/check-notifications` joins the `yt-a` shuffle and
+ *   `youtube/check-profile` joins `yt-c`, one node each, the same cheap shape
+ *   0.46.0 used. Both shipped in youtube@0.41.0 and were simply never wired
+ *   here — a member that is maintained and never dispatched, which is the exact
+ *   failure `warmup-rotation.test.ts` exists to catch and now does, per
+ *   platform rather than per member.
+ *
+ *   Their counts are drawn with `max(5, …)` and `max(3, …)` rather than the
+ *   document's `scaled()` helper: `scaled` floors at 1, and those two members'
+ *   schemas have minimums of 5 and 3, so a low `amount` would have drawn a
+ *   value the member's own schema refuses at dispatch.
+ *
+ *   **The rotation now holds 43 nodes of 50** — 0.48.0's closing line below
+ *   ("41 nodes again") was true when it was written and is not any more.
+ *
+ *   Requires youtube@0.41.0 or newer to be ACTIVE on the farm. A farm still on
+ *   0.39.x resolves both `@latest` refs to a version that does not carry these
+ *   members, and the two draws fail rather than warm anything.
+ *
  * - **0.48.0 — two of the four activities wired in 0.46.0 are withdrawn: they
  *   fail on hardware.** Both were run on the owner's moto g06 (2026-09-17) on a
  *   phone that was awake and idle, and both failed where `tiktok/shop-browse`
@@ -1589,7 +1615,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.48.0',
+  version: '0.49.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
