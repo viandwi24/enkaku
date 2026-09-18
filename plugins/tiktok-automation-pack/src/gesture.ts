@@ -125,6 +125,13 @@ const HOME_TAB: { desc: string }[] = [{ desc: 'Beranda' }, { desc: 'Home' }]
 const READY_TIMEOUT_MS = 25_000
 
 /**
+ * The second launch's budget, spent only when another app is proven to be holding the screen.
+ * Shorter than the first on purpose: this one is not waiting on a cold start competing with
+ * TikTok's own first-feed network fetch — the app has already been through that once.
+ */
+const RETRY_TIMEOUT_MS = 15_000
+
+/**
  * Force-stop, launch, and WAIT FOR THE FEED — not for a fixed six seconds.
  *
  * This used to be `sleep(6_000)`, on the reasoning that the inspector is not
@@ -147,18 +154,30 @@ const READY_TIMEOUT_MS = 25_000
  * settle held for years and only the navigating scripts failed.
  *
  * So: a short blind settle (the inspector cannot dump a window that does not
- * exist yet), then poll for the feed itself, then give up and continue
- * anyway. Giving up is deliberate — a phone whose inspector will not answer
- * still gets its run, and the caller's own `waitForAnchor` reports what it
- * actually found, which is a better error than one invented here.
+ * exist yet), then poll for the feed itself. What happens when the feed never
+ * arrives depends on WHY — two unrelated faults look identical from here, and
+ * 1.52.0 is where they stopped sharing one outcome:
+ *
+ *   - THE INSPECTOR will not answer, about an app that is perfectly up. Carry
+ *     on. That restraint is the original design and it is kept deliberately:
+ *     the caller's own anchor reports what it actually found, which beats any
+ *     error invented here, and the phone still gets its run.
+ *   - ANOTHER APP is holding the screen. Nothing downstream can work — every
+ *     anchor would be looked for in someone else's UI — so launch once more
+ *     before letting the run go ahead.
+ *
+ * `foreignAppOnTop` is what tells the two apart, and production is what asked
+ * for it: phones sat on Android Settings through a whole warm-up rotation,
+ * each member reporting a missing TikTok control that could not have been
+ * there. 1.51.0 made those messages honest; this is the half that tries to
+ * fix the phone rather than describe it.
  */
-export async function relaunch(ctx: ScriptContext<unknown>): Promise<boolean> {
-  await answerPermissionsBeforeLaunch(ctx)
+async function launchAndWait(ctx: ScriptContext<unknown>, budgetMs: number): Promise<boolean> {
   await ctx.device.app.forceStop(TIKTOK_PACKAGE)
   await ctx.device.app.launch(TIKTOK_PACKAGE)
   await sleep(3_000)
 
-  const deadline = Date.now() + READY_TIMEOUT_MS
+  const deadline = Date.now() + budgetMs
   while (Date.now() < deadline) {
     for (const sel of HOME_TAB) {
       try {
@@ -169,9 +188,31 @@ export async function relaunch(ctx: ScriptContext<unknown>): Promise<boolean> {
       }
     }
   }
-  ctx.log.warn(`the feed did not appear within ${READY_TIMEOUT_MS / 1000}s of launching — continuing, and the next anchor will say where the device is`)
-  // `false` (1.34.1) so a caller can save what the screen held instead: every member ignores it and
-  // carries on exactly as before, and `post-video` saves the tree and a screenshot.
+  return false
+}
+
+export async function relaunch(ctx: ScriptContext<unknown>): Promise<boolean> {
+  await answerPermissionsBeforeLaunch(ctx)
+  if (await launchAndWait(ctx, READY_TIMEOUT_MS)) return true
+
+  let intruder: string | null = null
+  try {
+    intruder = foreignAppOnTop(await ctx.device.dump())
+  } catch {
+    // An inspector that cannot be asked IS the first case above — there is nothing to tell apart.
+  }
+
+  if (intruder === null) {
+    ctx.log.warn(`the feed did not appear within ${READY_TIMEOUT_MS / 1000}s of launching — continuing, and the next anchor will say where the device is`)
+    // `false` (1.34.1) so a caller can save what the screen held instead: `post-video` saves the
+    // tree and a screenshot, and every other member carries on exactly as before.
+    return false
+  }
+
+  ctx.log.warn(`"${intruder}" was still holding the screen ${READY_TIMEOUT_MS / 1000}s after TikTok was launched — launching once more before the run goes ahead`)
+  if (await launchAndWait(ctx, RETRY_TIMEOUT_MS)) return true
+
+  ctx.log.warn(`TikTok never came to the front — "${intruder}" held the screen through two launches. The run continues, and its first anchor will name it rather than blame a TikTok control.`)
   return false
 }
 

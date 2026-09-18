@@ -1061,6 +1061,25 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.52.0 — a phone another app is holding gets a second launch instead of a whole rotation
+  //   spent in someone else's UI.
+  //   1.51.0 made that failure legible and said, in its own commit message, that WHY those phones
+  //   sat in Android Settings was still unknown. It is now: `relaunch` force-stops, launches, waits
+  //   up to 25 s for the feed — and when the feed never came it warned and RETURNED ANYWAY. Eight
+  //   of its nine callers discard that return (only `post-video` reads it), so the previous screen
+  //   simply stayed and every member after it ran against Android Settings. That is the mechanism
+  //   behind the artifact 1.51.0 was written from.
+  //
+  //   Carrying on is still right for the fault it was written for — an inspector that will not
+  //   answer about an app that is perfectly up — and that path is unchanged: one launch, `false`,
+  //   and the caller's own anchor reports what it found. `foreignAppOnTop` is what finally tells
+  //   the two apart, so the SECOND fault gets the other treatment: another package proven to be
+  //   covering the screen buys exactly one more launch (15 s, shorter — the cold start is already
+  //   paid). Bounded at two, and the phone is named in the warning either way.
+  //
+  //   Both halves are proven by mutation and they fail on disjoint tests: delete the second launch
+  //   and only the two recovery tests go red; ignore the intruder check and only the two restraint
+  //   tests do.
   // 1.51.0 — a phone stranded in Android Settings was reported as TikTok missing a tab.
   //   Production, 2026-09-18: `shop-browse` failed with "the Shop tab was not on the bottom
   //   navigation" and the artifact it saved was Android Settings — TikTok's own "Open by default"
@@ -1626,7 +1645,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.51.0',
+  version: '1.52.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
