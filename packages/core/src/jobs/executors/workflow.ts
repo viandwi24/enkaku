@@ -182,7 +182,41 @@ export function createWorkflowOrchestrator(deps: WorkflowOrchestratorDeps): JobE
       // `{ param }` binding as an ordinary workflow parameter.
       const rawParams = isPlainObject(job.params) ? job.params : {}
       const nodeTestSeed = isPlainObject(rawParams.__nodeTest) ? (rawParams.__nodeTest as { predecessorId?: unknown; value?: unknown }) : null
-      const params: Record<string, unknown> = Object.fromEntries(Object.entries(rawParams).filter(([k]) => k !== '__nodeTest'))
+      const supplied: Record<string, unknown> = Object.fromEntries(Object.entries(rawParams).filter(([k]) => k !== '__nodeTest'))
+      /*
+        The DOCUMENT's own declared defaults, under whatever the caller sent
+        (2026-09-18).
+
+        A workflow parameter declares a `default`; Studio's Run dialog seeds its
+        form from it, so every dispatch made through the UI carries a value and
+        this gap was invisible. Nothing else filled it in: `$params.<name>` for
+        an omitted parameter resolved to `undefined`, and every expression
+        reading it died at the first step that used it.
+
+        Found on the first end-to-end run of `smm/warmup-rotation` on the
+        owner's moto (job eb3bd7a7): dispatched without `keywords`, whose
+        declared default is ten trading terms, and two of the three members drew
+        `at($params.keywords, rand(len($params.keywords)))` →
+        `len() requires an array`. The run still reported SUCCESS, because
+        `continueOnMemberFailure` is what a shuffle wants — so a phone that
+        warmed up almost nothing went green, which is the part that made this
+        worth finding rather than working around.
+
+        The caller always wins, and the spread order is the ONLY thing that
+        makes that true — deliberately. An earlier draft also skipped any key
+        already present in `supplied`, which made the two collections disjoint
+        and the order irrelevant: two mechanisms for one rule, and a test that
+        flipped the order could not fail. One mechanism, one test that bites.
+
+        `applySchemaDefaults` three hundred lines below is the SCRIPT's schema
+        and a different thing entirely — it fills a step's own fields, never the
+        workflow's.
+      */
+      const declaredDefaults: Record<string, unknown> = {}
+      for (const p of doc.params ?? []) {
+        if (p.default !== undefined) declaredDefaults[p.name] = p.default
+      }
+      const params: Record<string, unknown> = { ...declaredDefaults, ...supplied }
       const outputs = new Map<string, unknown>()
       const summary: RunSummaryEntry[] = []
       const nodesById = new Map(doc.nodes.map((n) => [n.id, n]))

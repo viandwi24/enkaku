@@ -392,6 +392,70 @@ describe('createWorkflowOrchestrator (plan 211 §4.5, doc v2 by plan 301)', () =
     expect(s2Job?.params).toEqual({ verdict: true, echoedNow: true })
   })
 
+  /*
+    A declared parameter's own default (2026-09-18).
+
+    Studio's Run dialog seeds its form from each parameter's `default`, so every
+    dispatch made through the UI carries a value and this gap was invisible.
+    Nothing else filled it in: a caller that omitted the parameter left
+    `$params.<name>` resolving to `undefined`, and the first expression reading
+    it killed its step.
+
+    Found on the first end-to-end run of `smm/warmup-rotation` on the owner's
+    moto (job eb3bd7a7): dispatched without `keywords`, whose declared default
+    is ten trading terms, and two of three members drew
+    `at($params.keywords, rand(len($params.keywords)))` →
+    "len() requires an array". The workflow still reported SUCCESS, because
+    `continueOnMemberFailure` is what a shuffle wants — a phone that warmed up
+    almost nothing went green. The silent half is why this is pinned here and
+    not only in the warm-up's own test.
+  */
+  describe('a workflow parameter\'s declared default', () => {
+    function defaultsDoc(): WorkflowDoc {
+      return WorkflowDocSchema.parse({
+        schema: 2,
+        name: 'defaults-doc',
+        title: '',
+        description: '',
+        params: [
+          { name: 'words', type: 'stringList', required: false, default: ['alpha', 'beta'], title: 'Words' },
+          { name: 'size', type: 'number', required: false, default: 7, title: 'Size' },
+        ],
+        entry: 'start',
+        nodes: [
+          startNode({ next: 's1' }),
+          scriptNode({ id: 's1', script: 'demo/s1@1.0.0', params: { count: { expr: 'len($params.words)' }, size: { expr: '$params.size' } } }),
+        ],
+      })
+    }
+
+    const paramsOfFirstStep = (deps: WorkflowOrchestratorDeps, jobId: string): unknown =>
+      deps.db.select().from(jobs).where(eq(jobs.parentWorkflowJobId, jobId)).all().find((j) => j.stepSeq === 0)?.params
+
+    async function runWith(params: Record<string, unknown>) {
+      const { runs, deps } = setUp(new Map())
+      const orchestrator = createWorkflowOrchestrator(deps)
+      const doc = defaultsDoc()
+      const job = runs.createJob({ kind: 'workflow', workflowName: doc.name, workflowDoc: doc, deviceId: 'dev-1', params, scriptName: doc.name, scriptVersion: null })
+      const run = runs.addRun(job.id, { trigger: 'manual' })
+      await orchestrator.run(job, { runId: run.id, run, signal: new AbortController().signal, heartbeat: () => {}, log: deps.log })
+      return paramsOfFirstStep(deps, job.id)
+    }
+
+    test('fills in for a parameter the caller omitted — the warm-up failure, in one assertion', async () => {
+      expect(await runWith({})).toEqual({ count: 2, size: 7 })
+    })
+
+    test('never overrides what the caller actually sent', async () => {
+      expect(await runWith({ words: ['x', 'y', 'z'], size: 1 })).toEqual({ count: 3, size: 1 })
+    })
+
+    /** A caller may legitimately send one parameter and rely on the default for another. */
+    test('fills only the absent ones, leaving the supplied one alone', async () => {
+      expect(await runWith({ size: 99 })).toEqual({ count: 2, size: 99 })
+    })
+  })
+
   describe('switch (plan 303 §3.3, G2)', () => {
     test('the first matching case wins, even when a later one would also match', async () => {
       const doc = WorkflowDocSchema.parse({
