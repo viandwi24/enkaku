@@ -6,7 +6,7 @@ import { between, makeRng, sleep } from './human'
 import { all } from './tree'
 import { clearBlockingDialog } from './dialogs'
 import { dismissInterruptions } from './interruptions'
-import { bytesEqual, capture, frameOf, jitteredPoint, relaunch, snapshot, TIKTOK_PACKAGE, verifiedPageDown } from './gesture'
+import { bytesEqual, capture, frameOf, jitteredPoint, navMissingReason, relaunch, snapshot, TIKTOK_PACKAGE, verifiedPageDown } from './gesture'
 
 /**
  * `notification-activity` — open the Inbox ("Kotak Masuk"), read what the
@@ -89,7 +89,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     // `Home, Shop, Create, Inbox, Profile`. This one matters more than most: `notification-activity`
     // is called TWICE per warm-up rotation, so on an English farm that rotation lost it every run.
     const inbox = all(home, (n) => n.clickable && INBOX_TAB_DESCS.includes(n.desc.trim()) && n.bounds.top > 1_400)[0]
-    if (!inbox) throw new Error(`the Inbox tab (${INBOX_TAB_DESCS.join('/')}) was not on the bottom navigation — see the first artifact`)
+    if (!inbox) throw new Error(navMissingReason(home, INBOX_TAB_DESCS.join('/')))
     const badge = all(home, (n) => /^\d+\+?$/.test(n.text.trim()) && n.bounds.top >= inbox.bounds.top && n.bounds.bottom <= inbox.bounds.bottom + 2 && n.bounds.left >= inbox.bounds.left - 2 && n.bounds.right <= inbox.bounds.right + 2)[0]?.text.trim() ?? ''
     await ctx.device.tap({ point: jitteredPoint(inbox, rng) })
     await sleep(between(rng, 2_500, 4_000))

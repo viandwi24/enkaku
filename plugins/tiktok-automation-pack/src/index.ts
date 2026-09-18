@@ -1061,6 +1061,21 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.51.0 — a phone stranded in Android Settings was reported as TikTok missing a tab.
+  //   Production, 2026-09-18: `shop-browse` failed with "the Shop tab was not on the bottom
+  //   navigation" and the artifact it saved was Android Settings — TikTok's own "Open by default"
+  //   page. The nav was missing because TIKTOK WAS NOT IN FRONT, and the message accused TikTok's
+  //   UI, which is where anyone reading it then goes looking. That farm had 1082 failed jobs.
+  //
+  //   `foreignAppOnTop` (gesture.ts) names whichever package actually covers the screen, and
+  //   `navMissingReason` words the failure from it. `shop-browse` and `notification-activity` use
+  //   it; the latter runs TWICE per warm-up rotation, so it was saying this twice a phone.
+  //
+  //   Deliberately NOT a gate. It runs only on a path that has already failed, so it cannot abort a
+  //   healthy run — which matters because it keys on one package name and this pack has only ever
+  //   measured `com.ss.android.ugc.trill`. On a `com.zhiliaoapp.musically` build the worst case is a
+  //   sentence naming the wrong package, not a run killed for nothing. The YouTube pack has had the
+  //   same guard since 0.39.14; this one never got it.
   // 1.50.0 — the comment sheet is recognised, closed with its own button, and no longer swiped
   //   across "Balas". The owner's wall, 2026-09-17: a dozen phones parked in TikTok's comments mid
   //   warm-up, several sitting on "Membalas <name>" with the farm's keyboard up — a reply this pack
@@ -1611,7 +1626,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.50.0',
+  version: '1.51.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

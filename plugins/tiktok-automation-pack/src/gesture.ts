@@ -20,6 +20,55 @@ import { flatten } from './tree'
 
 export const TIKTOK_PACKAGE = 'com.ss.android.ugc.trill'
 
+/**
+ * Which OTHER app is covering the screen, or `null` when TikTok is where it should be.
+ *
+ * ## Why this exists
+ *
+ * Production, 2026-09-18: `shop-browse` failed with "the Shop tab was not on the bottom navigation"
+ * and the artifact it saved showed the phone sitting in **Android Settings**, on TikTok's "Open by
+ * default" page. The nav was missing because TikTok was not in front — and the message accused
+ * TikTok's own UI, which is where anyone reading it would then go looking. That farm had 1082
+ * failed jobs; a share of them say this.
+ *
+ * ## Why it only ever writes a message
+ *
+ * This is deliberately NOT a gate. It runs on a path that has already failed, to say what is
+ * actually on screen — it can never abort a healthy run, which matters because it keys on one
+ * package name and this pack has only ever measured `com.ss.android.ugc.trill`. A phone carrying
+ * the `com.zhiliaoapp.musically` build would look "foreign" to a naive check; used only to word an
+ * error, the worst case is a sentence naming the wrong package, not a run killed for nothing.
+ *
+ * Shape, not a list of known intruders: any package that is not TikTok and not the system UI,
+ * covering most of the screen, with no TikTok node anywhere. The launcher qualifies, which is
+ * correct — that is TikTok having failed to come up at all. Mirrors the YouTube pack's
+ * `foreignAppOnTop`, copied rather than imported because a pack is bundled standalone.
+ */
+export function foreignAppOnTop(tree: UiNode): string | null {
+  const nodes = flatten(tree)
+  if (nodes.some((n) => n.packageName === TIKTOK_PACKAGE)) return null
+  const width = Math.max(0, ...nodes.map((n) => n.bounds.right))
+  const height = Math.max(0, ...nodes.map((n) => n.bounds.bottom))
+  if (width === 0 || height === 0) return null
+  const cover = nodes.find(
+    (n) =>
+      n.packageName !== '' &&
+      n.packageName !== TIKTOK_PACKAGE &&
+      n.packageName !== 'com.android.systemui' &&
+      n.bounds.right - n.bounds.left >= width * 0.9 &&
+      n.bounds.bottom - n.bounds.top >= height * 0.5,
+  )
+  return cover?.packageName ?? null
+}
+
+/** The bottom-nav failure, worded by what is actually on screen (2026-09-18). */
+export function navMissingReason(tree: UiNode, tabName: string): string {
+  const foreign = foreignAppOnTop(tree)
+  return foreign === null
+    ? `the ${tabName} tab was not on the bottom navigation — see the first artifact`
+    : `TikTok was not in front — "${foreign}" was covering the screen, so no TikTok navigation could be there. Looking for the ${tabName} tab is the wrong question; see the first artifact.`
+}
+
 /** `screenshot()` can time out behind a busy inspector (see index.ts's `snapshot`); a missing frame is not a failure. */
 export async function snapshot(ctx: ScriptContext<unknown>): Promise<Uint8Array | null> {
   try {

@@ -4,7 +4,7 @@ import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { between, makeRng, sleep } from './human'
 import { all } from './tree'
-import { capture, frameOf, jitteredPoint, readableStrings, relaunch, TIKTOK_PACKAGE, verifiedPageDown } from './gesture'
+import { capture, frameOf, jitteredPoint, navMissingReason, readableStrings, relaunch, TIKTOK_PACKAGE, verifiedPageDown } from './gesture'
 
 /** How long to keep looking for the shop after tapping its tab. */
 const SHOP_OPEN_TIMEOUT_MS = 20_000
@@ -133,7 +133,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     // drawn — it just said "Shop". The `top > 1_400` band is kept: it is what stops this matching a
     // "Toko" written anywhere else on the page, and it is not language-bound.
     const tab = all(nav, (n) => n.clickable && SHOP_TAB_DESCS.includes(n.desc.trim()) && n.bounds.top > 1_400)[0]
-    if (!tab) throw new Error(`the Shop tab (${SHOP_TAB_DESCS.join('/')}) was not on the bottom navigation — see the first artifact`)
+    if (!tab) throw new Error(navMissingReason(nav, SHOP_TAB_DESCS.join('/')))
     await ctx.device.tap({ point: jitteredPoint(tab, rng) })
 
     /*
