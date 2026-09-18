@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { openDb, runMigrations, type Db } from '../db'
-import { batches, deviceNumbers, devices, jobRuns, jobs } from '../db/schema'
+import { batches, deviceNumbers, devices, groups, jobRuns, jobs } from '../db/schema'
 import { createRunStore } from '../jobs/runs/store'
 import { createAuditLogger } from '../auth/audit'
 import { createLogger } from '../util/logger'
@@ -67,6 +67,56 @@ function baseInput(overrides: Partial<CreateWorkflowBatchInput> = {}): CreateWor
     ...overrides,
   }
 }
+
+describe('createWorkflowBatch — a warm-up runs on the phones that were CHOSEN, and no others', () => {
+  /*
+    The owner, 2026-09-18: "diawal awal warmup muncul itu yang diselseksi cuman
+    beberapa devices aja, device yang ga diseleksi lain tiba tiba ikut kena jalan
+    warmup, kan aneh." A warm-up that reaches a phone nobody picked is automation
+    running on an account the operator did not consent to move — the same class
+    of harm as posting to the wrong account, and the reason this is pinned here.
+
+    `resolve.test.ts` already holds the RESOLVER (a group resolves to its members
+    and nothing else; no labels and no ids resolve to nothing). What was never
+    held is the seam above it: that `createWorkflowBatch` creates one job per
+    RESOLVED device and not one more. These tests hold exactly that.
+  */
+  test('a subset selection dispatches to that subset only, with the rest of the farm untouched', () => {
+    const { db, deps } = setUp(['d1', 'd2', 'd3', 'd4', 'd5'])
+    const { batch } = createWorkflowBatch(deps, baseInput({ target: { deviceIds: ['d2', 'd4'] } }))
+    const members = db.select().from(jobs).where(eq(jobs.batchId, batch.id)).all()
+    expect(members.map((m) => m.deviceId).sort()).toEqual(['d2', 'd4'])
+    // Said twice on purpose: the count is what catches a widening that happens
+    // to include the chosen two as well.
+    expect(members).toHaveLength(2)
+  })
+
+  test('a group target dispatches to that group only, never to a phone outside it', () => {
+    const { db, deps } = setUp(['d1', 'd2', 'd3', 'd4'])
+    db.insert(groups).values({ id: 'gA', name: 'Group A', createdAt: NOW }).run()
+    for (const id of ['d1', 'd3']) db.update(devices).set({ groupId: 'gA' }).where(eq(devices.id, id)).run()
+    const { batch } = createWorkflowBatch(deps, baseInput({ target: { groupId: 'gA' } }))
+    const members = db.select().from(jobs).where(eq(jobs.batchId, batch.id)).all()
+    expect(members.map((m) => m.deviceId).sort()).toEqual(['d1', 'd3'])
+    expect(members).toHaveLength(2)
+  })
+
+  test('a single chosen phone means a single job, whatever else the farm holds', () => {
+    const { db, deps } = setUp(['d1', 'd2', 'd3', 'd4', 'd5', 'd6'])
+    const { batch } = createWorkflowBatch(deps, baseInput({ target: { deviceIds: ['d5'] } }))
+    const members = db.select().from(jobs).where(eq(jobs.batchId, batch.id)).all()
+    expect(members.map((m) => m.deviceId)).toEqual(['d5'])
+  })
+
+  test('an offline phone in the selection is skipped, and its absence never widens the batch', () => {
+    const { db, deps } = setUp(['d1', 'd2', 'd3'])
+    db.update(devices).set({ status: 'offline' }).where(eq(devices.id, 'd2')).run()
+    const { batch } = createWorkflowBatch(deps, baseInput({ target: { deviceIds: ['d1', 'd2'] } }))
+    const members = db.select().from(jobs).where(eq(jobs.batchId, batch.id)).all()
+    // d3 was never chosen and must not be recruited to make up the number.
+    expect(members.map((m) => m.deviceId)).toEqual(['d1'])
+  })
+})
 
 describe('createWorkflowBatch — pacing reaches the batch row (plan 313 §4.4)', () => {
   test('a batch with no pacing writes exactly the columns it wrote before this plan', () => {
