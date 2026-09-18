@@ -18,13 +18,26 @@ function fakeSettingsStore(failuresBeforeQuarantine?: number): FarmSettingsStore
   return { get: () => cfg, update: () => cfg, resetSections: () => cfg, onChange: () => () => {} }
 }
 
-function setUp(opts?: { failuresBeforeQuarantine?: number; autoQuarantineOverride?: boolean; grace?: QuarantineGrace }) {
+function setUp(opts?: {
+  failuresBeforeQuarantine?: number
+  autoQuarantineOverride?: boolean
+  grace?: QuarantineGrace
+  /** Extra online rows beyond `d1`/`SER1`, as `d2`/`SER2`… — the farm-wide fault detector needs more than one device to see a farm. */
+  extraDevices?: number
+  serverFaultDevicesOverride?: number
+  serverFaultWindowSecOverride?: number
+}) {
   const opened = openDb(':memory:')
   runMigrations(opened.db)
   const db = opened.db
   db.insert(devices)
     .values({ id: 'd1', stableId: 'stable-1', serial: 'SER1', label: 'Phone One', status: 'online' })
     .run()
+  for (let i = 2; i <= 1 + (opts?.extraDevices ?? 0); i++) {
+    db.insert(devices)
+      .values({ id: `d${i}`, stableId: `stable-${i}`, serial: `SER${i}`, label: `Phone ${i}`, status: 'online' })
+      .run()
+  }
 
   const events: DeviceEvent[] = []
   const states = createDeviceStateMachine({ db, log: createLogger('test'), onChange: () => {} })
@@ -37,6 +50,8 @@ function setUp(opts?: { failuresBeforeQuarantine?: number; autoQuarantineOverrid
     record: (e) => events.push(e as unknown as DeviceEvent),
     ...(opts?.autoQuarantineOverride !== undefined ? { autoQuarantineOverride: opts.autoQuarantineOverride } : {}),
     ...(opts?.grace ? { grace: opts.grace } : {}),
+    ...(opts?.serverFaultDevicesOverride !== undefined ? { serverFaultDevicesOverride: opts.serverFaultDevicesOverride } : {}),
+    ...(opts?.serverFaultWindowSecOverride !== undefined ? { serverFaultWindowSecOverride: opts.serverFaultWindowSecOverride } : {}),
   })
   return { db, states, health, events }
 }
@@ -50,12 +65,20 @@ describe('DeviceHealth.note — which outcomes count (plan 23 §3.6, §6.7)', ()
     expect(health.consecutiveFailures('d1')).toBe(2)
   })
 
-  test('E_ADB_CONNECT_TIMEOUT and E_ADB_HANDSHAKE_TIMEOUT count (they arrive as outcome "error")', () => {
+  test('E_ADB_HANDSHAKE_TIMEOUT counts (it arrives as outcome "error")', () => {
     const { health } = setUp()
-    health.note('SER1', 'error', 'E_ADB_CONNECT_TIMEOUT')
+    health.note('SER1', 'error', 'E_ADB_HANDSHAKE_TIMEOUT')
     expect(health.consecutiveFailures('d1')).toBe(1)
     health.note('SER1', 'error', 'E_ADB_HANDSHAKE_TIMEOUT')
     expect(health.consecutiveFailures('d1')).toBe(2)
+  })
+
+  test('E_ADB_CONNECT_TIMEOUT never counts — it is the adb server refusing US, not the phone', () => {
+    const { health } = setUp()
+    health.note('SER1', 'error', 'E_ADB_CONNECT_TIMEOUT')
+    health.note('SER1', 'error', 'E_ADB_CONNECT_TIMEOUT')
+    health.note('SER1', 'error', 'E_ADB_CONNECT_TIMEOUT')
+    expect(health.consecutiveFailures('d1')).toBe(0)
   })
 
   test('E_ADB_BUSY never contributes, and does not reset the streak either', () => {
@@ -87,6 +110,75 @@ describe('DeviceHealth.note — which outcomes count (plan 23 §3.6, §6.7)', ()
     const { health } = setUp()
     expect(() => health.note('NOT-A-DEVICE', 'timeout', 'E_ADB_TIMEOUT')).not.toThrow()
     expect(health.consecutiveFailures('d1')).toBe(0)
+  })
+})
+
+describe('DeviceHealth — a farm-wide adb fault never quarantines the phones', () => {
+  test('one device failing alone still counts and still quarantines — the detector does not disarm normal health', () => {
+    const { db, health } = setUp({ failuresBeforeQuarantine: 2, extraDevices: 3, serverFaultDevicesOverride: 3 })
+    health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
+    health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
+    const row = db.select().from(devices).where(eq(devices.id, 'd1')).get()
+    expect(row?.status).toBe('quarantined')
+    expect(row?.quarantineReason).toBe('adb:unreachable')
+  })
+
+  test('three distinct devices failing inside the window quarantines NOBODY, and clears every streak', () => {
+    const { db, health } = setUp({ failuresBeforeQuarantine: 2, extraDevices: 3, serverFaultDevicesOverride: 3 })
+    // Each device is one failure short of the threshold on its own.
+    health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
+    health.note('SER2', 'timeout', 'E_ADB_TIMEOUT')
+    expect(health.consecutiveFailures('d1')).toBe(1)
+    // The third distinct device inside the window is the verdict: the server.
+    health.note('SER3', 'timeout', 'E_ADB_TIMEOUT')
+
+    for (const id of ['d1', 'd2', 'd3']) {
+      expect(health.consecutiveFailures(id)).toBe(0)
+      expect(db.select().from(devices).where(eq(devices.id, id)).get()?.status).toBe('online')
+    }
+  })
+
+  test('the pre-fix cascade: a farm-wide storm past the threshold leaves every device online', () => {
+    const { db, health } = setUp({ failuresBeforeQuarantine: 5, extraDevices: 3, serverFaultDevicesOverride: 3 })
+    // What a saturated adb server actually emits: every phone, over and over.
+    for (let round = 0; round < 10; round++) {
+      for (const serial of ['SER1', 'SER2', 'SER3', 'SER4']) {
+        health.note(serial, 'error', 'E_ADB_CONNECT_TIMEOUT')
+        health.note(serial, 'timeout', 'E_ADB_TIMEOUT')
+      }
+    }
+    const quarantined = db.select().from(devices).all().filter((r) => r.status === 'quarantined')
+    expect(quarantined).toHaveLength(0)
+  })
+
+  test('once the window lapses, a single still-failing device quarantines normally', async () => {
+    const { db, health } = setUp({
+      failuresBeforeQuarantine: 2,
+      extraDevices: 3,
+      serverFaultDevicesOverride: 3,
+      serverFaultWindowSecOverride: 1,
+    })
+    health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
+    health.note('SER2', 'timeout', 'E_ADB_TIMEOUT')
+    health.note('SER3', 'timeout', 'E_ADB_TIMEOUT')
+    expect(db.select().from(devices).where(eq(devices.id, 'd1')).get()?.status).toBe('online')
+
+    // The farm recovered; only d1 is genuinely broken.
+    await sleep(1100)
+    health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
+    health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
+    expect(db.select().from(devices).where(eq(devices.id, 'd1')).get()?.status).toBe('quarantined')
+  })
+
+  test('a success clears the device from the window, so a recovering farm stops looking like a fault', () => {
+    const { health } = setUp({ failuresBeforeQuarantine: 2, extraDevices: 3, serverFaultDevicesOverride: 3 })
+    health.note('SER1', 'timeout', 'E_ADB_TIMEOUT')
+    health.note('SER2', 'timeout', 'E_ADB_TIMEOUT')
+    health.note('SER1', 'ok')
+    health.note('SER2', 'ok')
+    // Only SER3 is left failing — one device, so normal per-device counting.
+    health.note('SER3', 'timeout', 'E_ADB_TIMEOUT')
+    expect(health.consecutiveFailures('d3')).toBe(1)
   })
 })
 

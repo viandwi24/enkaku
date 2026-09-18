@@ -7,7 +7,12 @@ import type { FarmSettingsStore } from '../settings/farm-settings'
 import type { EventRecorder } from '../events/recorder'
 import type { Logger } from '../util/logger'
 import { mapWithConcurrency } from '../util/concurrency'
-import { DEVICE_AUTO_QUARANTINE, DEVICE_RECOVERY_PROBE_INTERVAL_SEC } from '../config/constants'
+import {
+  ADB_SERVER_FAULT_DEVICES,
+  ADB_SERVER_FAULT_WINDOW_SEC,
+  DEVICE_AUTO_QUARANTINE,
+  DEVICE_RECOVERY_PROBE_INTERVAL_SEC,
+} from '../config/constants'
 import type { QuarantineGrace } from './quarantine-grace'
 
 export type AdbMetricOutcome = 'ok' | 'timeout' | 'busy' | 'error'
@@ -21,6 +26,30 @@ export type AdbMetricOutcome = 'ok' | 'timeout' | 'busy' | 'error'
  * those may quarantine a healthy device.
  */
 const COUNTING_ERROR_CODES = new Set(['E_ADB_CONNECT_TIMEOUT', 'E_ADB_HANDSHAKE_TIMEOUT'])
+
+/**
+ * Codes that are raised against the adb SERVER and can never be evidence
+ * about one phone.
+ *
+ * `E_ADB_CONNECT_TIMEOUT` is `AdbSocket.connect(host, port)` failing to reach
+ * 127.0.0.1:5037 inside `DEFAULT_CONNECT_TIMEOUT_MS` (2 s). The serial is not
+ * in that path at all — it is attached to the metric only because the exec
+ * that was about to be sent named one. Counting it per device made a busy or
+ * dead adb server look like every phone on the farm failing at once, which is
+ * precisely how 73 healthy phones quarantined themselves as `adb:unreachable`
+ * (2026-09-17).
+ *
+ * It still feeds the farm-wide fault detector below, where it is the single
+ * most honest signal there is — it just never moves a per-device streak.
+ *
+ * `E_ADB_HANDSHAKE_TIMEOUT` is deliberately NOT in here: it is the server
+ * failing to ack `host:transport:<serial>`, and while a saturated server
+ * causes it, so does a genuinely wedged transport for that one serial. A
+ * device that is truly gone answers that request with FAIL (`E_ADB_FAIL`)
+ * rather than silence, so the timeout keeps enough per-device meaning to
+ * count — under load the detector below is what stops it mass-quarantining.
+ */
+const SERVER_ONLY_ERROR_CODES = new Set(['E_ADB_CONNECT_TIMEOUT'])
 
 export interface DeviceHealth {
   /** Fed from AdbClient.onMetric (plan 22.1 §22.6). */
@@ -57,11 +86,60 @@ export function createDeviceHealth(deps: {
   autoQuarantineOverride?: boolean
   /** A device an operator just released (`battery.ts`'s `unquarantine`) neither counts failures nor is quarantined inside this window. */
   grace?: QuarantineGrace
+  /** Test-only override for `ADB_SERVER_FAULT_DEVICES` — a unit test needs a threshold it can cross deliberately. */
+  serverFaultDevicesOverride?: number
+  /** Test-only override for `ADB_SERVER_FAULT_WINDOW_SEC`, so a test can let the window lapse without sleeping ten seconds. */
+  serverFaultWindowSecOverride?: number
 }): DeviceHealth {
   const { db, log } = deps
   /** In memory only — a core restart re-probes everything anyway (plan 23 §3.6). */
   const counters = new Map<string, number>()
   let timer: ReturnType<typeof setInterval> | null = null
+  /**
+   * deviceId → when it last logged a counting failure, for the farm-wide
+   * fault detector. Pruned to the window on every read, so it stays the size
+   * of "devices failing right now" rather than of the farm.
+   */
+  const recentFailures = new Map<string, number>()
+  /** Rate-limits both the log line and the `ensureServer()` kick to one per window. */
+  let lastFaultAt = 0
+
+  const faultDevices = deps.serverFaultDevicesOverride ?? ADB_SERVER_FAULT_DEVICES
+  const faultWindowMs = (deps.serverFaultWindowSecOverride ?? ADB_SERVER_FAULT_WINDOW_SEC) * 1000
+
+  /**
+   * Is the farm as a whole failing right now?
+   *
+   * Records this device's failure, then counts how many DISTINCT devices have
+   * failed inside the window. At or past `faultDevices` the verdict is the
+   * shared adb server, not the phones — see `ADB_SERVER_FAULT_DEVICES` for
+   * why every code we count is raised against that server in the first place.
+   *
+   * On a verdict the streaks are CLEARED, not merely left alone: whatever
+   * each device had accumulated was charged to it by a server-wide condition,
+   * so carrying it forward would quarantine the first phone to fail once more
+   * after the server recovers. A genuinely broken device simply rebuilds its
+   * streak on its own, alone, the moment the farm is healthy again.
+   */
+  function farmWideFault(deviceId: string, nowMs: number): boolean {
+    recentFailures.set(deviceId, nowMs)
+    for (const [id, at] of recentFailures) {
+      if (nowMs - at > faultWindowMs) recentFailures.delete(id)
+    }
+    if (recentFailures.size < faultDevices) return false
+
+    if (nowMs - lastFaultAt > faultWindowMs) {
+      lastFaultAt = nowMs
+      log.warn(
+        `${recentFailures.size} devices failed adb within ${Math.round(faultWindowMs / 1000)}s — blaming the adb server, not the devices; no quarantine`,
+      )
+      // The one repair that can actually apply here. Single-flighted inside
+      // the client, and swallowed: the probe loop reports per device anyway.
+      void deps.client()?.ensureServer().catch(() => {})
+    }
+    counters.clear()
+    return true
+  }
 
   function deviceIdForSerial(serial: string): string | null {
     const row = db.select({ id: devices.id }).from(devices).where(eq(devices.serial, serial)).get()
@@ -135,9 +213,13 @@ export function createDeviceHealth(deps: {
       if (!deviceId) return
       if (outcome === 'ok') {
         counters.set(deviceId, 0)
+        recentFailures.delete(deviceId)
         return
       }
       if (!countsAsFailure(outcome, code)) return
+      // Always feeds the detector; never moves this device's own streak.
+      const serverOnly = code !== undefined && SERVER_ONLY_ERROR_CODES.has(code)
+      if (farmWideFault(deviceId, Date.now()) || serverOnly) return
       // The streak that got it quarantined survives a manual release, so one
       // more timeout would pull it straight back. Inside the window the
       // streak starts over instead.

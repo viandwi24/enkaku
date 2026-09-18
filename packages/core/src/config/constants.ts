@@ -144,6 +144,49 @@ export const DEVICE_ENDPOINT_RETIRE_AFTER = num('ENKAKU_DEVICE_ENDPOINT_RETIRE_A
 export const DEVICE_CONNECT_SETTLE_MS = num('ENKAKU_DEVICE_CONNECT_SETTLE_MS', 3_000, z.number().int().min(500).max(30_000))
 export const DEVICE_RESCAN_INTERVAL_SEC = num('ENKAKU_DEVICE_RESCAN_INTERVAL_SEC', 10, z.number().int().min(0).max(300))
 export const DEVICE_AUTO_QUARANTINE = bool('ENKAKU_DEVICE_AUTO_QUARANTINE', true)
+/**
+ * How many DISTINCT devices must fail inside `ADB_SERVER_FAULT_WINDOW_SEC`
+ * before the failures are blamed on the shared adb server rather than on the
+ * phones (`device/health.ts`).
+ *
+ * ### Why this exists
+ *
+ * `DeviceHealth.note` counts a failure per device and quarantines at
+ * `advanced.failuresBeforeQuarantine`. Every code it counts, though, is
+ * raised against the SHARED adb server at 127.0.0.1:5037, not against a
+ * phone: `E_ADB_CONNECT_TIMEOUT` is `AdbSocket.connect` missing its 2 s
+ * budget to that port, `E_ADB_HANDSHAKE_TIMEOUT` is the server not acking
+ * `host:transport:<serial>` within 3 s, and `E_ADB_TIMEOUT` is an exec
+ * deadline a saturated server blows through on a `probe` profile's 5 s.
+ *
+ * So when the adb server chokes — the exact thing a bulk job on 70+ phones
+ * does to it — every device on the farm accumulates the same streak at the
+ * same moment, and the whole fleet crosses the threshold together. That is
+ * the mass `adb:unreachable` quarantine the owner met on a 73-phone farm
+ * (2026-09-17/18), and it is a misattribution: nothing was wrong with any
+ * individual phone.
+ *
+ * Three devices is deliberately low. One phone with a bad cable fails alone;
+ * two can coincide. Three distinct phones failing inside ten seconds has no
+ * plausible per-device cause on a farm whose devices share one adb server,
+ * one USB tree and one host — and the cost of being wrong is only a delayed
+ * quarantine, against a farm-wide outage for being wrong the other way.
+ */
+export const ADB_SERVER_FAULT_DEVICES = num('ENKAKU_ADB_SERVER_FAULT_DEVICES', 3, z.number().int().min(2).max(64))
+/** The sliding window `ADB_SERVER_FAULT_DEVICES` is counted over. */
+export const ADB_SERVER_FAULT_WINDOW_SEC = num('ENKAKU_ADB_SERVER_FAULT_WINDOW_SEC', 10, z.number().int().min(1).max(300))
+/**
+ * How long after a `host:track-devices` RECONNECT the tracker refuses to
+ * report a device as removed — the operator's override for
+ * `DEFAULT_TRACKER_REENUMERATION_GRACE_MS`, whose own doc comment carries the
+ * reasoning. It lives here because `packages/adb` never reads env itself; the
+ * value is handed to `AdbClient` at construction.
+ *
+ * Raise it on a farm whose USB tree takes longer than 30 s to re-enumerate
+ * (more phones, deeper hub chains). 0 restores the pre-grace behaviour, where
+ * a restarted adb server removes the whole farm at once.
+ */
+export const ADB_TRACKER_REENUMERATION_GRACE_MS = num('ENKAKU_ADB_TRACKER_REENUMERATION_GRACE_MS', 30_000, z.number().int().min(0).max(600_000))
 /** After an operator's `unquarantine`, how long neither auto-quarantine path may pull the device back (`device/quarantine-grace.ts`). 0 turns the window off. */
 export const DEVICE_UNQUARANTINE_GRACE_SEC = num('ENKAKU_DEVICE_UNQUARANTINE_GRACE_SEC', 600, z.number().int().min(0).max(86_400))
 /**

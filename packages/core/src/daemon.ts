@@ -41,6 +41,7 @@ import {
   BLOB_ORPHAN_GRACE_HOURS,
   CONTROL_IDLE_SEC,
   CRASH_WATCH,
+  ADB_TRACKER_REENUMERATION_GRACE_MS,
   CUTOVER_POLL_SEC,
   CUTOVER_WINDOW_SEC,
   DEVICE_AUTO_QUARANTINE,
@@ -4380,6 +4381,7 @@ let blobGc: BlobGc | null = null
         const adbPath = await toolchain.resolveToolPath('adb')
         adb = new AdbClient({
           adbPath,
+          reenumerationGraceMs: ADB_TRACKER_REENUMERATION_GRACE_MS,
           onLog: (level, msg) => log.child('adb')[level](msg),
           // Plan 22.1 §22.6's hook, consumed here (plan 23 §4.4, §4.6): every
           // settled exec/execOut feeds both the diagnostics ring buffer and
