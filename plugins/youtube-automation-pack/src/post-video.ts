@@ -790,6 +790,35 @@ function screenSignature(tree: UiNode): string {
   return parts.join('\n')
 }
 
+/** How long to let the Shorts editor stop moving before its own button is pressed (0.46.0). */
+const EDITOR_SETTLE_MS = 8_000
+
+/**
+ * Wait until the Shorts editor's own nodes stop changing, then return — or give up quietly.
+ *
+ * The operator's reading of the stuck runs, and the numbers agree with it: "this should just be a
+ * press of Berikutnya, but there is a loading step while the video comes up, so the press may land
+ * before the editor is ready and be spent on nothing". Of 34 green runs measured on 0.39.17/0.43.0,
+ * 26 needed no retap at all and 8 needed between one and four — which is what an editor that is
+ * sometimes ready at first press and sometimes not looks like from the outside.
+ *
+ * Nothing here waits for PIXELS to stop: this screen plays the video on a loop and never goes
+ * still, which is the trap `waitForStillScreen` documents for the details screen. It watches the
+ * TREE instead, and gives up after `EDITOR_SETTLE_MS` rather than failing — a screen that will not
+ * settle is still worth pressing, and the retap budget is what covers a press that does not take.
+ */
+async function settleEditor(ctx: ScriptContext<unknown>, budgetMs = EDITOR_SETTLE_MS): Promise<boolean> {
+  const deadline = Date.now() + budgetMs
+  let previous: string | null = null
+  while (Date.now() < deadline) {
+    const signature = screenSignature(await ctx.device.dump().catch(() => null) ?? ({ children: [] } as unknown as UiNode))
+    if (previous !== null && signature === previous) return true
+    previous = signature
+    await sleep(900)
+  }
+  return false
+}
+
 /** Poll for a node by short id; returns it with the tree it was found in. */
 async function waitForId(ctx: ScriptContext<unknown>, shortId: string, budgetMs: number): Promise<{ node: UiNode | null; tree: UiNode }> {
   const got = await waitForTree(ctx, (t) => rowsById(t, shortId).length > 0, { budgetMs })
@@ -1510,33 +1539,35 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         await capture(ctx, 'yt-07-editor', editor.tree)
         fail('E_ANCHOR_NOT_FOUND', 'the Shorts editor\'s "Berikutnya" did not appear — see artifact yt-07-editor.')
       }
+      /*
+        Let the editor stop moving before pressing it (0.46.0) — see `settleEditor`. Cheap, bounded,
+        and it never fails the run: an editor that will not settle is pressed anyway.
+      */
+      const settledEditor = await settleEditor(ctx)
+      if (!settledEditor) ctx.log.info(`the Shorts editor was still changing after ${EDITOR_SETTLE_MS / 1000}s — pressing "Berikutnya" anyway, and the retaps cover a press that does not take`)
       await tapCentre(ctx, editor.node)
       screens.push('editor')
 
       details = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: 30_000 })
       /*
-        How the retaps below are delivered, and why that is now a variable (0.43.0).
+        Retaps are POINTER taps, all four of them (0.46.0, reverting 0.44.0's escalation).
 
-        0.39.4 raised the ceiling to four on the reasoning that "the answer to a swallowed tap is
-        another tap, not a longer wait". Production measured that and it is half right. Job 181bd7
-        (2026-09-18, SM-A075F) tapped "Berikutnya" five times over 97 seconds, and the run's own trace
-        records the result exactly: YouTube's nodes were byte-identical across all of it. Not "the
-        details screen was slow" — the editor did not move a pixel. The first tap, the one that
-        brought the editor to rest, worked; every tap after it reached a button that is `clickable`,
-        `enabled`, unobstructed, and inert. Eight runs in three days ended this way.
+        0.44.0 sent the second and later retaps through adb instead, on the reasoning that this pack
+        already uses adb where the pointer is refused, and it stopped after three taps once the
+        screen had twice failed to move. Both halves were wrong, and production said so within a
+        day: `editor stuck` went from 17-24% of retried runs on 0.39.17/0.43.0 to 58% on 0.44.0,
+        and YouTube's success rate on the same population fell from 42-64% to 32%.
 
-        A fourth identical tap is not a new idea. What IS a different idea is a different DELIVERY:
-        this pack already sends the details screen's title tap `via: 'adb'` rather than through the
-        farm's pointer, because that screen would not take the pointer's taps either. So the ladder is
-        now pointer, then adb — and a screen that does not change under either is reported as the
-        frozen editor it is, rather than as a details screen that never opened.
+        What the traces show, counted across 34 green runs on the older versions: 26 needed no retap
+        at all — but 1 succeeded on its first, 2 on their second, 3 on their third and 2 on their
+        FOURTH. Roughly a quarter of successful uploads are rescued by a retap, and a fifth of those
+        by the last one in the budget. 0.44.0 spent that budget on a delivery that never moved the
+        button and then gave up early, so it threw away the one mechanism that was working.
 
-        Honest about what this is: adb delivery is not PROVEN to move this button (that needs the
-        screen in front of someone). It is the one remedy this pack already relies on for the same
-        symptom on the neighbouring screen, it costs one tap, and it cannot make things worse — the
-        button either advances or stays where it was.
+        `screenSignature` stays, but it no longer decides anything about HOW to tap or when to stop.
+        It answers one question — did the editor move at all — and that answer is used only to tell
+        a frozen editor apart from a slow one, for the restart below and for the failure's wording.
       */
-      let viaAdb = false
       let frozenTaps = 0
       let taps = 0
       for (let retap = 0; retap < EDITOR_RETAPS && !details.ok; retap++) {
@@ -1554,27 +1585,14 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         const again = rowsById(details.tree, 'shorts_post_bottom_button')[0]
         if (!again || processingOverlay(details.tree) !== null) break
         const before = screenSignature(details.tree)
-        ctx.log.warn('still on the Shorts editor after "Berikutnya" — tapping it again', { retap: retap + 1, via: viaAdb ? 'adb' : 'pointer' })
-        await ctx.device.tap({ point: centre(again) }, viaAdb ? { via: 'adb' } : undefined)
+        ctx.log.warn('still on the Shorts editor after "Berikutnya" — tapping it again', { retap: retap + 1 })
+        await tapCentre(ctx, again)
         taps += 1
         details = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: 20_000 })
         if (details.ok) break
-        if (screenSignature(details.tree) !== before) {
-          frozenTaps = 0
-          continue
-        }
-        frozenTaps += 1
-        if (!viaAdb) {
-          viaAdb = true
-          ctx.log.warn('the editor did not change at all under that tap — sending the next one through adb instead of the pointer')
-          continue
-        }
-        /*
-          Two adb taps and the editor still has not moved. Another is the same idea a third time, and
-          the run has already spent a minute proving it: stop here so the failure below can say what
-          was actually measured.
-        */
-        if (frozenTaps >= 3) break
+        // Recorded, never acted on: the budget is spent in full, because the last retap in it is the
+        // one that rescues some of these runs.
+        frozenTaps = screenSignature(details.tree) === before ? frozenTaps + 1 : 0
       }
       if (!details.ok && rowsById(details.tree, 'shorts_post_bottom_button').length === 0) {
         // "Berikutnya" was taken and YouTube is still getting the details screen ready (0.38.2): wait for it, up to DETAILS_LOAD_MS.
@@ -1619,7 +1637,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         fail(
           'E_ANCHOR_NOT_FOUND',
           frozenEditor
-            ? `the Shorts editor would not act on its own "Berikutnya" — pressed ${taps} time${taps === 1 ? '' : 's'}${viaAdb ? ' (the last through adb)' : ''} against a screen whose YouTube nodes did not change at all, on ${EDITOR_PASSES} separate walks through Create with YouTube force-stopped between them. The details screen was never reached and nothing was uploaded. See artifact yt-08-details.`
+            ? `the Shorts editor would not act on its own "Berikutnya" — pressed ${taps} time${taps === 1 ? '' : 's'} against a screen whose YouTube nodes did not change at all, on ${EDITOR_PASSES} separate walks through Create with YouTube force-stopped between them. The details screen was never reached and nothing was uploaded. See artifact yt-08-details.`
             : 'the details screen did not open after the editor — see artifact yt-08-details.',
         )
       }

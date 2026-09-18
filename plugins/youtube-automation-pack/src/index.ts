@@ -86,7 +86,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.45.0',
+  version: '0.46.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -95,6 +95,36 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.46.0 — 0.44.0's adb escalation is reverted; it made YouTube markedly worse.**
+   *
+   *   Shipped on a hypothesis, measured on the farm, wrong. Comparing like with like — retried runs
+   *   only, since 0.44.0 saw nothing else — `editor stuck` went from 17-24% of runs on 0.39.17 and
+   *   0.43.0 to **58%** on 0.44.0, and the success rate on that same population fell from 42-64% to
+   *   **32%**. The operator noticed before the metric did.
+   *
+   *   The traces say exactly what was thrown away. Counted across 34 green runs on the older
+   *   versions: 26 needed no retap, 1 succeeded on its first, 2 on their second, 3 on their third,
+   *   and 2 on their FOURTH. About a quarter of successful uploads are rescued by a retap, and the
+   *   last retap in the budget rescues some of them. 0.44.0 sent retaps 2 and 3 through adb — a
+   *   delivery that, on this screen, never moved the button — and then stopped at three taps
+   *   because the screen had twice failed to move. So it replaced the one mechanism that worked
+   *   with one that does not, and cut the budget while doing it.
+   *
+   *   All four retaps are pointer taps again. `screenSignature` stays but no longer decides how to
+   *   tap or when to stop: it answers "did the editor move at all", and that is used only to tell a
+   *   frozen editor from a slow one — for 0.45.0's restart and for the failure's wording.
+   *
+   *   The lesson is not "adb is bad". It is that a remedy which cannot be shown to work must not
+   *   replace one that can, and this was deployed as a replacement rather than as an addition.
+   *
+   *   And the operator's own reading of these runs is now acted on: "this should just be a press of
+   *   Berikutnya, but the video has a loading step, so the press may land before the editor is ready
+   *   and be spent on nothing". Nothing waited for that editor to settle — the button appearing was
+   *   taken as the screen being ready. `settleEditor` watches the TREE (never the pixels: this
+   *   screen loops the video and never goes still) until it stops changing, up to 8 s, then presses.
+   *   It cannot fail a run: an editor that will not settle is pressed anyway, and the retap budget
+   *   still covers a press that does not take.
    *
    * **0.45.0 — the post is started over, because there is nothing in the screen to fix.**
    *
