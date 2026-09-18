@@ -7,7 +7,7 @@ import type {
   DeviceSettingsPatch,
   ShellMode,
 } from '@enkaku/protocol'
-import { E_DEVICE_CONFLICT, normalizeAdbCommand } from '@enkaku/protocol'
+import { E_DEVICE_CONFLICT, normalizeAdbCommand, verbReachesOffline } from '@enkaku/protocol'
 import type { Role } from '../auth/service'
 import { can, canUseFiles, canUseShell } from '../auth/acl'
 import type { Permission } from '../auth/acl'
@@ -187,7 +187,7 @@ function evaluateDevice(deps: ActionsDeps, verb: ActionVerb, deviceId: string, f
   const spec = VERBS[verb]
   const status = deps.states.current(deviceId)
   if (status === null) return { deviceId, status: 'skipped', message: 'no longer exists' }
-  if (status !== 'online' && spec.offline === 'skip') {
+  if (status !== 'online' && !verbReachesOffline(verb)) {
     return { deviceId, status: 'skipped', message: status }
   }
   if (spec.policyKind) {
@@ -253,7 +253,7 @@ export async function runAction(deps: ActionsDeps, request: ActionRequest, actor
   for (const skip of resolved.skipped) {
     if (seen.has(skip.deviceId)) continue
     seen.add(skip.deviceId)
-    if (spec.offline === 'allow' && (skip.reason === 'offline' || skip.reason === 'quarantined')) {
+    if (verbReachesOffline(request.verb) && (skip.reason === 'offline' || skip.reason === 'quarantined')) {
       candidates.push(skip.deviceId)
       continue
     }

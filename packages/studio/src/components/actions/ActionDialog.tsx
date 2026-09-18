@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { ActionResponse, ActionResult, DeviceInfo, GroupInfo } from '@enkaku/protocol'
+import { verbReachesOffline } from '@enkaku/protocol'
 import { Button, Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, cn, describeApiError } from '@enkaku/ui'
 import { toast } from 'sonner'
 import { useOverlay } from '@/lib/overlays'
@@ -38,7 +39,17 @@ export function ActionDialog<P>({
   groups: GroupInfo[]
   onClose: () => void
 }) {
-  const target = useTarget({ devices, groups, initial: ctx, maxTargets: spec.maxTargets })
+  /*
+    The verb decides what an offline or quarantined device counts as — the
+    protocol's `ACTION_OFFLINE_REACH`, the same table `actions/run.ts`
+    dispatches by. Before this the hook decided it alone, and the footer's
+    `target.count === 0` gate below therefore disabled Reconnect and Return
+    from quarantine on precisely the devices they exist for, and Move group,
+    Settings, Network and Forget on any all-offline selection (owner,
+    2026-09-18). The core had been accepting all six for offline devices the
+    whole time; nothing could reach it.
+  */
+  const target = useTarget({ devices, groups, initial: ctx, maxTargets: spec.maxTargets, reachesOffline: verbReachesOffline(spec.verb) })
   const [value, setValue] = useState<P>(() => (prefill ? { ...spec.initial, ...prefill } : spec.initial))
   const [results, setResults] = useState<ActionResult[] | null>(null)
   const [busy, setBusy] = useState(false)

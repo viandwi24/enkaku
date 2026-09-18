@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from 'react'
 import type { DeviceInfo, LabelInfo } from '@enkaku/protocol'
-import { CheckIcon, Input, LabelChip, PlusIcon, cn } from '@enkaku/ui'
+import { CheckIcon, Input, LabelChip, PlusIcon, cn, describeApiError } from '@enkaku/ui'
+import { toast } from 'sonner'
 import { runAction } from '@/lib/actions'
 import { createLabel, useLabels } from '@/lib/labels'
 
@@ -79,7 +80,7 @@ export function LabelAssign({
       await runAction('set-labels', { deviceIds }, { op, labelIds: [labelId] })
       reload()
       onChanged?.()
-    } catch {
+    } catch (err) {
       // Put the row back where it was — an optimistic tick that survives a
       // failed write is worse than a slow one.
       setPending((p) => {
@@ -87,6 +88,10 @@ export function LabelAssign({
         delete next[labelId]
         return next
       })
+      // And SAY so. This used to be a bare `catch {}`: the tick slid back and
+      // nothing else happened, which reads as "labels do not work on these
+      // devices" rather than as the refusal it was (owner, 2026-09-18).
+      toast.error(`Labels: ${describeApiError(err)}`)
     } finally {
       setBusy(false)
     }

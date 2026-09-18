@@ -118,6 +118,80 @@ export const ACTION_VERBS = [
 export const ActionVerbSchema = z.enum(ACTION_VERBS)
 export type ActionVerb = z.infer<typeof ActionVerbSchema>
 
+/**
+ * Whether a verb still acts on a device that is OFFLINE or QUARANTINED
+ * (`allow`), or is reported `skipped` before dispatch (`skip`).
+ *
+ * This lives in the protocol rather than in the core because two independent
+ * sides have to agree on it, and for a while they did not (owner field
+ * report, 2026-09-18). The core's `actions/verbs.ts` reads it to decide what
+ * to dispatch; Studio's `ActionDialog` reads it to decide how many devices
+ * the footer button is about to act on. Studio had its own answer — one
+ * `usableStatus` helper that called every offline or quarantined device
+ * unusable, for every verb — so `Move group`, `Settings`, `Network`,
+ * `Forget`, and worst of all `Reconnect` and `Return from quarantine` came up
+ * with a disabled button and a "0 devices" title on exactly the devices they
+ * exist for. Two tables, one of which nobody could see, is how that happened;
+ * so there is one table, and it is here.
+ *
+ * `allow` is not "this verb ignores the device". It is "the work is on the
+ * farm's side of the wire, or its whole purpose is a device that is not
+ * answering":
+ *
+ *  - `set-group`, `set-labels`, `forget`, `block` write rows in SQLite and
+ *    never touch adb.
+ *  - `settings` writes `devices.settings` and then tries a live re-lock or
+ *    session restart, which reports `no-session` rather than failing — the
+ *    setting is saved and lands when the phone is back.
+ *  - `set-network` saves the route; `route-service` applies it on the next
+ *    attach.
+ *  - `reconnect` and `cutover` are how a device stops being offline.
+ *  - `unquarantine` can ONLY ever be run on a device that is quarantined,
+ *    which is to say never on one this table would call reachable.
+ *
+ * Its partner `quarantine` is `skip` on purpose and is not an oversight: the
+ * state machine's `QUARANTINE` transition only leaves `online`, so
+ * dispatching an offline device would report a failure for something that is
+ * simply not a transition.
+ */
+export const ACTION_OFFLINE_REACH: Record<ActionVerb, 'allow' | 'skip'> = {
+  'run-script': 'skip',
+  'run-workflow': 'skip',
+  install: 'skip',
+  push: 'skip',
+  pull: 'skip',
+  adb: 'skip',
+  wake: 'skip',
+  sleep: 'skip',
+  'screen-off': 'skip',
+  'screen-on': 'skip',
+  reconnect: 'allow',
+  disconnect: 'skip',
+  cutover: 'allow',
+  forget: 'allow',
+  block: 'allow',
+  quarantine: 'skip',
+  unquarantine: 'allow',
+  'set-network': 'allow',
+  'apply-screen-label': 'skip',
+  'clear-screen-label': 'skip',
+  'set-group': 'allow',
+  'set-labels': 'allow',
+  prepare: 'skip',
+  'retry-prepare': 'skip',
+  reprofile: 'skip',
+  'install-agent': 'skip',
+  'uninstall-agent': 'skip',
+  screenshot: 'skip',
+  'clear-cache': 'skip',
+  settings: 'allow',
+}
+
+/** True when `verb` still acts on a device that is offline or quarantined. */
+export function verbReachesOffline(verb: ActionVerb): boolean {
+  return ACTION_OFFLINE_REACH[verb] === 'allow'
+}
+
 /** The `pacing` block `POST /api/batches` took (plan 94 §4.9), unchanged. */
 const PacingSchema = z
   .object({
