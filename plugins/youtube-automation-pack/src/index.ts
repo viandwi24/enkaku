@@ -86,7 +86,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.44.0',
+  version: '0.45.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -95,6 +95,29 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.45.0 — the post is started over, because there is nothing in the screen to fix.**
+   *
+   *   0.44.0 escalated the frozen editor's retap to adb delivery, on the reasoning that this pack
+   *   already uses adb where the pointer is refused. Production answered inside the hour and the
+   *   answer was no: two runs on 0.44.0 pressed the button three times, the last through adb,
+   *   against a tree that did not move. That hypothesis is dead and is recorded here as dead.
+   *
+   *   The selector theories died with it. The editor a GREEN run taps and the editor a frozen run
+   *   taps are the same tree — comparing job 181bd7's frozen dump against a successful run's editor,
+   *   both pulled from their own `trace/ui` recordings, gives an identical set of YouTube ids, and
+   *   the only differences in the entire comparison are vertical offsets from one phone's taller
+   *   status bar. There is no anchor to add, no flag to read, nothing to detect.
+   *
+   *   A state that cannot be read can still be left. The whole Create → gallery → editor → details
+   *   walk now gets a second pass, entered only from a provably frozen editor, with YouTube
+   *   force-stopped in between. This is safe for exactly one reason and it is worth stating: the
+   *   flow fails strictly BEFORE Upload, so nothing has been posted when the restart happens and no
+   *   pass can duplicate anything. The draft the kill leaves behind is what `unfinishedDraft`
+   *   already exists for, and its default answers the prompt on the way back in.
+   *
+   *   Two passes, not three. A third would be the same idea again — which is the mistake 0.39.4
+   *   made with a fourth retap and 0.44.0 made with a different delivery.
    *
    * **0.44.0 — a "Berikutnya" pressed five times against a screen that never moved.**
    *

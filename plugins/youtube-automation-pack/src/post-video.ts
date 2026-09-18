@@ -514,6 +514,16 @@ const TRIM_DONE_IDS = ['shorts_trim_finish_trim_button', 'creation_next_button']
 const EDITOR_RETAPS = 4
 
 /**
+ * Passes over the whole Create → gallery → editor → details walk (0.45.0).
+ *
+ * Two. The second is spent only on an editor that has provably stopped acting on its own button,
+ * and it is a restart rather than another press: nothing is uploaded before the details screen, so
+ * killing YouTube and walking back in cannot duplicate a post. A third pass would be the same idea
+ * again, which is the mistake 0.39.4 and 0.44.0 each made once.
+ */
+const EDITOR_PASSES = 2
+
+/**
  * Android's own input-method chooser, standing over whatever was on screen (0.39.5).
  *
  * Measured on production #9 (2026-09-16): a dump with not one YouTube node in it, carrying "Enkaku
@@ -1361,221 +1371,259 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       return { tree: got.tree, ok: got.ok && resumeDraftPrompt(got.tree) === null }
     }
 
-    // --- Create -> gallery ----------------------------------------------------
-    const bar = await waitForTree(ctx, (t) => createButton(t) !== null, { budgetMs: 10_000 })
-    const create = createButton(bar.tree)
-    if (!create) fail('E_ANCHOR_NOT_FOUND', 'the Create ("Buat") button was not found after reading the channel.')
-    await tapCentre(ctx, create)
-    screens.push('create')
-
-    const createDialog = hiddenDialogWatch()
-    const opened = await waitPastDraft((t) => {
-      const dialog = createDialog.observe(t)
-      return rowsById(t, 'unified_permissions_primary_button').length > 0 || rowsById(t, 'gallery_header_create_title').length > 0 || dialog
-    }, 12_000)
-    await capture(ctx, 'yt-03-create', opened.tree)
-    if (createDialog.confirmed) fail('E_PERMISSION_DIALOG_HIDDEN', `YouTube is asking for a permission (the camera, on Create) — ${PERMISSION_HELP}`)
-    const fromGallery = rowsById(opened.tree, 'unified_permissions_primary_button')[0]
-    if (fromGallery) {
-      await tapCentre(ctx, fromGallery)
-    } else if (rowsById(opened.tree, 'gallery_header_create_title').length === 0) {
-      fail(
-        'E_ANCHOR_NOT_FOUND',
-        'Create did not show "Tambahkan dari Galeri". This flow was walked with the camera refused; a phone that granted YouTube the camera shows a different screen — see artifact yt-03-create.',
-      )
-    }
-
-    const galleryDialog = hiddenDialogWatch()
-    const galleryReady = (t: UiNode): boolean => {
-      const dialog = galleryDialog.observe(t)
-      return galleryOpen(t) || dialog
-    }
-    let gallery = await waitPastDraft(galleryReady, fromGallery ? 6_000 : 12_000)
-    for (let retap = 0; retap < 2 && fromGallery && !gallery.ok && !galleryDialog.confirmed; retap++) {
-      /*
-        A "Tambahkan dari Galeri" tap YouTube did not act on (0.36.0). Production phone #5 (2026-09-15): the camera screen
-        with the button was still on screen twelve seconds after the tap, exactly as before it, and the run failed "the
-        gallery did not open". While that screen is still up, its button is tapped again, as a person would.
-      */
-      const again = rowsById(gallery.tree, 'unified_permissions_primary_button')[0]
-      if (!again) break
-      ctx.log.warn('the camera screen is still up after "Tambahkan dari Galeri" — tapping it again', { retap: retap + 1 })
-      await tapCentre(ctx, again)
-      gallery = await waitPastDraft(galleryReady, 10_000)
-    }
-    if (galleryDialog.confirmed) {
-      await capture(ctx, 'yt-04-gallery', gallery.tree)
-      fail('E_PERMISSION_DIALOG_HIDDEN', `YouTube is asking for access to photos and videos — ${PERMISSION_HELP}`)
-    }
-    if (!gallery.ok) {
-      await capture(ctx, 'yt-04-gallery', gallery.tree)
-      fail('E_ANCHOR_NOT_FOUND', 'the gallery did not open after "Tambahkan dari Galeri" — see artifact yt-04-gallery.')
-    }
-
-    // The pushed file is the newest, so its cell is on the first screen; the scan can lag a moment.
-    const found = await waitPastDraft((t) => galleryCellFor(t, fileName) !== null, 10_000)
-    const galleryTree = await capture(ctx, 'yt-04-gallery', found.tree)
-    const cell = found.ok ? galleryCellFor(galleryTree, fileName) : null
-    if (!cell) fail('E_GALLERY_ITEM_NOT_FOUND', `the gallery has no cell named "${fileName}" — the pushed video did not appear. See artifact yt-04-gallery.`)
-    await tapCentre(ctx, cell)
-    const picked = await waitForTree(ctx, (t) => {
-      const c = galleryCellFor(t, fileName)
-      return c !== null && isSelectedCell(t, c) && rowsById(t, 'multi_select_next_button').length > 0
-    }, { budgetMs: 8_000 })
-    if (!picked.ok) {
-      await capture(ctx, 'yt-05-picked', picked.tree)
-      fail('E_ANCHOR_NOT_FOUND', `tapped "${fileName}" but the gallery did not mark it selected — see artifact yt-05-picked.`)
-    }
-    await tapCentre(ctx, rowsById(picked.tree, 'multi_select_next_button')[0] as UiNode)
-    screens.push('gallery')
-
-    // --- (trim) -> editor -> details ------------------------------------------
-    // The trim screen is OPTIONAL: the hand walk met it, and the first routed
-    // run on the same phone, same video length, went straight to the editor
-    // (2026-09-11). So wait for either, and trim only when it is there.
-    // Its button changed id between two production runs 12 hours apart (`trimDoneButton`).
-    const next = await waitForTree(ctx, (t) => trimDoneButton(t) !== null || rowsById(t, 'shorts_post_bottom_button').length > 0, { budgetMs: 20_000 })
-    const trimButton = trimDoneButton(next.tree)
-    if (trimButton && rowsById(next.tree, 'shorts_post_bottom_button').length === 0) {
-      ctx.log.info('the trim screen is up — tapping its "Selesai"', { id: trimButton.resourceId, text: trimButton.text, desc: trimButton.desc })
-      await tapCentre(ctx, trimButton)
-      screens.push('trim')
-    } else if (!next.ok) {
-      await capture(ctx, 'yt-06-trim', next.tree)
-      fail('E_ANCHOR_NOT_FOUND', 'neither the trim screen ("Selesai") nor the Shorts editor appeared after the gallery — see artifact yt-06-trim.')
-    }
-
-    let editor = await waitForId(ctx, 'shorts_post_bottom_button', 20_000)
     /*
-      A trim "Done" YouTube did not act on (0.39.3). Production #42 (2026-09-16) tapped the trim screen's own
-      button — `shorts_trim_finish_trim_button`, drawn "Done" on that phone's English build — and twenty seconds
-      later the dump was still the same screen, that same button in it, nothing processing. That is exactly the
-      swallowed tap the editor's "Berikutnya" gets, which 0.37.0 fixed by tapping again and which was never
-      applied here: the run instead died reporting the editor never opened, which was true and not the reason.
-      While the trim screen is still up and YouTube is not processing, tap it again, as a person would.
+      Two passes over the whole upload walk (0.45.0). The second exists for one measured state:
+      a Shorts editor that stops acting on its own "Berikutnya" and cannot be told apart from a
+      working one — see the restart inside. Every other failure in here still fails on the first
+      pass, immediately, exactly as before.
     */
-    for (let retap = 0; retap < 2 && !editor.node; retap++) {
-      const stillTrim = trimDoneButton(editor.tree)
-      if (!stillTrim || processingOverlay(editor.tree) !== null) break
-      ctx.log.warn('still on the trim screen after its "Selesai" — tapping it again', { retap: retap + 1, id: stillTrim.resourceId, text: stillTrim.text })
-      await tapCentre(ctx, stillTrim)
-      editor = await waitForId(ctx, 'shorts_post_bottom_button', 20_000)
-    }
-    const processing = editor.node ? null : processingOverlay(editor.tree)
-    if (processing !== null) {
-      /*
-        Still processing (0.35.0, production #6 and #7): YouTube is working on the trimmed video under a "Memproses"
-        spinner, and the editor opens when it is done. Wait it out — never tap "Selesai" again, which is under the
-        spinner and would only start the trim over — and name the state if it never finishes.
-      */
-      const words = processing || 'Memproses'
-      const waitStarted = Date.now()
-      await capture(ctx, 'yt-07-processing', editor.tree)
-      ctx.log.info(`YouTube is still processing the video ("${words}") — waiting up to ${TRIM_PROCESSING_MS / 60_000} min for the Shorts editor, without tapping "Selesai" again`)
-      const settled = await waitForTree(ctx, (t) => rowsById(t, 'shorts_post_bottom_button').length > 0 || processingOverlay(t) === null, { budgetMs: TRIM_PROCESSING_MS, intervalMs: 2_000 })
-      const opened = rowsById(settled.tree, 'shorts_post_bottom_button')[0]
-      if (opened) {
-        ctx.log.info('YouTube finished processing and opened the Shorts editor', { waitedMs: settled.waitedMs })
-        editor = { node: opened, tree: settled.tree }
-      } else if (processingOverlay(settled.tree) !== null) {
-        await capture(ctx, 'yt-07-still-processing', settled.tree)
+    let details: { ok: boolean; tree: UiNode }
+    for (let pass = 0; pass < EDITOR_PASSES; pass++) {
+      // --- Create -> gallery ----------------------------------------------------
+      const bar = await waitForTree(ctx, (t) => createButton(t) !== null, { budgetMs: 10_000 })
+      const create = createButton(bar.tree)
+      if (!create) fail('E_ANCHOR_NOT_FOUND', 'the Create ("Buat") button was not found after reading the channel.')
+      await tapCentre(ctx, create)
+      screens.push('create')
+
+      const createDialog = hiddenDialogWatch()
+      const opened = await waitPastDraft((t) => {
+        const dialog = createDialog.observe(t)
+        return rowsById(t, 'unified_permissions_primary_button').length > 0 || rowsById(t, 'gallery_header_create_title').length > 0 || dialog
+      }, 12_000)
+      await capture(ctx, 'yt-03-create', opened.tree)
+      if (createDialog.confirmed) fail('E_PERMISSION_DIALOG_HIDDEN', `YouTube is asking for a permission (the camera, on Create) — ${PERMISSION_HELP}`)
+      const fromGallery = rowsById(opened.tree, 'unified_permissions_primary_button')[0]
+      if (fromGallery) {
+        await tapCentre(ctx, fromGallery)
+      } else if (rowsById(opened.tree, 'gallery_header_create_title').length === 0) {
         fail(
-          'E_VIDEO_PROCESSING',
-          `YouTube was still processing the video ("${words}") ${Math.round((Date.now() - waitStarted) / 1000) + 20}s after the trim screen's "Selesai", and the Shorts editor never opened — nothing was uploaded. See artifact yt-07-still-processing.`,
+          'E_ANCHOR_NOT_FOUND',
+          'Create did not show "Tambahkan dari Galeri". This flow was walked with the camera refused; a phone that granted YouTube the camera shows a different screen — see artifact yt-03-create.',
         )
-      } else {
-        ctx.log.info('the processing overlay went away — waiting for the Shorts editor', { waitedMs: settled.waitedMs })
+      }
+
+      const galleryDialog = hiddenDialogWatch()
+      const galleryReady = (t: UiNode): boolean => {
+        const dialog = galleryDialog.observe(t)
+        return galleryOpen(t) || dialog
+      }
+      let gallery = await waitPastDraft(galleryReady, fromGallery ? 6_000 : 12_000)
+      for (let retap = 0; retap < 2 && fromGallery && !gallery.ok && !galleryDialog.confirmed; retap++) {
+        /*
+          A "Tambahkan dari Galeri" tap YouTube did not act on (0.36.0). Production phone #5 (2026-09-15): the camera screen
+          with the button was still on screen twelve seconds after the tap, exactly as before it, and the run failed "the
+          gallery did not open". While that screen is still up, its button is tapped again, as a person would.
+        */
+        const again = rowsById(gallery.tree, 'unified_permissions_primary_button')[0]
+        if (!again) break
+        ctx.log.warn('the camera screen is still up after "Tambahkan dari Galeri" — tapping it again', { retap: retap + 1 })
+        await tapCentre(ctx, again)
+        gallery = await waitPastDraft(galleryReady, 10_000)
+      }
+      if (galleryDialog.confirmed) {
+        await capture(ctx, 'yt-04-gallery', gallery.tree)
+        fail('E_PERMISSION_DIALOG_HIDDEN', `YouTube is asking for access to photos and videos — ${PERMISSION_HELP}`)
+      }
+      if (!gallery.ok) {
+        await capture(ctx, 'yt-04-gallery', gallery.tree)
+        fail('E_ANCHOR_NOT_FOUND', 'the gallery did not open after "Tambahkan dari Galeri" — see artifact yt-04-gallery.')
+      }
+
+      // The pushed file is the newest, so its cell is on the first screen; the scan can lag a moment.
+      const found = await waitPastDraft((t) => galleryCellFor(t, fileName) !== null, 10_000)
+      const galleryTree = await capture(ctx, 'yt-04-gallery', found.tree)
+      const cell = found.ok ? galleryCellFor(galleryTree, fileName) : null
+      if (!cell) fail('E_GALLERY_ITEM_NOT_FOUND', `the gallery has no cell named "${fileName}" — the pushed video did not appear. See artifact yt-04-gallery.`)
+      await tapCentre(ctx, cell)
+      const picked = await waitForTree(ctx, (t) => {
+        const c = galleryCellFor(t, fileName)
+        return c !== null && isSelectedCell(t, c) && rowsById(t, 'multi_select_next_button').length > 0
+      }, { budgetMs: 8_000 })
+      if (!picked.ok) {
+        await capture(ctx, 'yt-05-picked', picked.tree)
+        fail('E_ANCHOR_NOT_FOUND', `tapped "${fileName}" but the gallery did not mark it selected — see artifact yt-05-picked.`)
+      }
+      await tapCentre(ctx, rowsById(picked.tree, 'multi_select_next_button')[0] as UiNode)
+      screens.push('gallery')
+
+      // --- (trim) -> editor -> details ------------------------------------------
+      // The trim screen is OPTIONAL: the hand walk met it, and the first routed
+      // run on the same phone, same video length, went straight to the editor
+      // (2026-09-11). So wait for either, and trim only when it is there.
+      // Its button changed id between two production runs 12 hours apart (`trimDoneButton`).
+      const next = await waitForTree(ctx, (t) => trimDoneButton(t) !== null || rowsById(t, 'shorts_post_bottom_button').length > 0, { budgetMs: 20_000 })
+      const trimButton = trimDoneButton(next.tree)
+      if (trimButton && rowsById(next.tree, 'shorts_post_bottom_button').length === 0) {
+        ctx.log.info('the trim screen is up — tapping its "Selesai"', { id: trimButton.resourceId, text: trimButton.text, desc: trimButton.desc })
+        await tapCentre(ctx, trimButton)
+        screens.push('trim')
+      } else if (!next.ok) {
+        await capture(ctx, 'yt-06-trim', next.tree)
+        fail('E_ANCHOR_NOT_FOUND', 'neither the trim screen ("Selesai") nor the Shorts editor appeared after the gallery — see artifact yt-06-trim.')
+      }
+
+      let editor = await waitForId(ctx, 'shorts_post_bottom_button', 20_000)
+      /*
+        A trim "Done" YouTube did not act on (0.39.3). Production #42 (2026-09-16) tapped the trim screen's own
+        button — `shorts_trim_finish_trim_button`, drawn "Done" on that phone's English build — and twenty seconds
+        later the dump was still the same screen, that same button in it, nothing processing. That is exactly the
+        swallowed tap the editor's "Berikutnya" gets, which 0.37.0 fixed by tapping again and which was never
+        applied here: the run instead died reporting the editor never opened, which was true and not the reason.
+        While the trim screen is still up and YouTube is not processing, tap it again, as a person would.
+      */
+      for (let retap = 0; retap < 2 && !editor.node; retap++) {
+        const stillTrim = trimDoneButton(editor.tree)
+        if (!stillTrim || processingOverlay(editor.tree) !== null) break
+        ctx.log.warn('still on the trim screen after its "Selesai" — tapping it again', { retap: retap + 1, id: stillTrim.resourceId, text: stillTrim.text })
+        await tapCentre(ctx, stillTrim)
         editor = await waitForId(ctx, 'shorts_post_bottom_button', 20_000)
       }
-    }
-    if (!editor.node) {
-      await capture(ctx, 'yt-07-editor', editor.tree)
-      fail('E_ANCHOR_NOT_FOUND', 'the Shorts editor\'s "Berikutnya" did not appear — see artifact yt-07-editor.')
-    }
-    await tapCentre(ctx, editor.node)
-    screens.push('editor')
-
-    let details = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: 30_000 })
-    /*
-      How the retaps below are delivered, and why that is now a variable (0.43.0).
-
-      0.39.4 raised the ceiling to four on the reasoning that "the answer to a swallowed tap is
-      another tap, not a longer wait". Production measured that and it is half right. Job 181bd7
-      (2026-09-18, SM-A075F) tapped "Berikutnya" five times over 97 seconds, and the run's own trace
-      records the result exactly: YouTube's nodes were byte-identical across all of it. Not "the
-      details screen was slow" — the editor did not move a pixel. The first tap, the one that
-      brought the editor to rest, worked; every tap after it reached a button that is `clickable`,
-      `enabled`, unobstructed, and inert. Eight runs in three days ended this way.
-
-      A fourth identical tap is not a new idea. What IS a different idea is a different DELIVERY:
-      this pack already sends the details screen's title tap `via: 'adb'` rather than through the
-      farm's pointer, because that screen would not take the pointer's taps either. So the ladder is
-      now pointer, then adb — and a screen that does not change under either is reported as the
-      frozen editor it is, rather than as a details screen that never opened.
-
-      Honest about what this is: adb delivery is not PROVEN to move this button (that needs the
-      screen in front of someone). It is the one remedy this pack already relies on for the same
-      symptom on the neighbouring screen, it costs one tap, and it cannot make things worse — the
-      button either advances or stays where it was.
-    */
-    let viaAdb = false
-    let frozenTaps = 0
-    let taps = 0
-    for (let retap = 0; retap < EDITOR_RETAPS && !details.ok; retap++) {
-      /*
-        A "Berikutnya" YouTube did not act on (0.37.0). Production #25 and #57 (2026-09-15) were still on the Shorts editor,
-        its button in view, 30 s after the tap. While the editor and its button are still there — and YouTube is not
-        processing — the button is tapped again, as a person would.
-
-        The ceiling was two and is four (0.39.4). Production #60 (2026-09-16) spent both of them — the log shows the two
-        warnings, and the failing dump is still the editor with `shorts_post_bottom_button` drawn and nothing processing —
-        so the run died having been two taps short rather than having learnt anything new. Each pass costs one 20 s wait
-        and stops the moment the editor goes away, which is why the answer to a swallowed tap is another tap, not a
-        longer wait: waiting does not press a button that was never pressed.
-      */
-      const again = rowsById(details.tree, 'shorts_post_bottom_button')[0]
-      if (!again || processingOverlay(details.tree) !== null) break
-      const before = screenSignature(details.tree)
-      ctx.log.warn('still on the Shorts editor after "Berikutnya" — tapping it again', { retap: retap + 1, via: viaAdb ? 'adb' : 'pointer' })
-      await ctx.device.tap({ point: centre(again) }, viaAdb ? { via: 'adb' } : undefined)
-      taps += 1
-      details = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: 20_000 })
-      if (details.ok) break
-      if (screenSignature(details.tree) !== before) {
-        frozenTaps = 0
-        continue
+      const processing = editor.node ? null : processingOverlay(editor.tree)
+      if (processing !== null) {
+        /*
+          Still processing (0.35.0, production #6 and #7): YouTube is working on the trimmed video under a "Memproses"
+          spinner, and the editor opens when it is done. Wait it out — never tap "Selesai" again, which is under the
+          spinner and would only start the trim over — and name the state if it never finishes.
+        */
+        const words = processing || 'Memproses'
+        const waitStarted = Date.now()
+        await capture(ctx, 'yt-07-processing', editor.tree)
+        ctx.log.info(`YouTube is still processing the video ("${words}") — waiting up to ${TRIM_PROCESSING_MS / 60_000} min for the Shorts editor, without tapping "Selesai" again`)
+        const settled = await waitForTree(ctx, (t) => rowsById(t, 'shorts_post_bottom_button').length > 0 || processingOverlay(t) === null, { budgetMs: TRIM_PROCESSING_MS, intervalMs: 2_000 })
+        const opened = rowsById(settled.tree, 'shorts_post_bottom_button')[0]
+        if (opened) {
+          ctx.log.info('YouTube finished processing and opened the Shorts editor', { waitedMs: settled.waitedMs })
+          editor = { node: opened, tree: settled.tree }
+        } else if (processingOverlay(settled.tree) !== null) {
+          await capture(ctx, 'yt-07-still-processing', settled.tree)
+          fail(
+            'E_VIDEO_PROCESSING',
+            `YouTube was still processing the video ("${words}") ${Math.round((Date.now() - waitStarted) / 1000) + 20}s after the trim screen's "Selesai", and the Shorts editor never opened — nothing was uploaded. See artifact yt-07-still-processing.`,
+          )
+        } else {
+          ctx.log.info('the processing overlay went away — waiting for the Shorts editor', { waitedMs: settled.waitedMs })
+          editor = await waitForId(ctx, 'shorts_post_bottom_button', 20_000)
+        }
       }
-      frozenTaps += 1
-      if (!viaAdb) {
-        viaAdb = true
-        ctx.log.warn('the editor did not change at all under that tap — sending the next one through adb instead of the pointer')
-        continue
+      if (!editor.node) {
+        await capture(ctx, 'yt-07-editor', editor.tree)
+        fail('E_ANCHOR_NOT_FOUND', 'the Shorts editor\'s "Berikutnya" did not appear — see artifact yt-07-editor.')
       }
+      await tapCentre(ctx, editor.node)
+      screens.push('editor')
+
+      details = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: 30_000 })
       /*
-        Two adb taps and the editor still has not moved. Another is the same idea a third time, and
-        the run has already spent a minute proving it: stop here so the failure below can say what
-        was actually measured.
+        How the retaps below are delivered, and why that is now a variable (0.43.0).
+
+        0.39.4 raised the ceiling to four on the reasoning that "the answer to a swallowed tap is
+        another tap, not a longer wait". Production measured that and it is half right. Job 181bd7
+        (2026-09-18, SM-A075F) tapped "Berikutnya" five times over 97 seconds, and the run's own trace
+        records the result exactly: YouTube's nodes were byte-identical across all of it. Not "the
+        details screen was slow" — the editor did not move a pixel. The first tap, the one that
+        brought the editor to rest, worked; every tap after it reached a button that is `clickable`,
+        `enabled`, unobstructed, and inert. Eight runs in three days ended this way.
+
+        A fourth identical tap is not a new idea. What IS a different idea is a different DELIVERY:
+        this pack already sends the details screen's title tap `via: 'adb'` rather than through the
+        farm's pointer, because that screen would not take the pointer's taps either. So the ladder is
+        now pointer, then adb — and a screen that does not change under either is reported as the
+        frozen editor it is, rather than as a details screen that never opened.
+
+        Honest about what this is: adb delivery is not PROVEN to move this button (that needs the
+        screen in front of someone). It is the one remedy this pack already relies on for the same
+        symptom on the neighbouring screen, it costs one tap, and it cannot make things worse — the
+        button either advances or stays where it was.
       */
-      if (frozenTaps >= 3) break
-    }
-    if (!details.ok && rowsById(details.tree, 'shorts_post_bottom_button').length === 0) {
-      // "Berikutnya" was taken and YouTube is still getting the details screen ready (0.38.2): wait for it, up to DETAILS_LOAD_MS.
-      ctx.log.info(`the Shorts editor is gone but the details screen is not up yet — waiting up to ${DETAILS_LOAD_MS / 1000}s for it`)
-      details = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: DETAILS_LOAD_MS })
-    }
-    if (!details.ok) {
-      // The tree too, not only a screenshot (0.35.0): production phone #2 (2026-09-15) showed the details screen
-      // plainly on its screenshot while this wait failed, and with no dump the cause could not be read.
-      await capture(ctx, 'yt-08-details', details.tree)
-      // Say which of the two failures this is (0.43.0). "The details screen did not open" sent every
-      // reader of these runs looking at the details screen, which had never been reached — the
-      // editor was still up and had ignored every press of its own button.
-      fail(
-        'E_ANCHOR_NOT_FOUND',
-        frozenTaps > 0 && rowsById(details.tree, 'shorts_post_bottom_button').length > 0
-          ? `the Shorts editor would not act on its own "Berikutnya": it was pressed ${taps} time${taps === 1 ? '' : 's'}${viaAdb ? ' (the last through adb)' : ''} and YouTube's own nodes did not change at all between them, so the details screen was never reached. Nothing was uploaded. See artifact yt-08-details.`
-          : 'the details screen did not open after the editor — see artifact yt-08-details.',
-      )
+      let viaAdb = false
+      let frozenTaps = 0
+      let taps = 0
+      for (let retap = 0; retap < EDITOR_RETAPS && !details.ok; retap++) {
+        /*
+          A "Berikutnya" YouTube did not act on (0.37.0). Production #25 and #57 (2026-09-15) were still on the Shorts editor,
+          its button in view, 30 s after the tap. While the editor and its button are still there — and YouTube is not
+          processing — the button is tapped again, as a person would.
+
+          The ceiling was two and is four (0.39.4). Production #60 (2026-09-16) spent both of them — the log shows the two
+          warnings, and the failing dump is still the editor with `shorts_post_bottom_button` drawn and nothing processing —
+          so the run died having been two taps short rather than having learnt anything new. Each pass costs one 20 s wait
+          and stops the moment the editor goes away, which is why the answer to a swallowed tap is another tap, not a
+          longer wait: waiting does not press a button that was never pressed.
+        */
+        const again = rowsById(details.tree, 'shorts_post_bottom_button')[0]
+        if (!again || processingOverlay(details.tree) !== null) break
+        const before = screenSignature(details.tree)
+        ctx.log.warn('still on the Shorts editor after "Berikutnya" — tapping it again', { retap: retap + 1, via: viaAdb ? 'adb' : 'pointer' })
+        await ctx.device.tap({ point: centre(again) }, viaAdb ? { via: 'adb' } : undefined)
+        taps += 1
+        details = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: 20_000 })
+        if (details.ok) break
+        if (screenSignature(details.tree) !== before) {
+          frozenTaps = 0
+          continue
+        }
+        frozenTaps += 1
+        if (!viaAdb) {
+          viaAdb = true
+          ctx.log.warn('the editor did not change at all under that tap — sending the next one through adb instead of the pointer')
+          continue
+        }
+        /*
+          Two adb taps and the editor still has not moved. Another is the same idea a third time, and
+          the run has already spent a minute proving it: stop here so the failure below can say what
+          was actually measured.
+        */
+        if (frozenTaps >= 3) break
+      }
+      if (!details.ok && rowsById(details.tree, 'shorts_post_bottom_button').length === 0) {
+        // "Berikutnya" was taken and YouTube is still getting the details screen ready (0.38.2): wait for it, up to DETAILS_LOAD_MS.
+        ctx.log.info(`the Shorts editor is gone but the details screen is not up yet — waiting up to ${DETAILS_LOAD_MS / 1000}s for it`)
+        details = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: DETAILS_LOAD_MS })
+      }
+      if (!details.ok) {
+        const frozenEditor = frozenTaps > 0 && rowsById(details.tree, 'shorts_post_bottom_button').length > 0
+        // The tree too, not only a screenshot (0.35.0): production phone #2 (2026-09-15) showed the details screen
+        // plainly on its screenshot while this wait failed, and with no dump the cause could not be read.
+        await capture(ctx, frozenEditor && pass + 1 < EDITOR_PASSES ? `yt-08-editor-frozen-${pass + 1}` : 'yt-08-details', details.tree)
+        /*
+          Start the post over (0.45.0) — the only thing left to try, and the one thing that was never tried.
+
+          0.44.0 escalated the retap to adb delivery on the reasoning that this pack already uses adb
+          where the pointer is refused. Production answered within the hour: two runs on 0.44.0 reached
+          this branch having pressed the button three times, the last through adb, against a tree that
+          did not move. That hypothesis is dead.
+
+          What killed the selector theories too: the editor a SUCCESSFUL run taps and the editor a
+          frozen run taps are the same tree. Comparing job 181bd7's frozen dump against a green run's
+          editor (both pulled from their own `trace/ui`) gives an identical set of YouTube ids, and the
+          only differences in the whole comparison are vertical offsets from one phone's taller status
+          bar. There is nothing in the screen to key on, so there is nothing to detect and no anchor to
+          fix.
+
+          A state that cannot be read can still be left. Nothing has been uploaded at this point — the
+          flow fails here strictly before Upload — so force-stopping YouTube and walking Create →
+          gallery → editor again costs one pass and risks no duplicate post. The draft the kill leaves
+          behind is what `unfinishedDraft` already exists for, and its default ("start over") answers
+          the prompt on the way back through.
+        */
+        if (frozenEditor && pass + 1 < EDITOR_PASSES) {
+          ctx.log.warn(`the Shorts editor would not act on its own "Berikutnya" after ${taps} press(es) — starting the post over rather than pressing a fourth time`, { pass: pass + 1 })
+          await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: true })
+          await relaunch(ctx)
+          continue
+        }
+        // Say which of the two failures this is (0.43.0). "The details screen did not open" sent every
+        // reader of these runs looking at the details screen, which had never been reached — the
+        // editor was still up and had ignored every press of its own button.
+        fail(
+          'E_ANCHOR_NOT_FOUND',
+          frozenEditor
+            ? `the Shorts editor would not act on its own "Berikutnya" — pressed ${taps} time${taps === 1 ? '' : 's'}${viaAdb ? ' (the last through adb)' : ''} against a screen whose YouTube nodes did not change at all, on ${EDITOR_PASSES} separate walks through Create with YouTube force-stopped between them. The details screen was never reached and nothing was uploaded. See artifact yt-08-details.`
+            : 'the details screen did not open after the editor — see artifact yt-08-details.',
+        )
+      }
+      break
     }
     // It opens as a header over a spinner; aim nothing until it has finished drawing.
     const still = await waitForStillScreen(ctx, DETAILS_LOAD_MS)
