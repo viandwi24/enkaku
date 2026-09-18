@@ -487,10 +487,37 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
     if (!row) return
     const status = (row.status ?? 'offline') as DeviceStatus
     if (status === 'offline' || status === 'quarantined') return
-    // `forcedAsleep` first: a device slept by hand still has its session, so
-    // `rawActual` calls it `hot` while its panel is dark, and skipping here is
-    // how Wake became a button that did nothing.
-    if (!forcedAsleep.has(deviceId) && rawActual(deviceId, row) !== 'asleep') return
+    /*
+      `forcedAsleep` first: a device slept by hand still has its session, so
+      `rawActual` calls it `hot` while its panel is dark, and skipping here is
+      how Wake became a button that did nothing.
+
+      The SAME hole, one door along (owner, 2026-09-17): a phone that dozed on
+      its OWN is in neither set. Plan 206 gives every online device a session,
+      so `rawActual` answers `hot` for all of them, and a job's `hold` reached
+      this line and returned without ever asking the phone. Measured on the
+      owner's moto g06: four warm-up activities failed in a row, each blaming a
+      selector ("the Shop tab was not on the bottom navigation"), with black
+      screenshots byte-identical across two different packs and the phone
+      reporting `mWakefulness=Dozing`. One `input keyevent 224` woke it and two
+      of the same four then passed. The farm never asked.
+
+      So before skipping, ask — but only through the CACHED observation
+      (`OBSERVE_MAX_AGE_SEC`, no `force`). That keeps §3.6's rule intact: the
+      probe still runs "on reconcile and on demand, never on a timer", and this
+      is a hold, not a timer. A `reconcile` fires on every status change,
+      session open/close and job claim, so on the path that matters the answer
+      is already in hand and this costs nothing.
+
+      `off` only. An `unknown` — no policy wired, a probe that threw, a remote
+      device — is not evidence that the panel is dark, and waking on a
+      not-known is the guess §0.3 refuses to make.
+    */
+    if (!forcedAsleep.has(deviceId) && rawActual(deviceId, row) !== 'asleep') {
+      const seen = await refreshObserved(deviceId)
+      if (seen?.state !== 'off') return
+      log.info(`readiness: ${deviceId} reads ${rawActual(deviceId, row)} but its panel is off (${seen.reason}) — waking it anyway`)
+    }
     const transport = transportFor(row)
     if (!transport) return
     // Plan 205 §4.9 — visible to any other viewer of the device exactly the

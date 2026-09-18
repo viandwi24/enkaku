@@ -714,6 +714,61 @@ describe('ReadinessManager — `observed`, beside `actual` and never instead of 
   })
 })
 
+describe('ReadinessManager — a phone that dozed while its session stayed up (owner, 2026-09-17)', () => {
+  /*
+    Measured on the owner's moto g06: four warm-up activities failed in a row,
+    each with a selector complaint ("the Shop tab was not on the bottom
+    navigation", "no search button on the YouTube home screen"). The screenshots
+    were pure black, byte-identical across two different packs, and the phone
+    said `mWakefulness=Dozing` / `mScreenState=OFF`. One `input keyevent 224`
+    woke it and two of the same four then passed.
+
+    The farm never asked. A job takes `readiness.hold(deviceId, 'job')`
+    (`jobs/executor-host.ts`), `hold` calls `ensureAwake`, and `ensureAwake`
+    returns early unless `rawActual` is `asleep` — but `rawActual` answers `hot`
+    whenever a SESSION exists, which plan 206 gives every online device. So the
+    screen stayed dark and every script failed with a misleading reason.
+
+    `'job'` is deliberately not in `SLEEP_RESPECTING_HOLDS`, and this file's own
+    comment says why: "A work hold (job, transfer, adb-endpoint, capability)
+    still wakes it: that work needs a live panel." This test holds that promise
+    for the one case that breaks it.
+  */
+  test('a work hold wakes a dozing phone even though its session makes `actual` read hot', async () => {
+    const { db, readiness, sessions, injectedKeys } = setUp({ adb: { wakefulness: 'Dozing' } })
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
+    // Plan 206: every online device holds a session, which is the precondition
+    // that makes `rawActual` say `hot` — the exact state the farm is always in.
+    await sessions.acquire(D1, () => {})
+    expect(readiness.actual(D1)).toBe('hot')
+
+    /*
+      The key rides the SESSION, not the shell (plan 226, `keyInjectorFor`), and
+      that is the whole point of this case: the phone has a session, which is
+      exactly what made `rawActual` say `hot`. Counting `input keyevent 224` in
+      `execCalls` — what the session-less tests above do — would measure a path
+      this scenario never takes.
+    */
+    const before = injectedKeys.filter((k) => k.code === 224).length
+    const hold = await readiness.hold(D1, 'job')
+    expect(injectedKeys.filter((k) => k.code === 224).length).toBeGreaterThan(before)
+    hold.release()
+  })
+
+  /** The other half: a phone that is genuinely awake must not be poked for nothing. */
+  test('an awake phone with a session is left alone — the wake is for a dark panel, not every hold', async () => {
+    const { db, readiness, sessions, injectedKeys } = setUp({ adb: { wakefulness: 'Awake' } })
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
+    await sessions.acquire(D1, () => {})
+    await readiness.reconcile(D1)
+
+    const before = injectedKeys.filter((k) => k.code === 224).length
+    const hold = await readiness.hold(D1, 'job')
+    expect(injectedKeys.filter((k) => k.code === 224).length).toBe(before)
+    hold.release()
+  })
+})
+
 describe('ReadinessManager — a device that reconnects is re-woken (plan 125 §4.4, §0.2)', () => {
   test('an awake device that blips offline and comes back is woken again, driven ONLY by the status transition daemon.ts hooks', async () => {
     // `reconcileOnStatusChange` is the fixture's copy of `daemon.ts`'s
