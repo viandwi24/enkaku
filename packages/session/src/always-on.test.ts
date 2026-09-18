@@ -76,6 +76,12 @@ function fakeTimers() {
       }
       now = target
     },
+    /**
+     * How many timers are armed. The park path (2026-09-18) is defined by the absence of one — a
+     * parked device waits for its phone to come back, not for a delay — and "no rebuild was
+     * scheduled" cannot be asserted by advancing a clock, only by looking.
+     */
+    pending: () => pending.size,
   }
 }
 
@@ -174,6 +180,80 @@ describe('label helpers', () => {
   })
   test('recoveringLabel', () => {
     expect(recoveringLabel(2)).toBe('Recovering, attempt 2')
+  })
+})
+
+/*
+  A build against a phone adb does not have cannot succeed, and no delay makes
+  it succeed. Before 2026-09-18 it went on the ordinary backoff ladder, which
+  tops out at 30 s — so a hub that dropped twenty phones produced twenty doomed
+  builds every half minute, each one a rotation assert, a farm tag and a scrcpy
+  handshake aimed at nothing, for as long as the phones were away.
+
+  The farm-wide brake (`adbReachable`) does not cover this: it only holds once
+  the health monitor has latched `server-unreachable`, and a server that comes
+  back in eight seconds — which is what the owner's did — never latches it. The
+  log of that morning contains no "holding N queued build(s)" line at all.
+*/
+describe('createAlwaysOn — a device adb has lost (2026-09-18)', () => {
+  const GONE = () => new Error("device 'R9RY90A6X4X' not found")
+
+  test('parks instead of scheduling a rebuild, and schedules no timer at all', async () => {
+    const { timers, advance, pending } = fakeTimers()
+    const deps = baseDeps({
+      sessions: fakeSessions(async () => {
+        throw GONE()
+      }),
+      timers,
+    })
+    const alwaysOn = createAlwaysOn(deps)
+    alwaysOn.start()
+    alwaysOn.deviceOnline('d1')
+    await Bun.sleep(5)
+    expect(alwaysOn.stateOf('d1').state).toBe('recovering')
+    // The ladder's first rung is 1 s. Nothing may be waiting on it.
+    expect(pending()).toBe(0)
+    advance(60_000)
+    expect(alwaysOn.stats().running).toBe(0)
+  })
+
+  test('the phone coming back requeues it immediately — no backoff to wait out', async () => {
+    const { timers, advance } = fakeTimers()
+    let fail = true
+    const deps = baseDeps({
+      sessions: fakeSessions(async () => {
+        if (fail) throw GONE()
+      }),
+      timers,
+    })
+    const alwaysOn = createAlwaysOn(deps)
+    alwaysOn.start()
+    alwaysOn.deviceOnline('d1')
+    await Bun.sleep(5)
+    expect(alwaysOn.stateOf('d1').state).toBe('recovering')
+
+    fail = false
+    // `onDeviceReady` fires this on a flap-return too, which is what un-parks it.
+    alwaysOn.deviceOnline('d1')
+    await Bun.sleep(5)
+    expect(['preparing', 'ready']).toContain(alwaysOn.stateOf('d1').state)
+  })
+
+  /** The narrowness that matters: an ordinary build failure still retries. */
+  test('a build that fails for any other reason still goes on the backoff ladder', async () => {
+    const { timers, pending } = fakeTimers()
+    const deps = baseDeps({
+      sessions: fakeSessions(async () => {
+        throw new Error('the scrcpy server never answered on port 65360')
+      }),
+      timers,
+    })
+    const alwaysOn = createAlwaysOn(deps)
+    alwaysOn.start()
+    alwaysOn.deviceOnline('d1')
+    await Bun.sleep(5)
+    expect(alwaysOn.stateOf('d1').state).toBe('recovering')
+    expect(pending()).toBeGreaterThan(0)
   })
 })
 

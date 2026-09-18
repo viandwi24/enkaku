@@ -1,4 +1,4 @@
-import type { TrackedDevice } from '@enkaku/adb'
+import { isDeviceGone, type TrackedDevice } from '@enkaku/adb'
 import type { PrepStep, SessionManager } from './manager'
 import type { DeviceSnapshotSource } from './types'
 import type { Logger } from './logger'
@@ -306,6 +306,42 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
     }, INSPECTOR_PREWARM_DELAY_MS)
   }
 
+  /**
+   * adb has no such device right now, so there is nothing to build against and no delay that
+   * changes that. Park the record rather than schedule a rebuild: `deviceOnline` fires on a
+   * flap-return too (`onDeviceReady`: "Also on a flap (`resumed`)"), and its `'recovering'` branch
+   * requeues this same record the moment the phone is back — immediately, not after a backoff.
+   *
+   * Why not simply a longer backoff: the ladder tops out at 30 s, so a hub that drops twenty phones
+   * still produces twenty doomed builds every half minute, each one a rotation assert, a farm tag
+   * and a scrcpy handshake aimed at nothing. On 2026-09-18 that traffic is what kept the owner's
+   * adb server from coming back, and the farm collapsed a second time five minutes later on the
+   * recovery load alone. A parked record costs nothing, and `deviceOffline` deletes it when the
+   * offline grace finally expires.
+   *
+   * The brake above (`adbReachable`) does not cover this: it only holds when the health monitor has
+   * latched `server-unreachable`, and a server that restarts within seconds — which is what the
+   * owner's did — never latches it. This is the per-device case the farm-wide brake misses.
+   */
+  function parkUntilBack(deviceId: string, why: unknown): void {
+    const record = records.get(deviceId)
+    if (!record) return
+    clearFrameDeadline(record)
+    if (record.timer) timers.clear(record.timer)
+    record.timer = null
+    record.state = 'recovering'
+    record.recoveryStep = 'queued'
+    const idx = queued.indexOf(deviceId)
+    if (idx >= 0) queued.splice(idx, 1)
+    if (record.activityId) {
+      deps.activities.update(deviceId, record.activityId, {
+        label: recoveringLabel(record.attempt),
+        meta: { recovering: true, attempt: record.attempt, step: 'queued', reason: String(why) },
+      })
+    }
+    deps.log.info(`always-on: ${deviceId} is not attached to adb — holding its build until the device is back`)
+  }
+
   function scheduleRebuild(deviceId: string, why: unknown): void {
     const record = records.get(deviceId)
     if (record) clearFrameDeadline(record)
@@ -387,7 +423,8 @@ export function createAlwaysOn(deps: AlwaysOnDeps): AlwaysOn {
       } catch (err) {
         record.failures++
         record.attempt++
-        scheduleRebuild(deviceId, err)
+        if (isDeviceGone(err)) parkUntilBack(deviceId, err)
+        else scheduleRebuild(deviceId, err)
       } finally {
         running.delete(deviceId)
         pump()
