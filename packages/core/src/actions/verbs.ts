@@ -11,8 +11,6 @@ export interface VerbSpec {
   gate: VerbGate
   /** The row of MVP 04 §1.3 evaluated before dispatch; null means the implementation's own refusals are the only guard. */
   policyKind: StartingKind | null
-  /** Whether an offline or quarantined device is dispatched (`allow`) or reported `skipped` (`skip`). */
-  offline: 'allow' | 'skip'
   /** `sync` answers `done` in the 202; `async` answers `accepted` and settles on the operation. */
   mode: 'sync' | 'async'
   /**
@@ -37,51 +35,52 @@ export const VERBS: Record<ActionVerb, VerbSpec> = {
   // `run` (activity/policy.ts): warns over a live control or agent marker, so
   // the dialog says so before anything queues. `runAction` holds the whole
   // dispatch while any device is warned — see `RUN_VERBS_HOLD_ON_WARN`.
-  'run-script':   { gate: { permission: 'job.run' },            policyKind: 'run',           offline: 'skip',  mode: 'sync' },
-  'run-workflow': { gate: { permission: 'job.run' },            policyKind: 'run',           offline: 'skip',  mode: 'sync' },
-  install:        { gate: { gate: 'files' },                    policyKind: 'install',       offline: 'skip',  mode: 'async' },
-  push:           { gate: { gate: 'files' },                    policyKind: 'transfer',      offline: 'skip',  mode: 'async' },
-  pull:           { gate: { gate: 'files' },                    policyKind: 'transfer',      offline: 'skip',  mode: 'async' },
-  adb:            { gate: { gate: 'shell' },                    policyKind: 'command',       offline: 'skip',  mode: 'async' },
-  wake:           { gate: { permission: 'device.view' },        policyKind: null,            offline: 'skip',  mode: 'sync' },
-  sleep:          { gate: { permission: 'device.view' },        policyKind: null,            offline: 'skip',  mode: 'sync' },
+  'run-script':   { gate: { permission: 'job.run' },            policyKind: 'run',           mode: 'sync' },
+  'run-workflow': { gate: { permission: 'job.run' },            policyKind: 'run',           mode: 'sync' },
+  install:        { gate: { gate: 'files' },                    policyKind: 'install',       mode: 'async' },
+  push:           { gate: { gate: 'files' },                    policyKind: 'transfer',      mode: 'async' },
+  pull:           { gate: { gate: 'files' },                    policyKind: 'transfer',      mode: 'async' },
+  adb:            { gate: { gate: 'shell' },                    policyKind: 'command',       mode: 'async' },
+  wake:           { gate: { permission: 'device.view' },        policyKind: null,            mode: 'sync' },
+  sleep:          { gate: { permission: 'device.view' },        policyKind: null,            mode: 'sync' },
   // `device.view`, the same gate `wake`/`sleep` carry: darkening the panel a
   // viewer is watching is a viewing gesture, and the mirror keeps working
   // either way. `lane: 'socket'` because the whole operation is two bytes on
   // a control socket this process already holds — it never joins adb's queue,
   // so it must not be bounded by adb's width (plan 227 §3.2, §3.3).
-  'screen-off':   { gate: { permission: 'device.view' },        policyKind: null,            offline: 'skip',  mode: 'sync', lane: 'socket' },
-  'screen-on':    { gate: { permission: 'device.view' },        policyKind: null,            offline: 'skip',  mode: 'sync', lane: 'socket' },
-  reconnect:      { gate: { permission: 'device.settings' },    policyKind: null,            offline: 'allow', mode: 'sync' },
-  disconnect:     { gate: { permission: 'device.settings' },    policyKind: null,            offline: 'skip',  mode: 'sync' },
-  cutover:        { gate: { permission: 'device.enroll' },      policyKind: null,            offline: 'allow', mode: 'sync' },
-  forget:         { gate: { permission: 'device.settings' },    policyKind: null,            offline: 'allow', mode: 'sync' },
-  block:          { gate: { permission: 'device.settings' },    policyKind: null,            offline: 'allow', mode: 'sync' },
-  // `offline: 'skip'` where its partner allows: the state machine's
-  // `QUARANTINE` transition only leaves `online`, so dispatching an offline
-  // device would report a failure for something that is simply not a
-  // transition. `unquarantine` allows it because `quarantined` is reachable
-  // from either side of a disconnect.
-  quarantine:     { gate: { permission: 'device.quarantine' },  policyKind: null,            offline: 'skip',  mode: 'sync' },
-  unquarantine:   { gate: { permission: 'device.quarantine' },  policyKind: null,            offline: 'allow', mode: 'sync' },
-  'set-network':  { gate: { permission: 'device.network' },     policyKind: 'network-apply', offline: 'allow', mode: 'async' },
-  'apply-screen-label': { gate: { permission: 'device.settings' },    policyKind: null,            offline: 'skip',  mode: 'sync' },
-  'clear-screen-label': { gate: { permission: 'device.settings' },    policyKind: null,            offline: 'skip',  mode: 'sync' },
-  'set-group':    { gate: { permission: 'device.settings' },    policyKind: null,            offline: 'allow', mode: 'sync' },
-  'set-labels':   { gate: { permission: 'device.settings' },    policyKind: null,            offline: 'allow', mode: 'sync' },
-  prepare:        { gate: { permission: 'device.settings' },    policyKind: 'prep',          offline: 'skip',  mode: 'async' },
-  'retry-prepare':{ gate: { permission: 'device.settings' },    policyKind: 'prep',          offline: 'skip',  mode: 'async' },
-  reprofile:      { gate: { permission: 'device.settings' },    policyKind: 'wake',          offline: 'skip',  mode: 'sync' },
+  'screen-off':   { gate: { permission: 'device.view' },        policyKind: null,            mode: 'sync', lane: 'socket' },
+  'screen-on':    { gate: { permission: 'device.view' },        policyKind: null,            mode: 'sync', lane: 'socket' },
+  reconnect:      { gate: { permission: 'device.settings' },    policyKind: null,            mode: 'sync' },
+  disconnect:     { gate: { permission: 'device.settings' },    policyKind: null,            mode: 'sync' },
+  cutover:        { gate: { permission: 'device.enroll' },      policyKind: null,            mode: 'sync' },
+  forget:         { gate: { permission: 'device.settings' },    policyKind: null,            mode: 'sync' },
+  block:          { gate: { permission: 'device.settings' },    policyKind: null,            mode: 'sync' },
+  // Whether an offline or quarantined device is dispatched at all is no longer
+  // a column here: it is `ACTION_OFFLINE_REACH` in `@enkaku/protocol`, because
+  // Studio has to answer the same question to decide what its own footer
+  // button acts on, and a second table it kept privately is what disabled
+  // Reconnect and Return from quarantine on exactly the devices they are for.
+  // This pair is the one whose two halves disagree, and the reason is there.
+  quarantine:     { gate: { permission: 'device.quarantine' },  policyKind: null,            mode: 'sync' },
+  unquarantine:   { gate: { permission: 'device.quarantine' },  policyKind: null,            mode: 'sync' },
+  'set-network':  { gate: { permission: 'device.network' },     policyKind: 'network-apply', mode: 'async' },
+  'apply-screen-label': { gate: { permission: 'device.settings' },    policyKind: null,            mode: 'sync' },
+  'clear-screen-label': { gate: { permission: 'device.settings' },    policyKind: null,            mode: 'sync' },
+  'set-group':    { gate: { permission: 'device.settings' },    policyKind: null,            mode: 'sync' },
+  'set-labels':   { gate: { permission: 'device.settings' },    policyKind: null,            mode: 'sync' },
+  prepare:        { gate: { permission: 'device.settings' },    policyKind: 'prep',          mode: 'async' },
+  'retry-prepare':{ gate: { permission: 'device.settings' },    policyKind: 'prep',          mode: 'async' },
+  reprofile:      { gate: { permission: 'device.settings' },    policyKind: 'wake',          mode: 'sync' },
   // Both take minutes on a slow phone and both write an APK, so: `async`
   // (the operator gets an operation to watch, not a hung request), `prep`
   // (the same policy row every other provisioning step evaluates), and
   // `device.settings` (installing the agent is a device-configuration act,
   // not a control gesture).
-  'install-agent':  { gate: { permission: 'device.settings' },  policyKind: 'prep',          offline: 'skip',  mode: 'async' },
-  'uninstall-agent':{ gate: { permission: 'device.settings' },  policyKind: 'prep',          offline: 'skip',  mode: 'async' },
-  screenshot:     { gate: { permission: 'device.view' },        policyKind: null,            offline: 'skip',  mode: 'async' },
-  'clear-cache':  { gate: { permission: 'device.control' },     policyKind: 'command',       offline: 'skip',  mode: 'async' },
-  settings:       { gate: { permission: 'device.settings' },    policyKind: null,            offline: 'allow', mode: 'sync' },
+  'install-agent':  { gate: { permission: 'device.settings' },  policyKind: 'prep',          mode: 'async' },
+  'uninstall-agent':{ gate: { permission: 'device.settings' },  policyKind: 'prep',          mode: 'async' },
+  screenshot:     { gate: { permission: 'device.view' },        policyKind: null,            mode: 'async' },
+  'clear-cache':  { gate: { permission: 'device.control' },     policyKind: 'command',       mode: 'async' },
+  settings:       { gate: { permission: 'device.settings' },    policyKind: null,            mode: 'sync' },
 }
 
 /**

@@ -47,7 +47,17 @@ export interface TargetState {
   target: Target | null
   /** The ids this target resolves to right now, by §3.11's two rules. */
   resolvedIds: string[]
-  /** The count of `resolvedIds` that are usable (not offline, not quarantined). */
+  /**
+   * How many of `resolvedIds` this target's verb will actually act on.
+   *
+   * For nearly every verb that is the USABLE count — neither offline nor
+   * quarantined — because a phone that is not answering cannot be woken,
+   * typed at or installed onto. For a verb the protocol marks
+   * `ACTION_OFFLINE_REACH: 'allow'` it is every resolved device, because the
+   * work is on the farm's side of the wire (`set-group`, `settings`) or the
+   * unreachable device IS the point (`reconnect`, `unquarantine`). See
+   * `reachesOffline` on this hook's options.
+   */
   count: number
   /** The collapsed line: `3 devices`, `Team A · 12 devices`, `Smoke Pool · 7 devices`, `No devices chosen`. */
   summary: string
@@ -82,8 +92,28 @@ export function useTarget(opts: {
   initial: TargetContext
   /** A plugin verb may declare `maxTargets: 1` (MVP 07 §2.1). No MVP verb does. */
   maxTargets?: number
+  /**
+   * True when the verb this target is for still acts on an offline or
+   * quarantined device — `verbReachesOffline` from `@enkaku/protocol`, which
+   * is the SAME table the core dispatches by (`actions/run.ts`).
+   *
+   * It exists because this hook used to answer that question itself, for
+   * every verb, with one hard-coded `usableStatus` filter: `count` counted
+   * only reachable devices, and `ActionDialog` disables its footer button at
+   * `count === 0`. So on a selection of offline phones, Move group, Settings,
+   * Network and Forget all came up dead — and Reconnect and Return from
+   * quarantine, whose entire purpose is a device in one of those two states,
+   * could never be submitted at all from the menus (owner, 2026-09-18).
+   * Reconnect's own dialog note said "An offline device is retried, not
+   * skipped" above a disabled button.
+   *
+   * Defaults to false, which is the old behaviour, so a caller that is not
+   * about one verb (`DevicePickerDialog`) is unchanged.
+   */
+  reachesOffline?: boolean
 }): TargetState {
   const { devices, groups, maxTargets } = opts
+  const reachesOffline = opts.reachesOffline ?? false
 
   const initialMode: TargetMode = opts.initial.deviceIds?.length
     ? 'devices'
@@ -172,7 +202,10 @@ export function useTarget(opts: {
     return resolvedIds.map((id) => byId.get(id)).filter((d): d is DeviceInfo => d !== undefined)
   }, [resolvedIds, devices])
 
-  const usableCount = useMemo(() => resolvedDevices.filter(usableStatus).length, [resolvedDevices])
+  const usableCount = useMemo(
+    () => (reachesOffline ? resolvedDevices.length : resolvedDevices.filter(usableStatus).length),
+    [resolvedDevices, reachesOffline],
+  )
   const unavailableCount = resolvedDevices.length - usableCount
 
   const summary = useMemo(() => {

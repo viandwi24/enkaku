@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  ACTION_OFFLINE_REACH,
   ACTION_VERBS,
   ActionRequestSchema,
   ActionResultStatusSchema,
   ActionVerbSchema,
   DeviceSettingsPatchSchema,
   TargetSchema,
+  verbReachesOffline,
 } from './actions'
 import { DeviceSettingsSchema } from './settings'
 
@@ -56,6 +58,41 @@ describe('ActionVerbSchema', () => {
 
   test('an unknown verb fails', () => {
     expect(ActionVerbSchema.safeParse('nuke').success).toBe(false)
+  })
+})
+
+describe('ACTION_OFFLINE_REACH', () => {
+  test('every verb has an answer', () => {
+    for (const verb of ACTION_VERBS) expect(ACTION_OFFLINE_REACH[verb]).toBeOneOf(['allow', 'skip'])
+  })
+
+  /*
+    Pinned as a list rather than a count, because this is the table BOTH sides
+    read — the core to decide what it dispatches (`actions/run.ts`), Studio to
+    decide how many devices its dialog footer is about to act on
+    (`target/useTarget.ts`). Adding a verb here quietly widens what a bulk
+    action reaches on a farm full of offline phones; removing one disables a
+    dialog button with no error anywhere, which is exactly the failure this
+    table was extracted to end.
+  */
+  test('exactly these nine verbs still act on an offline or quarantined device', () => {
+    const allowed = ACTION_VERBS.filter(verbReachesOffline)
+    expect([...allowed].sort()).toEqual([
+      'block',
+      'cutover',
+      'forget',
+      'reconnect',
+      'set-group',
+      'set-labels',
+      'set-network',
+      'settings',
+      'unquarantine',
+    ])
+  })
+
+  test('quarantine does not, though its partner unquarantine does', () => {
+    expect(verbReachesOffline('quarantine')).toBe(false)
+    expect(verbReachesOffline('unquarantine')).toBe(true)
   })
 })
 
