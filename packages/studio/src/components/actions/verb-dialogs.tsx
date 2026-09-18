@@ -472,6 +472,18 @@ interface BatchPacingValue {
   /** Seconds, as typed. Kept as strings so a half-typed "1" is not read as a delay of one second the instant it is entered. */
   delayMin: string
   delayMax: string
+  /**
+   * How many times the whole batch runs, as typed — `pacing.count` on the wire.
+   *
+   * The schema has had this since plan 94 and Studio never rendered it, so the one control that
+   * makes a rotation COMPLETE was reachable only by calling the API by hand. `warmup-rotation`
+   * keys its platform on `$run.repeat`, so a phone needs three repetitions to meet all three
+   * platforms; without this the operator has to dispatch three times and change `slot` by hand
+   * between them (which is exactly what the owner was doing, 2026-09-18).
+   *
+   * A string for the same reason the delays are: a half-typed value must not be read as a count.
+   */
+  repeat: string
 }
 
 function BatchPacingFields({
@@ -528,6 +540,32 @@ function BatchPacingFields({
           : 'Both only apply to more than one device.'}
       </p>
 
+      <div className="space-y-1.5">
+        <Label htmlFor={`${idPrefix}-repeat`}>Repetitions</Label>
+        <div className="flex items-center gap-2">
+          <Input
+            id={`${idPrefix}-repeat`}
+            className="w-[92px]"
+            inputMode="numeric"
+            value={value.repeat}
+            onChange={(e) => onChange({ repeat: e.target.value })}
+            placeholder="1"
+            aria-label="How many times the batch runs"
+          />
+          <span className="text-body text-faint">{repeatCountOf(value.repeat) === 1 ? 'time' : 'times'}</span>
+        </div>
+        {/*
+          A phase is not a parallel copy: the next repetition starts only once the previous one has
+          finished for the batch, and each run knows which phase it is. That is what lets a rotation
+          be complete rather than merely repeated — the warm-up workflow picks its platform from
+          the phase number, so three repetitions is every phone meeting every platform once.
+        */}
+        <p className="text-meta text-faint">
+          {repeatCountOf(value.repeat) > 1
+            ? `The whole batch runs ${repeatCountOf(value.repeat)} times, one after another — a repetition starts only when the one before it has finished. A rotation keyed on the repetition number (the warm-up) needs 3 to cover all three platforms.`
+            : 'Runs once. Raise this to repeat the whole batch in sequence — a warm-up rotation needs 3 to give every phone all three platforms.'}
+        </p>
+      </div>
       {deviceCount > 1 && (
         <div className="space-y-1.5">
           <Label htmlFor={`${idPrefix}-delay-min`}>Start delay per device</Label>
@@ -594,10 +632,25 @@ function RunTargetRoster({ target }: { target: TargetState }) {
   )
 }
 
-/** The `pacing` block a `BatchPacingValue` becomes on the wire — omitted entirely when no delay was asked for, so an unpaced batch keeps the exact shape it took before the field existed. */
+/**
+ * A typed repetition count, clamped to what the schema accepts (`PacingSchema.count`, 1..1000).
+ * Anything unreadable is 1, which is the value that changes nothing.
+ */
+function repeatCountOf(raw: string): number {
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n) || n < 1) return 1
+  return Math.min(1000, n)
+}
+
+/**
+ * The `pacing` block a `BatchPacingValue` becomes on the wire — omitted entirely when neither a
+ * delay nor a repetition was asked for, so an unpaced batch keeps the exact shape it took before
+ * either field existed.
+ */
 function pacingOf(v: BatchPacingValue): { pacing: { count: number; intervalMs: [number, number]; deviceIntervalMs: number; deviceDelayMs: [number, number] } } | Record<string, never> {
-  if (secondsOf(v.delayMax) <= 0) return {}
-  return { pacing: { count: 1, intervalMs: [0, 0], deviceIntervalMs: 0, deviceDelayMs: [secondsOf(v.delayMin) * 1000, secondsOf(v.delayMax) * 1000] } }
+  const count = repeatCountOf(v.repeat)
+  if (secondsOf(v.delayMax) <= 0 && count <= 1) return {}
+  return { pacing: { count, intervalMs: [0, 0], deviceIntervalMs: 0, deviceDelayMs: [secondsOf(v.delayMin) * 1000, secondsOf(v.delayMax) * 1000] } }
 }
 
 // ---------------------------------------------------------------------------
@@ -611,6 +664,8 @@ interface RunScriptValue {
   /** Seconds, as typed. Kept as strings so a half-typed "1" is not read as a delay of one second the instant it is entered. */
   delayMin: string
   delayMax: string
+  /** See `BatchPacingValue.repeat` — `pacing.count` on the wire. */
+  repeat: string
   formOk: boolean
   /**
    * Opened from the Batches tab's own Run button, so the result belongs on
@@ -694,7 +749,7 @@ const runScript: VerbDialogSpec<RunScriptValue> = {
   verb: 'run-script',
   title: (c) => `Run a script on ${n(c)}`,
   submitLabel: (c) => `Run on ${n(c)}`,
-  initial: { scriptId: null, params: undefined, concurrency: 0, order: 'as-listed', delayMin: '0', delayMax: '0', formOk: true, explicit: false },
+  initial: { scriptId: null, params: undefined, concurrency: 0, order: 'as-listed', delayMin: '0', delayMax: '0', repeat: '1', formOk: true, explicit: false },
   Fields: RunScriptFields,
   holdsOnWarn: true,
   // An inverted range is refused here rather than at the server boundary, so
@@ -793,7 +848,7 @@ const runWorkflow: VerbDialogSpec<RunWorkflowValue> = {
   verb: 'run-workflow',
   title: (c) => `Run a workflow on ${n(c)}`,
   submitLabel: (c) => `Run on ${n(c)}`,
-  initial: { workflowName: '', params: undefined, concurrency: 0, order: 'as-listed', delayMin: '0', delayMax: '0' },
+  initial: { workflowName: '', params: undefined, concurrency: 0, order: 'as-listed', delayMin: '0', delayMax: '0', repeat: '1' },
   Fields: RunWorkflowFields,
   holdsOnWarn: true,
   // The inverted-range refusal run-script already makes, for the same reason:
