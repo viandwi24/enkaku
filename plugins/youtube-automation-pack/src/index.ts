@@ -8,6 +8,7 @@ import watchVideo from './watch-video'
 import postVideo from './post-video'
 import clearDrafts from './clear-drafts'
 import checkNotifications from './check-notifications'
+import checkProfile from './check-profile'
 
 /**
  * YouTube automation pack.
@@ -85,15 +86,37 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.40.0',
+  version: '0.41.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
   description: 'Search, browse, watch, like, read comments, download, and post Shorts in the YouTube app on a farm device.',
-  scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay, watchVideo, postVideo, clearDrafts, checkNotifications],
+  scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay, watchVideo, postVideo, clearDrafts, checkNotifications, checkProfile],
 
   /**
    * ## Changelog
+   *
+   * **0.41.0 — the account's own page.** `check-profile` opens the "You" tab
+   * and reads it: account name, the library rows (History, the playlists,
+   * Downloads), and whether the Settings gear is there. Reading only — it never
+   * switches account, opens a playlist, taps Get Premium, or enters Settings.
+   * The gear is REPORTED, not pressed.
+   *
+   * Captured on the owner's moto g06 power (720x1640, en-US, 2026-09-18),
+   * `__fixtures__/screen-you.json`, 151 nodes. The page is identified by a PAIR
+   * — an `Accounts` control and a `View channel` node — because `Accounts`
+   * alone is the account-switcher sheet, which is a different screen, and a run
+   * that accepted it would report a profile it never reached.
+   *
+   * This screen is also why description-matching is not a preference. Its
+   * toolbar holds THREE icons (Notifications at left=468, Search at 552,
+   * Settings at 636) where home holds two, so every icon sits 84px left of its
+   * home position. A member keyed on coordinates would press Search on one
+   * screen and Settings on the other.
+   *
+   * `signedIn` is reported rather than thrown: a farm phone that has been
+   * signed out is something the operator needs told, not an exception to bury
+   * inside a failed run.
    *
    * **0.40.0 — the bell this pack never had.** The warm-up rotation could
    * search, scroll Shorts, watch and download, but it could not do the one

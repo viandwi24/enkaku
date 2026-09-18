@@ -9,6 +9,7 @@ import watchVideo from './watch-video'
 import postVideo from './post-video'
 import clearDrafts from './clear-drafts'
 import checkNotifications from './check-notifications'
+import checkProfile from './check-profile'
 
 describe('youtube-automation-pack manifest', () => {
   test('identity is stable — the id is what every stored job and KV key is keyed on', () => {
@@ -19,13 +20,13 @@ describe('youtube-automation-pack manifest', () => {
   /** The three-site version bump `CLAUDE.md` requires: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.40.0')
+    expect(plugin.version).toBe('0.41.0')
     expect(plugin.version).toBe(pkg.version)
   })
 
   test('every script has a unique id and declares params and result schemas', () => {
     const ids = plugin.scripts.map((s) => s.id)
-    expect(ids).toEqual(['search-channel', 'scroll-shorts', 'scroll-live', 'download-home', 'search-play', 'watch-video', 'post-video', 'clear-drafts', 'check-notifications'])
+    expect(ids).toEqual(['search-channel', 'scroll-shorts', 'scroll-live', 'download-home', 'search-play', 'watch-video', 'post-video', 'clear-drafts', 'check-notifications', 'check-profile'])
     expect(new Set(ids).size).toBe(ids.length)
     for (const script of plugin.scripts) {
       expect(script.params).toBeDefined()
@@ -35,7 +36,7 @@ describe('youtube-automation-pack manifest', () => {
 
   /** `Plugin.scripts: ScriptDefinition[]` erases `title`/`description` from the static type; they survive at runtime, which is how Studio shows them (plan 108 P8). */
   test('every member is presentable in Studio, checked against the real list', () => {
-    const members: Array<{ id: string; title?: string; description?: string }> = [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay, watchVideo, postVideo, clearDrafts, checkNotifications]
+    const members: Array<{ id: string; title?: string; description?: string }> = [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay, watchVideo, postVideo, clearDrafts, checkNotifications, checkProfile]
     expect(members.map((m) => m.id).sort()).toEqual(plugin.scripts.map((s) => s.id).sort())
     for (const member of members) {
       expect({ id: member.id, titled: (member.title ?? '').length > 0 }).toEqual({ id: member.id, titled: true })
