@@ -78,6 +78,25 @@ import {
  *
  * ## Changelog
  *
+ * - **0.48.0 — two of the four activities wired in 0.46.0 are withdrawn: they
+ *   fail on hardware.** Both were run on the owner's moto g06 (2026-09-17) on a
+ *   phone that was awake and idle, and both failed where `tiktok/shop-browse`
+ *   and `youtube/search-channel` succeeded on the same device minutes apart.
+ *
+ *   `tiktok/live-browse` never found `id:"tv_search_textview"`, its own submit
+ *   control — an id that appears in no fixture in its pack. `platforms.ts` says
+ *   what that means: a selector nobody has observed is one that fails silently
+ *   on the run that mattered. `youtube/scroll-live` fails whenever the query has
+ *   no LIVE rows, which a trading niche routinely does not have; that is the
+ *   right answer for a member asked to open a live stream and the wrong member
+ *   for a warm-up, which must not spend its budget failing.
+ *
+ *   `continueOnMemberFailure` meant neither ended a run — which is exactly why
+ *   this was worth undoing rather than leaving: they cost a member and a share
+ *   of the session on every draw that reached them, quietly making warm-up
+ *   coverage worse while the run still went green. The rotation holds 41 nodes
+ *   again. They go back in when they pass on hardware, not before.
+ *
  * - **0.47.0 — the router read one page of post rows, so a farm that outgrew
  *   that page had rows it could never see; and a row whose own phone was gone
  *   waited for it forever.** Both were found on the owner's production farm,
@@ -1570,7 +1589,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.47.0',
+  version: '0.48.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

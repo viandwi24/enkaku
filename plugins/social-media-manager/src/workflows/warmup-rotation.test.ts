@@ -41,7 +41,7 @@ describe('smm/warmup-rotation — the document itself', () => {
    */
   test('stays under the node limit, with the headroom named', () => {
     expect(doc.nodes.length).toBeLessThanOrEqual(WORKFLOW_LIMITS.maxNodes)
-    expect({ nodes: doc.nodes.length, limit: WORKFLOW_LIMITS.maxNodes }).toEqual({ nodes: 43, limit: 50 })
+    expect({ nodes: doc.nodes.length, limit: WORKFLOW_LIMITS.maxNodes }).toEqual({ nodes: 41, limit: 50 })
   })
 
   test('every shuffle member names a node that exists', () => {
@@ -79,11 +79,30 @@ describe('smm/warmup-rotation — what each platform actually runs (0.46.0)', ()
    * had never once been dispatched by a warm-up before 0.46.0. This test is the
    * reason the gap cannot reopen quietly.
    */
-  test('the activities wired in 0.46.0 are reachable', () => {
+  test('the activities wired in 0.46.0 and still proven are reachable', () => {
     expect(refs.has('tiktok/shop-browse@latest')).toBe(true)
-    expect(refs.has('tiktok/live-browse@latest')).toBe(true)
-    expect(refs.has('youtube/scroll-live@latest')).toBe(true)
     expect(refs.has('youtube/search-channel@latest')).toBe(true)
+  })
+
+  /**
+   * Withdrawn in 0.48.0 after both failed on the owner's moto g06 (2026-09-17),
+   * on a phone that was awake and idle:
+   *
+   * - `tiktok/live-browse` never found its own submit control
+   *   (`id:"tv_search_textview"`), and that id appears in no fixture in its
+   *   pack — a selector nobody has observed, which `platforms.ts` names as the
+   *   thing that fails silently on the one run that mattered;
+   * - `youtube/scroll-live` fails whenever the query has no LIVE rows, which a
+   *   trading niche routinely does not — correct for a member asked to open a
+   *   live stream, wrong for a warm-up that must not spend its budget failing.
+   *
+   * `continueOnMemberFailure` means neither ended a run, but both burned a
+   * member and a share of the session on every draw that reached them. They go
+   * back in when they pass on hardware, not before.
+   */
+  test('the two members proven to fail on hardware are NOT wired', () => {
+    expect(refs.has('tiktok/live-browse@latest')).toBe(false)
+    expect(refs.has('youtube/scroll-live@latest')).toBe(false)
   })
 
   test('all three platforms are still reachable, and only those three', () => {

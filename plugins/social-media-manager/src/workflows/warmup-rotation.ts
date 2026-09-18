@@ -198,7 +198,7 @@ export const warmupRotation: WorkflowDocInput = {
     }),
     script('tt-a-notif', 'Check notifications', 'tiktok/notification-activity@latest', -960, 570, { scrolls: scaled('1 + rand(5)') }),
     script('tt-a-shop', 'Browse the shop', 'tiktok/shop-browse@latest', -960, 640, { scrolls: scaled('3 + rand(5)') }),
-    shuffle('tt-b', 'TikTok: keyword videos + For You + LIVE', -720, ['tt-b-videos', 'tt-b-fyp', 'tt-b-live']),
+    shuffle('tt-b', 'TikTok: keyword videos + For You', -720, ['tt-b-videos', 'tt-b-fyp']),
     script('tt-b-videos', 'Watch keyword videos', 'tiktok/keyword-videos@latest', -720, 500, {
       query: KEYWORD,
       videos: scaled('2 + rand(4)'),
@@ -209,7 +209,6 @@ export const warmupRotation: WorkflowDocInput = {
       maxMinutes: scaled('3 + rand(5)'),
       keywords: KEYWORDS,
     }),
-    script('tt-b-live', 'Browse LIVE', 'tiktok/live-browse@latest', -720, 640, { query: KEYWORD, scrolls: scaled('2 + rand(4)') }),
     shuffle('tt-c', 'TikTok: search + notifications + videos', -480, ['tt-c-search', 'tt-c-notif', 'tt-c-videos']),
     script('tt-c-search', 'Search a keyword', 'tiktok/search-keyword@latest', -480, 500, { query: KEYWORD }),
     script('tt-c-notif', 'Check notifications', 'tiktok/notification-activity@latest', -480, 570, { scrolls: scaled('1 + rand(4)') }),
@@ -244,7 +243,7 @@ export const warmupRotation: WorkflowDocInput = {
       { to: 'yt-b', label: 'Search & play' },
       { to: 'yt-c', label: 'Watch & home' },
     ]),
-    shuffle('yt-a', 'YouTube: Shorts + search + live', 480, ['yt-a-shorts', 'yt-a-search', 'yt-a-live']),
+    shuffle('yt-a', 'YouTube: Shorts + search', 480, ['yt-a-shorts', 'yt-a-search']),
     script('yt-a-shorts', 'Scroll Shorts', 'youtube/scroll-shorts@latest', 480, 500, { videos: scaled('6 + rand(10)'), keywords: KEYWORDS }),
     script('yt-a-search', 'Search and play', 'youtube/search-play@latest', 480, 570, {
       query: KEYWORD,
@@ -258,7 +257,6 @@ export const warmupRotation: WorkflowDocInput = {
       keywords: KEYWORDS,
     }),
     script('yt-b-shorts', 'Scroll Shorts (short)', 'youtube/scroll-shorts@latest', 720, 570, { videos: scaled('3 + rand(6)'), keywords: KEYWORDS }),
-    script('yt-a-live', 'Browse live streams', 'youtube/scroll-live@latest', 480, 640, { query: KEYWORD, scrolls: scaled('3 + rand(5)') }),
     shuffle('yt-c', 'YouTube: watch + home + a channel', 960, ['yt-c-watch', 'yt-c-home', 'yt-c-channel']),
     script('yt-c-watch', 'Search and watch', 'youtube/watch-video@latest', 960, 500, { query: KEYWORD, keywords: KEYWORDS }),
     script('yt-c-home', 'Home feed', 'youtube/download-home@latest', 960, 570, { videos: scaled('1 + rand(2)') }),
