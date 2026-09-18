@@ -17,7 +17,18 @@ import { ObservedScreenSchema } from './power'
 export const ReadinessSchema = z.enum(['asleep', 'awake', 'hot'])
 export type Readiness = z.infer<typeof ReadinessSchema>
 
-/** Why `actual` cannot reach `desired` right now (plan 43 §4.1). */
+/**
+ * Why `actual` cannot reach `desired` right now (plan 43 §4.1) — with one
+ * deliberate exception.
+ *
+ * `locked` does not mean "`actual` is behind `desired`". It means the wake
+ * sequence lit the screen and could not get past the lock screen: the farm
+ * holds the device awake, `actual` genuinely reached `awake`, and the phone
+ * is still unusable. It had no producer at all until 2026-09-18, which is
+ * what let a secured phone report `blocked: null` and look identical to one
+ * that came up clean. See `computeReadiness` in
+ * `packages/core/src/device/readiness.ts` for why it is not gated on rank.
+ */
 export const ReadinessBlockedReasonSchema = z.enum(['offline', 'quarantined', 'hot_budget_full', 'locked', 'error'])
 export type ReadinessBlockedReason = z.infer<typeof ReadinessBlockedReasonSchema>
 
@@ -55,7 +66,7 @@ export const DeviceReadinessSchema = z.object({
   desired: ReadinessSchema,
   /** What is true now; derived, never stored. */
   actual: ReadinessSchema,
-  /** Set when `actual` cannot reach `desired`. */
+  /** Set when `actual` cannot reach `desired` — plus `locked`, which is the documented exception above. */
   blocked: ReadinessBlockedReasonSchema.nullable().default(null),
   /** Unix seconds the `actual` level was reached. */
   since: z.number().int(),

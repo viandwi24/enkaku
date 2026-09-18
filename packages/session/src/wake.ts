@@ -1,4 +1,4 @@
-import type { AwakeApplyResult, KeepAwakeMode, Transport } from '@enkaku/protocol'
+import type { AwakeApplyResult, AwakeKeyguardOutcome, KeepAwakeMode, Transport } from '@enkaku/protocol'
 import { applyScreenOffTimeout, applyStayOn, firstPowerReason, readPowerState, type PowerReadback } from './power'
 import type { Logger } from './logger'
 
@@ -78,10 +78,14 @@ export interface WakeDeviceOpts {
  * change that: a farm that turned this off gets nothing written to it, timeout
  * included.
  *
- * The keyevent 82 dismisses a swipe-only lock screen. A device with a PIN,
- * pattern, or password cannot be unlocked from here, and will keep showing
- * its lock screen; that is a real limit, not a failure to handle (Plan 43 §2,
- * `blocked: 'locked'`).
+ * A swipe-only lock screen is dismissed by `wm dismiss-keyguard`, with
+ * `KEYCODE_MENU` kept only as the fallback for a ROM too old to have that
+ * command — see `dismissKeyguard` below for why that order and not the
+ * reverse. A device with a PIN, pattern, or password cannot be unlocked from
+ * here, and will keep showing its lock screen; that is a real limit, not a
+ * failure to handle (Plan 43 §2, `blocked: 'locked'`), and it is now
+ * REPORTED as `keyguard: 'showing'` rather than silently left to the
+ * operator to discover.
  *
  * ### What plan 125 §3.3 added, and in which order
  *
@@ -105,7 +109,7 @@ export interface WakeDeviceOpts {
 export async function wakeDevice(transport: Transport, opts: WakeDeviceOpts): Promise<AwakeApplyResult> {
   const { keepAwake, log } = opts
   if (keepAwake === 'off') {
-    return { screenOffTimeout: 'unchanged', stayOn: 'unchanged', reason: 'this device is opted out of keeping the screen awake' }
+    return { screenOffTimeout: 'unchanged', stayOn: 'unchanged', keyguard: null, reason: 'this device is opted out of keeping the screen awake' }
   }
 
   const current = await readPowerState(transport)
@@ -162,15 +166,31 @@ export async function wakeDevice(transport: Transport, opts: WakeDeviceOpts): Pr
     locked = await wakeAndProbeKeyguard(transport, opts)
   }
 
-  // Only nudge the lock screen when there is one. KEYCODE_MENU dismisses a
-  // swipe-only keyguard, but on a phone that is already unlocked it opens the
-  // launcher's wallpaper/widget menu — and the user's next tap just closes
-  // that menu instead of hitting the app they aimed at.
-  if (locked) {
-    await pressKey(transport, KEYCODE_MENU, 'the keyguard nudge', opts)
-  }
+  // Only touch the lock screen when there is one. The fallback rung
+  // (KEYCODE_MENU) is actively harmful on a phone that is already unlocked:
+  // it opens the launcher's wallpaper/widget menu, and the operator's next
+  // tap just closes that menu instead of hitting the app they aimed at.
+  const keyguard = locked ? await dismissKeyguard(transport, opts) : ('absent' as const)
 
-  return { screenOffTimeout: timeout.outcome, stayOn: stayOn.outcome, reason: firstPowerReason(timeout, stayOn) }
+  /*
+    One `reason`, three things that could want it, ranked by what an operator
+    can act on.
+
+    A REFUSED power write comes first: something we asked for did not take, and
+    that is the farm's own bug to chase. A stuck lock screen comes next,
+    because a phone in a sealed box that nobody can reach still needs saying
+    out loud — and it outranks the benign notes `firstPowerReason` also
+    returns ("this farm leaves the device's own screen timeout alone" is not
+    news; "this phone has a PIN on it" is). Those benign notes come last.
+  */
+  const powerReason = firstPowerReason(timeout, stayOn)
+  const powerRefused = timeout.outcome === 'refused' || stayOn.outcome === 'refused'
+  return {
+    screenOffTimeout: timeout.outcome,
+    stayOn: stayOn.outcome,
+    keyguard,
+    reason: powerRefused ? powerReason : keyguard === 'showing' ? KEYGUARD_STUCK_REASON : powerReason,
+  }
 }
 
 /**
@@ -183,6 +203,79 @@ export async function wakeDevice(transport: Transport, opts: WakeDeviceOpts): Pr
  */
 const KEYCODE_WAKEUP = 224
 const KEYCODE_MENU = 82
+
+/** The cheap keyguard probe, shared by every rung below so there is one spelling of it. */
+const KEYGUARD_PROBE = 'dumpsys window policy | grep -m1 isKeyguardShowing'
+
+/**
+ * How long to let the device settle between `wm dismiss-keyguard` and the
+ * re-probe, as a whole number of seconds because that is what every Android
+ * shell's `sleep` accepts (fractional seconds are toybox-only).
+ *
+ * `wm dismiss-keyguard` does not unlock the phone before it returns — it posts
+ * the request to the WindowManager, which runs the keyguard's exit animation.
+ * Probing in the same breath reads the state it is leaving and answers
+ * `isKeyguardShowing=true` on a phone that is in the middle of unlocking, which
+ * would send us down the `KEYCODE_MENU` rung for no reason. It is one second,
+ * paid only on a device that actually had a lock screen up — the case that
+ * until now cost the operator a manual swipe.
+ *
+ * It fits the `probe` profile's 5 s budget with room to spare, and it fits it
+ * the same way the wake nudge above already does: that command pays an
+ * `input keyevent`, which starts a JVM on the phone, before its own dumpsys.
+ */
+const KEYGUARD_SETTLE_SEC = 1
+
+/** `AwakeApplyResult.reason` when the lock screen outlived every rung we have. */
+const KEYGUARD_STUCK_REASON =
+  'the lock screen is still up after the dismiss — a device with a PIN, pattern or password cannot be unlocked from here (plan 43 §2)'
+
+/**
+ * Get a lock screen out of the way, best rung first.
+ *
+ * ### Why `wm dismiss-keyguard` and not `KEYCODE_MENU`
+ *
+ * `KEYCODE_MENU` was the whole of this step, and it has not dismissed a
+ * keyguard since Android 9: `PhoneWindowManager` stopped routing MENU into
+ * the keyguard's dismiss path, so on every modern phone the nudge was sent,
+ * swallowed, and the device left sitting on its lock screen — which the
+ * operator then had to swipe by hand inside Device Control, on every single
+ * connect. `wm dismiss-keyguard` is the supported request (Android 8+, API
+ * 26) and is what `reset.ts` has always used for the identical job three
+ * files away.
+ *
+ * `KEYCODE_MENU` stays as the FLOOR rather than being deleted: it is what an
+ * Android 7 or older device still answers to, and it costs nothing on a phone
+ * that already unlocked because we only reach it when the re-probe says the
+ * keyguard is still up. Pressing it there is safe for the reason the caller's
+ * comment gives — the launcher's widget menu can only open on a phone that is
+ * already unlocked, and this rung is unreachable in that case.
+ *
+ * A secured device (PIN, pattern, password) ends here as `showing`, with the
+ * bouncer up rather than the lock screen. That is the honest answer, and it is
+ * the answer `readiness.ts` turns into `blocked: 'locked'` so an operator sees
+ * WHY a phone in a sealed box never came up, instead of a silent dark tile.
+ * The farm never types a credential — plan 125 §3.4 refuses that category
+ * outright, and nothing here changes it.
+ */
+async function dismissKeyguard(transport: Transport, opts: WakeDeviceOpts): Promise<AwakeKeyguardOutcome> {
+  const settled = await transport
+    .exec(`wm dismiss-keyguard; sleep ${KEYGUARD_SETTLE_SEC}; ${KEYGUARD_PROBE}`, { profile: 'probe' })
+    .then((r) => r.stdout)
+    .catch((err) => {
+      opts.log.debug(`the keyguard dismiss failed: ${String(err)}`)
+      return null
+    })
+  if (settled !== null && /isKeyguardShowing=false/.test(settled)) return 'dismissed'
+
+  // Either this ROM has no `wm dismiss-keyguard`, or it printed nothing we
+  // recognise, or the keyguard is genuinely still up. All three want the old
+  // rung tried before we call it locked.
+  await pressKey(transport, KEYCODE_MENU, 'the keyguard nudge', opts)
+  const still = await isKeyguardShowing(transport)
+  if (still) opts.log.debug(KEYGUARD_STUCK_REASON)
+  return still ? 'showing' : 'dismissed'
+}
 
 /**
  * Press one key: the session's control socket when the caller gave us one,
@@ -235,7 +328,7 @@ async function pressKey(transport: Transport, keycode: number, what: string, opt
  */
 async function wakeAndProbeKeyguard(transport: Transport, opts: WakeDeviceOpts): Promise<boolean> {
   const out = await transport
-    .exec(`input keyevent ${KEYCODE_WAKEUP}; dumpsys window policy | grep -m1 isKeyguardShowing`, { profile: 'probe' })
+    .exec(`input keyevent ${KEYCODE_WAKEUP}; ${KEYGUARD_PROBE}`, { profile: 'probe' })
     .then((r) => r.stdout)
     .catch((err) => {
       opts.log.debug(`the wake nudge failed: ${String(err)}`)
@@ -252,7 +345,7 @@ async function isKeyguardShowing(transport: Transport): Promise<boolean> {
       .then((r) => r.stdout)
       .catch(() => null)
 
-  const cheap = await read('dumpsys window policy | grep -m1 isKeyguardShowing')
+  const cheap = await read(KEYGUARD_PROBE)
   if (cheap !== null && /isKeyguardShowing=(true|false)/.test(cheap)) return /isKeyguardShowing=true/.test(cheap)
   const full = await read('dumpsys window | grep -m1 isKeyguardShowing')
   return full !== null && /isKeyguardShowing=true/.test(full)

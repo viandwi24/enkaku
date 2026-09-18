@@ -50,6 +50,16 @@ interface FakeAdbOpts {
    * exercised: an unanswerable question must answer `unknown`, never `off`.
    */
   wakefulness?: string | null
+  /**
+   * The lock screen this device has, for the `blocked: 'locked'` path.
+   *
+   * - absent (the default) — no keyguard; `isKeyguardShowing=false` throughout.
+   * - `'swipe'` — a keyguard `wm dismiss-keyguard` gets rid of, so the probe
+   *   batched behind that command answers `false`.
+   * - `'secure'` — a PIN/pattern/password device: every probe answers `true`
+   *   and nothing the farm is allowed to do changes that.
+   */
+  keyguard?: 'swipe' | 'secure'
   /** Every exec parks here before answering — the barrier the boot-sweep concurrency test counts arrivals on. */
   park?: () => Promise<void>
 }
@@ -104,7 +114,8 @@ function fakeAdbClient(execCalls: string[], opts: FakeAdbOpts = {}): AdbClient {
         if (w === null) throw new Error('adb: device offline')
         return ok(`  mWakefulness=${w}`)
       }
-      if (cmd.startsWith('dumpsys window')) return ok('isKeyguardShowing=false')
+      if (cmd.startsWith('wm dismiss-keyguard')) return ok(`isKeyguardShowing=${opts.keyguard === 'secure'}`)
+      if (cmd.includes('isKeyguardShowing')) return ok(`isKeyguardShowing=${opts.keyguard !== undefined}`)
       return ok()
     },
     execOut: async () => new Uint8Array(),
@@ -539,6 +550,43 @@ describe('ReadinessManager.ensureAwake — a wake activity around the wakeDevice
     // Once the wake sequence finishes, the activity is gone.
     expect(activities.list(D1).some((a) => a.kind === 'wake')).toBe(false)
     hold.release()
+  })
+})
+
+/**
+ * `blocked: 'locked'` had no producer at all until 2026-09-18 — the enum
+ * member has existed since plan 43 §4.1 and nothing ever set it, so a phone
+ * that woke straight onto its lock screen reported `blocked: null`, exactly
+ * like a phone that came up clean. On a sealed-box farm that is the
+ * difference between "Enkaku is broken" and "this phone has a PIN on it",
+ * and the operator had no way to tell which.
+ */
+describe('ReadinessManager — a lock screen the wake could not get past is REPORTED (owner, 2026-09-18)', () => {
+  test('a swipe-only keyguard is dismissed, and the device is not blocked', async () => {
+    const { db, readiness, execCalls } = setUp({ adb: { keyguard: 'swipe' } })
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
+    await readiness.reconcile(D1)
+    expect(execCalls.some((c) => c.startsWith('wm dismiss-keyguard'))).toBe(true)
+    expect(readiness.get(D1).blocked).toBeNull()
+  })
+
+  test('a secured keyguard that survives every rung reports blocked: locked', async () => {
+    const { db, readiness } = setUp({ adb: { keyguard: 'secure' } })
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
+    await readiness.reconcile(D1)
+    expect(readiness.get(D1).blocked).toBe('locked')
+  })
+
+  test('a device with no keyguard at all never claims to be locked', async () => {
+    const { db, readiness, execCalls } = setUp()
+    seedDevice(db, { status: 'online', desiredReadiness: 'awake' })
+    await readiness.reconcile(D1)
+    // Nothing is sent at a phone that has no lock screen up — a blind
+    // KEYCODE_MENU there opens the launcher's widget menu under the
+    // operator's next tap.
+    expect(execCalls.some((c) => c.startsWith('wm dismiss-keyguard'))).toBe(false)
+    expect(execCalls).not.toContain('input keyevent 82')
+    expect(readiness.get(D1).blocked).toBeNull()
   })
 })
 

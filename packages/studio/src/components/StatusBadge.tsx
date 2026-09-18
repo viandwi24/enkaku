@@ -129,8 +129,15 @@ const READINESS_TONE: Record<'asleep' | 'awake' | 'hot', string> = {
 export function ReadinessBadge({ readiness, className }: { readiness: DeviceReadiness; className?: string }) {
   const pending = readiness.actual !== readiness.desired && readiness.blocked === null
   const label = READINESS_LABEL[readiness.actual]
-  const title = readiness.blocked
-    ? `Waiting for ${READINESS_LABEL[readiness.desired]}: ${READINESS_BLOCKED_REASON[readiness.blocked] ?? readiness.blocked}`
+  const reason = readiness.blocked ? (READINESS_BLOCKED_REASON[readiness.blocked] ?? readiness.blocked) : null
+  const title = reason
+    ? // `locked` is the one reason that is not a device waiting to reach
+      // `desired` — the screen IS on and the farm IS holding it awake, and
+      // what is in the way is the phone's own lock screen. "Waiting for
+      // Awake" in front of it would contradict the word next to it.
+      readiness.blocked === 'locked'
+      ? `${READINESS_LABEL[readiness.actual]}, but ${reason}`
+      : `Waiting for ${READINESS_LABEL[readiness.desired]}: ${reason}`
     : pending
       ? `${READINESS_LABEL[readiness.desired]} was requested and has not taken effect`
       : undefined

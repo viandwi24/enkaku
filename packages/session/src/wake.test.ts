@@ -26,6 +26,12 @@ const MENU = 'input keyevent 82'
 const KEYGUARD = 'dumpsys window policy | grep -m1 isKeyguardShowing'
 const KEYGUARD_FULL = 'dumpsys window | grep -m1 isKeyguardShowing'
 /**
+ * The dismiss rung `wake.ts` reaches for FIRST when a keyguard is up, batched
+ * with its settle and its re-probe into one adb round trip. `KEYCODE_MENU` is
+ * only the floor behind it — it has not dismissed a keyguard since Android 9.
+ */
+const DISMISS = `wm dismiss-keyguard; sleep 1; ${KEYGUARD}`
+/**
  * The shell rung's ONE command (plan 228 §3.3): the wake nudge and the cheap
  * keyguard probe batched into a single adb round trip, because adb access is
  * serialised per device and both of these sit on the critical line between a
@@ -103,7 +109,7 @@ describe('wakeDevice — the sequence extracted from session.ts (plan 43 §5 ste
     const { transport, calls } = recordingTransport()
     const result = await wakeDevice(transport, { keepAwake: 'off', log: silentLog })
     expect(calls).toEqual([])
-    expect(result).toEqual({ screenOffTimeout: 'unchanged', stayOn: 'unchanged', reason: 'this device is opted out of keeping the screen awake' })
+    expect(result).toEqual({ screenOffTimeout: 'unchanged', stayOn: 'unchanged', keyguard: null, reason: 'this device is opted out of keeping the screen awake' })
   })
 
   test('"while-charging": read the current power state, stayon usb, wake, then a keyguard probe — no dismiss when unlocked', async () => {
@@ -185,10 +191,27 @@ describe('wakeDevice — the sequence extracted from session.ts (plan 43 §5 ste
     expect(calls).toContain(WAKEUP)
   })
 
-  test('nudges a swipe-only keyguard when dumpsys reports one showing', async () => {
-    const { transport, calls } = recordingTransport({ [WAKE_AND_PROBE]: 'isKeyguardShowing=true', [GET_STAYON]: '2' })
-    await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
-    expect(calls).toContain(MENU)
+  test('dismisses a swipe-only keyguard when dumpsys reports one showing, and says so', async () => {
+    const { transport, calls } = recordingTransport({
+      [WAKE_AND_PROBE]: 'isKeyguardShowing=true',
+      [DISMISS]: 'isKeyguardShowing=false',
+      [GET_STAYON]: '2',
+    })
+    const result = await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
+    expect(calls).toContain(DISMISS)
+    // The floor is not paid on a phone the supported command already unlocked.
+    expect(calls).not.toContain(MENU)
+    expect(result.keyguard).toBe('dismissed')
+    // A dismissed keyguard is not a reason — only one still up is.
+    expect(result.reason).not.toContain('lock screen')
+  })
+
+  test('an unlocked device is never touched — no dismiss, no KEYCODE_MENU into the launcher', async () => {
+    const { transport, calls } = recordingTransport({ [WAKE_AND_PROBE]: 'isKeyguardShowing=false', [GET_STAYON]: '2' })
+    const result = await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
+    expect(calls).not.toContain(DISMISS)
+    expect(calls).not.toContain(MENU)
+    expect(result.keyguard).toBe('absent')
   })
 
   test('a failing command is swallowed (best-effort) and the sequence continues', async () => {
@@ -308,11 +331,12 @@ describe('wakeDevice — the keyguard probe tries the cheap dump first (owner, 2
     expect(calls).not.toContain(MENU)
   })
 
-  test('a locked device found through the policy section is still nudged', async () => {
-    const { transport, calls } = keyguardTransport({ [WAKE_AND_PROBE]: 'isKeyguardShowing=true' })
-    await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
+  test('a locked device found through the policy section is dismissed without ever reaching the full dump', async () => {
+    const { transport, calls } = keyguardTransport({ [WAKE_AND_PROBE]: 'isKeyguardShowing=true', [DISMISS]: 'isKeyguardShowing=false' })
+    const result = await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
     expect(calls).not.toContain(KEYGUARD_FULL)
-    expect(calls).toContain(MENU)
+    expect(calls).toContain(DISMISS)
+    expect(result.keyguard).toBe('dismissed')
   })
 
   test('a policy section that prints nothing recognisable falls back through the standalone probe to the full dump, and the fallback decides', async () => {
@@ -321,10 +345,13 @@ describe('wakeDevice — the keyguard probe tries the cheap dump first (owner, 2
     expect(calls).toContain(WAKE_AND_PROBE)
     expect(calls).toContain(KEYGUARD)
     expect(calls).toContain(KEYGUARD_FULL)
+    // The dismiss rung reads the same way: its own probe prints nothing
+    // recognisable either, so it falls through to the floor and the full dump.
+    expect(calls).toContain(DISMISS)
     expect(calls).toContain(MENU)
   })
 
-  test('both probes failing leaves the keyguard alone — never a blind KEYCODE_MENU into an unlocked launcher', async () => {
+  test('both probes failing leaves the keyguard alone — never a blind dismiss or KEYCODE_MENU into an unlocked launcher', async () => {
     const calls: string[] = []
     const transport = {
       exec: async (cmd: string) => {
@@ -334,7 +361,109 @@ describe('wakeDevice — the keyguard probe tries the cheap dump first (owner, 2
         return { stdout: '2', stderr: '', exitCode: 0 }
       },
     } as unknown as Transport
-    await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
+    const result = await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
+    expect(calls).not.toContain(DISMISS)
     expect(calls).not.toContain(MENU)
+    expect(result.keyguard).toBe('absent')
+  })
+})
+
+/**
+ * The regression this rung exists for (owner, 2026-09-18): a phone reconnects,
+ * the screen lights up, and it sits on its lock screen until somebody opens
+ * Device Control and swipes it by hand. `KEYCODE_MENU` was the entire dismiss
+ * step and it has not moved a keyguard since Android 9 — the nudge was sent,
+ * swallowed, and the wake reported nothing at all about it.
+ */
+describe('wakeDevice — dismissing the lock screen (owner, 2026-09-18)', () => {
+  function lockedTransport(answers: Record<string, string> = {}) {
+    const calls: string[] = []
+    const transport = {
+      exec: async (cmd: string) => {
+        calls.push(cmd)
+        if (cmd === READ_POWER) return { stdout: '60000\n2', stderr: '', exitCode: 0 }
+        if (cmd.startsWith(GET_STAYON)) return { stdout: '2', stderr: '', exitCode: 0 }
+        if (cmd in answers) return { stdout: answers[cmd] as string, stderr: '', exitCode: 0 }
+        // Everything keyguard-shaped that is not answered above says "locked".
+        if (cmd.includes('isKeyguardShowing')) return { stdout: 'isKeyguardShowing=true', stderr: '', exitCode: 0 }
+        return { stdout: '', stderr: '', exitCode: 0 }
+      },
+    } as unknown as Transport
+    return { transport, calls }
+  }
+
+  test('`wm dismiss-keyguard` is tried BEFORE KEYCODE_MENU, not after', async () => {
+    const { transport, calls } = lockedTransport({ [DISMISS]: 'isKeyguardShowing=false' })
+    await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
+    expect(calls.indexOf(DISMISS)).toBeGreaterThan(-1)
+    expect(calls.indexOf(MENU)).toBe(-1)
+  })
+
+  test('the dismiss and its re-probe are ONE adb round trip — the settle runs device-side', async () => {
+    const { transport, calls } = lockedTransport({ [DISMISS]: 'isKeyguardShowing=false' })
+    await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
+    // Not `wm dismiss-keyguard` on its own, and not a standalone probe after it.
+    expect(calls).not.toContain('wm dismiss-keyguard')
+    expect(calls.filter((c) => c === KEYGUARD)).toEqual([])
+  })
+
+  test('a ROM with no `wm dismiss-keyguard` still gets the old KEYCODE_MENU floor', async () => {
+    // An Android 7 shell prints its complaint and the probe still says locked,
+    // then the legacy nudge works and the re-probe comes back clean.
+    let menuPressed = false
+    const calls: string[] = []
+    const transport = {
+      exec: async (cmd: string) => {
+        calls.push(cmd)
+        if (cmd === READ_POWER) return { stdout: '60000\n2', stderr: '', exitCode: 0 }
+        if (cmd.startsWith(GET_STAYON)) return { stdout: '2', stderr: '', exitCode: 0 }
+        if (cmd === MENU) {
+          menuPressed = true
+          return { stdout: '', stderr: '', exitCode: 0 }
+        }
+        if (cmd === DISMISS) return { stdout: 'Unknown command: dismiss-keyguard\nisKeyguardShowing=true', stderr: '', exitCode: 0 }
+        if (cmd.includes('isKeyguardShowing')) {
+          return { stdout: `isKeyguardShowing=${menuPressed ? 'false' : 'true'}`, stderr: '', exitCode: 0 }
+        }
+        return { stdout: '', stderr: '', exitCode: 0 }
+      },
+    } as unknown as Transport
+    const result = await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
+    expect(calls).toContain(DISMISS)
+    expect(calls).toContain(MENU)
+    expect(result.keyguard).toBe('dismissed')
+  })
+
+  test('a secured device reports `showing` with a reason, instead of a silent dark tile', async () => {
+    const { transport, calls } = lockedTransport()
+    const result = await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
+    expect(calls).toContain(DISMISS)
+    expect(calls).toContain(MENU)
+    expect(result.keyguard).toBe('showing')
+    expect(result.reason).toContain('PIN')
+  })
+
+  test('a power write that was refused keeps its own reason — the keyguard never overwrites it', async () => {
+    const { transport } = lockedTransport()
+    const result = await wakeDevice(transport, { keepAwake: 'always', screenOffTimeoutMs: 1800000, log: silentLog })
+    expect(result.keyguard).toBe('showing')
+    expect(result.reason).toContain('no capture sink')
+  })
+
+  test('a dismiss that cannot be issued at all still falls through to the floor', async () => {
+    const calls: string[] = []
+    const transport = {
+      exec: async (cmd: string) => {
+        calls.push(cmd)
+        if (cmd === READ_POWER) return { stdout: '60000\n2', stderr: '', exitCode: 0 }
+        if (cmd.startsWith(GET_STAYON)) return { stdout: '2', stderr: '', exitCode: 0 }
+        if (cmd === DISMISS) throw new Error('the shell went away')
+        if (cmd.includes('isKeyguardShowing')) return { stdout: 'isKeyguardShowing=true', stderr: '', exitCode: 0 }
+        return { stdout: '', stderr: '', exitCode: 0 }
+      },
+    } as unknown as Transport
+    const result = await wakeDevice(transport, { keepAwake: 'while-charging', log: silentLog })
+    expect(calls).toContain(MENU)
+    expect(result.keyguard).toBe('showing')
   })
 })

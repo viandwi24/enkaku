@@ -358,10 +358,12 @@ export {
 } from './readiness'
 export {
   AwakeApplyOutcomeSchema,
+  AwakeKeyguardOutcomeSchema,
   CapturedPowerStateSchema,
   ObservedScreenSchema,
   AwakeApplyResultSchema,
   type AwakeApplyOutcome,
+  type AwakeKeyguardOutcome,
   type CapturedPowerState,
   type ObservedScreen,
   type AwakeApplyResult,
