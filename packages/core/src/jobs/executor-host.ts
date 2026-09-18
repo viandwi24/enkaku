@@ -36,6 +36,10 @@ export interface ExecutorHostDeps {
   classify?: (err: unknown) => ClassifiedFailure
   timeoutIsInfra: () => boolean
   rebindOnInfra: () => boolean
+  /** How many times one run may be rebound before it is failed (`JOB_MAX_INFRA_REBINDS`). Absent means zero — never rebind. */
+  maxInfraRebinds?: () => number
+  /** Pause before the scheduler is told a rebound run is ready (`JOB_REBIND_BACKOFF_MS`). Absent means no pause. */
+  rebindBackoffMs?: () => number
   health?: () => DeviceHealth | null
   deviceSerial: (deviceId: string) => string | null
   pickRebindDevice?: (job: JobRow) => string | null
@@ -90,6 +94,20 @@ export const CANCEL_KILL_MS_DEFAULT = 15_000
  */
 export const CANCEL_SETTLE_BUDGET_MS_DEFAULT = 75_000
 
+/**
+ * How many times one run may be rebound after an infra failure when the
+ * embedder wires no ceiling of its own (`JOB_MAX_INFRA_REBINDS` is what the
+ * daemon passes).
+ *
+ * Non-zero on purpose. An absent accessor used to mean "no limit", which is
+ * what boot-looped the owner's farm; making it mean "never rebind" would be
+ * the opposite mistake, silently turning off a feature for every embedder that
+ * has not updated. Bounded is the answer to both.
+ */
+export const MAX_INFRA_REBINDS_DEFAULT = 3
+/** Pause before a rebound run is offered back to the scheduler, when the embedder wires none (`JOB_REBIND_BACKOFF_MS`). */
+export const REBIND_BACKOFF_MS_DEFAULT = 2_000
+
 interface RunningEntry {
   job: JobRow
   run: JobRunRow
@@ -116,7 +134,16 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
   const warnedProgress = new Set<string>()
   const classify = deps.classify ?? ((err: unknown) => classifyFailure(err, { timeoutIsInfra: deps.timeoutIsInfra() }))
 
-  function requeueForRebind(job: JobRow, run: JobRunRow, code: string) {
+  /**
+   * Move a run onto another device after an infra failure.
+   *
+   * With no idle sibling this deliberately requeues onto the SAME device: the
+   * run goes back in the queue rather than failing, because the device it just
+   * lost may come back. That is safe now only because the caller bounds the
+   * attempts and the kick below is paced — unbounded and unpaced, it was one of
+   * the ways this spun forever.
+   */
+  function requeueForRebind(job: JobRow, run: JobRunRow, code: string): boolean {
     const newDeviceId = deps.pickRebindDevice?.(job) ?? job.deviceId
     const requeued = deps.jobStore.requeueForRebind(run.id, newDeviceId)
     deps.activities().end(job.deviceId, activityIdFor(job, run))
@@ -124,10 +151,22 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
       const freshJob = deps.jobStore.get(job.id) ?? job
       deps.onJobStatus(rowToJobInfo(freshJob, requeued))
     }
-    deps.log.info(`run ${run.id} (job ${job.id}) requeued after an infra failure (${code}) — now targets device ${newDeviceId}`)
+    const attempts = requeued?.infraAttempts ?? (run.infraAttempts ?? 0) + 1
+    deps.log.info(
+      `run ${run.id} (job ${job.id}) requeued after an infra failure (${code}) — now targets device ${newDeviceId} (rebind ${attempts} of ${deps.maxInfraRebinds?.() ?? MAX_INFRA_REBINDS_DEFAULT})`,
+    )
     deps.onJobRebound?.(job.deviceId, job.id, newDeviceId, code)
     if (job.batchId) deps.onBatchChanged?.(job.batchId)
-    deps.onFinished()
+    /*
+      Paced, not inline (2026-09-18). `onFinished()` kicks the scheduler, which
+      claims the run again immediately — called here directly, the rebind closed
+      its own loop with no pause in it at all. The owner's farm requeued two runs
+      every 1-3 ms until HTTP starved and the web UI timed out.
+    */
+    const delay = deps.rebindBackoffMs?.() ?? REBIND_BACKOFF_MS_DEFAULT
+    if (delay > 0) setTimeout(() => deps.onFinished(), delay).unref?.()
+    else deps.onFinished()
+    return true
   }
 
   function settle(
@@ -165,9 +204,26 @@ export function createExecutorHost(deps: ExecutorHostDeps): ExecutorHost {
         else deps.log.debug(`no serial on record for device ${job.deviceId} — cannot feed the health tracker for run ${run.id}`)
       }
 
+      /*
+        The cap (2026-09-18). `job_runs.infra_attempts` has counted rebinds
+        since the column existed and nothing ever read it, so a run could be
+        rebound without end — which is exactly what took the owner's farm down:
+        every node had just restarted, so a batch's devices were all `online` in
+        the database with no node connected, and the same two runs cycled three
+        phones forever.
+
+        Past the cap the run fails normally, carrying the infra code that caused
+        it, and the operator sees a red job instead of a farm that will not
+        answer.
+      */
+      const rebinds = run.infraAttempts ?? 0
+      const cap = deps.maxInfraRebinds?.() ?? MAX_INFRA_REBINDS_DEFAULT
       if (classified.class === 'infra' && job.batchId && deps.rebindOnInfra()) {
-        requeueForRebind(job, run, classified.code)
-        return
+        if (rebinds < cap) {
+          if (requeueForRebind(job, run, classified.code)) return
+        } else {
+          deps.log.warn(`run ${run.id} (job ${job.id}) was rebound ${rebinds} time(s) after infra failures — the cap is ${cap}, so it fails here (${classified.code})`)
+        }
       }
     }
 

@@ -124,7 +124,7 @@ interface Recorded {
 function makeDeps(
   job: JobRow,
   run: JobRunRow,
-  opts: { rebindOnInfra?: boolean; timeoutIsInfra?: boolean; pickRebindDevice?: string | null } = {},
+  opts: { rebindOnInfra?: boolean; timeoutIsInfra?: boolean; pickRebindDevice?: string | null; maxInfraRebinds?: number } = {},
 ): {
   deps: ExecutorHostDeps
   recorded: Recorded
@@ -201,6 +201,10 @@ function makeDeps(
     onFinished: () => {},
     timeoutIsInfra: () => opts.timeoutIsInfra ?? false,
     rebindOnInfra: () => opts.rebindOnInfra ?? true,
+    ...(opts.maxInfraRebinds !== undefined ? { maxInfraRebinds: () => opts.maxInfraRebinds as number } : {}),
+    // Every test here asserts what the rebind DID, never how long the scheduler
+    // waited afterwards; a real pause would only make the suite slow.
+    rebindBackoffMs: () => 0,
     health: () => health,
     deviceSerial: (deviceId) => `serial-${deviceId}`,
     pickRebindDevice: () => (opts.pickRebindDevice === undefined ? 'dev-2' : opts.pickRebindDevice),
@@ -354,6 +358,79 @@ describe('createExecutorHost — batch rebind on an infra failure (plan 36 §3.6
     await Bun.sleep(10)
 
     expect(recorded.requeueCalls).toEqual([{ runId: 'run-1', newDeviceId: 'dev-1' }])
+  })
+
+  /*
+    The ceiling (2026-09-18).
+
+    `job_runs.infra_attempts` has counted rebinds since the column was added and
+    nothing ever read it, so a run could be rebound without end. The owner's
+    production farm boot-looped on exactly that: every node had just restarted,
+    so a batch's devices were all `online` in the database with no node
+    connected, and two runs cycled three phones — `node_offline` → rebind →
+    `node_offline` → rebind — every 1-3 ms until HTTP starved and the web UI
+    timed out.
+
+    The rebind itself is right and stays. What was missing is a number it has to
+    stop at.
+  */
+  describe('the rebind ceiling', () => {
+    const disconnect = () => Object.assign(new Error('device gone'), { code: 'DEVICE_DISCONNECTED' })
+
+    test('a run already at the cap is failed instead of rebound', async () => {
+      const job = makeJob({ batchId: 'batch-1', batchSeq: 0 })
+      const run = makeRun({ infraAttempts: 3 })
+      const { deps, recorded } = makeDeps(job, run, { rebindOnInfra: true, pickRebindDevice: 'dev-2', maxInfraRebinds: 3 })
+      deps.registry.register('test-script', { validateParams: (p) => p, run: async () => { throw disconnect() } })
+      createExecutorHost(deps).start(job, run)
+      await Bun.sleep(10)
+
+      expect(recorded.requeueCalls).toEqual([])
+      expect(recorded.settleCalls).toHaveLength(1)
+      expect(recorded.settleCalls[0]?.status).toBe('failed')
+    })
+
+    test('a run one below the cap is still rebound — the cap bounds it, it does not disable it', async () => {
+      const job = makeJob({ batchId: 'batch-1', batchSeq: 0 })
+      const run = makeRun({ infraAttempts: 2 })
+      const { deps, recorded } = makeDeps(job, run, { rebindOnInfra: true, pickRebindDevice: 'dev-2', maxInfraRebinds: 3 })
+      deps.registry.register('test-script', { validateParams: (p) => p, run: async () => { throw disconnect() } })
+      createExecutorHost(deps).start(job, run)
+      await Bun.sleep(10)
+
+      expect(recorded.requeueCalls).toEqual([{ runId: 'run-1', newDeviceId: 'dev-2' }])
+      expect(recorded.settleCalls).toEqual([])
+    })
+
+    /** A cap of zero is the operator turning rebinding off through the ceiling rather than the flag. */
+    test('a cap of zero never rebinds', async () => {
+      const job = makeJob({ batchId: 'batch-1', batchSeq: 0 })
+      const run = makeRun()
+      const { deps, recorded } = makeDeps(job, run, { rebindOnInfra: true, pickRebindDevice: 'dev-2', maxInfraRebinds: 0 })
+      deps.registry.register('test-script', { validateParams: (p) => p, run: async () => { throw disconnect() } })
+      createExecutorHost(deps).start(job, run)
+      await Bun.sleep(10)
+
+      expect(recorded.requeueCalls).toEqual([])
+      expect(recorded.settleCalls).toHaveLength(1)
+    })
+
+    /**
+     * The failure the farm actually hit: no sibling is reachable, so every
+     * rebind targets the same device. Bounded, that is three requeues and then
+     * a red job; unbounded, it was the boot loop.
+     */
+    test('the same-device requeue is bounded too', async () => {
+      const job = makeJob({ batchId: 'batch-1', batchSeq: 0 })
+      const run = makeRun({ infraAttempts: 3 })
+      const { deps, recorded } = makeDeps(job, run, { rebindOnInfra: true, pickRebindDevice: null, maxInfraRebinds: 3 })
+      deps.registry.register('test-script', { validateParams: (p) => p, run: async () => { throw disconnect() } })
+      createExecutorHost(deps).start(job, run)
+      await Bun.sleep(10)
+
+      expect(recorded.requeueCalls).toEqual([])
+      expect(recorded.settleCalls).toHaveLength(1)
+    })
   })
 })
 

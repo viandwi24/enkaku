@@ -223,6 +223,31 @@ export const JOB_CANCEL_KILL_MS = num('ENKAKU_JOB_CANCEL_KILL_MS', 15_000, z.num
  */
 export const JOB_HAND_BACK_HOME = bool('ENKAKU_JOB_HAND_BACK_HOME', true)
 export const JOB_REBIND_ON_INFRA = bool('ENKAKU_JOB_REBIND_ON_INFRA', true)
+/**
+ * How many times ONE run may be rebound onto another device after an infra
+ * failure before it is simply failed.
+ *
+ * There was no limit at all until 2026-09-18, and the owner's production farm
+ * boot-looped on it: every node had just restarted, so a batch's devices were
+ * all `online` in the database with no node connected, and two runs bounced
+ * between three phones — `node_offline` → rebind → `node_offline` → rebind —
+ * every 1-3 ms, thousands of times a second, until the event loop had nothing
+ * left for HTTP and the web UI timed out.
+ *
+ * `job_runs.infra_attempts` has counted these since the column was added and
+ * nothing ever read it. This is the number it is compared against.
+ */
+export const JOB_MAX_INFRA_REBINDS = num('ENKAKU_JOB_MAX_INFRA_REBINDS', 3, z.number().int().min(0).max(50))
+/**
+ * How long to wait before telling the scheduler a rebound run is ready.
+ *
+ * The rebind used to call `onFinished()` inline, which kicks the scheduler,
+ * which claims the run again in the same tick — the loop closed on itself with
+ * no pause anywhere in it. Even bounded by the cap above, an unpaced rebind
+ * spends its whole budget inside one millisecond and gives a node that is
+ * seconds from reconnecting no chance to be there.
+ */
+export const JOB_REBIND_BACKOFF_MS = num('ENKAKU_JOB_REBIND_BACKOFF_MS', 2_000, z.number().int().min(0).max(120_000))
 export const JOB_CRASH_POLICY = pick('ENKAKU_JOB_CRASH_POLICY', 'declared', ['ignore', 'declared', 'any'] as const)
 export const WORKFLOW_MAX_TOTAL_MS = num('ENKAKU_WORKFLOW_MAX_TOTAL_MS', 21_600_000, z.number().int().min(60_000).max(604_800_000))
 

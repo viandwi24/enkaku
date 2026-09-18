@@ -72,6 +72,8 @@ import {
   JOB_MEMORY_MAX_BYTES,
   JOB_MEMORY_SAMPLE_INTERVAL_MS,
   JOB_PROGRESS_INTERVAL_MS,
+  JOB_MAX_INFRA_REBINDS,
+  JOB_REBIND_BACKOFF_MS,
   JOB_REBIND_ON_INFRA,
   JOB_RESET_STRICT,
   JOB_RESET_TIMEOUT_MS,
@@ -1931,6 +1933,13 @@ let blobGc: BlobGc | null = null
         // settle, the same pattern `adb.maxConcurrent` uses.
         timeoutIsInfra: () => JOB_TIMEOUT_IS_INFRA,
         rebindOnInfra: () => JOB_REBIND_ON_INFRA,
+        // Read fresh per settle, like the two above: the ceiling on how many
+        // times ONE run may be moved to another device after an infra failure,
+        // and the pause before the scheduler is told it is ready. Without both,
+        // a batch whose devices all belong to disconnected nodes rebinds
+        // forever — the owner's farm boot-looped on exactly that (2026-09-18).
+        maxInfraRebinds: () => JOB_MAX_INFRA_REBINDS,
+        rebindBackoffMs: () => JOB_REBIND_BACKOFF_MS,
         // Lazy, like `activities` above — `health` is created later, once adb is ready.
         health: () => health,
         deviceSerial: (deviceId) => db.select({ serial: devices.serial }).from(devices).where(eq(devices.id, deviceId)).get()?.serial ?? null,
