@@ -238,7 +238,7 @@ export function createAwakePolicy(deps: AwakePolicyDeps): AwakePolicy {
   async function applyImpl(deviceId: string, mode: KeepAwakeMode): Promise<AwakeApplyResult> {
     const row = mustGet(deviceId)
     const blocked = unreachable(row)
-    if (blocked) return { screenOffTimeout: 'refused', stayOn: 'refused', reason: blocked }
+    if (blocked) return { screenOffTimeout: 'refused', stayOn: 'refused', keyguard: null, reason: blocked }
 
     return withTransport(
       row,
@@ -256,9 +256,9 @@ export function createAwakePolicy(deps: AwakePolicyDeps): AwakePolicy {
         storeCapture(deviceId, current)
         const timeout = await applyScreenOffTimeout(transport, screenOffTimeoutFor(row), current.screenOffTimeoutMs, log)
         const stayOn = await applyStayOn(transport, mode, current.stayOnWhilePluggedIn, log)
-        return { screenOffTimeout: timeout.outcome, stayOn: stayOn.outcome, reason: firstPowerReason(timeout, stayOn) }
+        return { screenOffTimeout: timeout.outcome, stayOn: stayOn.outcome, keyguard: null, reason: firstPowerReason(timeout, stayOn) }
       },
-      { screenOffTimeout: 'refused', stayOn: 'refused', reason: 'adb is not ready yet' },
+      { screenOffTimeout: 'refused', stayOn: 'refused', keyguard: null, reason: 'adb is not ready yet' },
     )
   }
 
@@ -270,10 +270,10 @@ export function createAwakePolicy(deps: AwakePolicyDeps): AwakePolicy {
       // and this module does not guess (the failure mode plan 89 §3.6
       // records for the wallpaper tier). Reported as `unchanged`, not
       // `refused`: nothing was refused, there was simply nothing to do.
-      return { screenOffTimeout: 'unchanged', stayOn: 'unchanged', reason: 'this device’s original power settings were never captured, so there is nothing to put back' }
+      return { screenOffTimeout: 'unchanged', stayOn: 'unchanged', keyguard: null, reason: 'this device’s original power settings were never captured, so there is nothing to put back' }
     }
     const blocked = unreachable(row)
-    if (blocked) return { screenOffTimeout: 'refused', stayOn: 'refused', reason: blocked }
+    if (blocked) return { screenOffTimeout: 'refused', stayOn: 'refused', keyguard: null, reason: blocked }
 
     return withTransport(
       row,
@@ -287,9 +287,9 @@ export function createAwakePolicy(deps: AwakePolicyDeps): AwakePolicy {
         // than degrading into "nothing was ever captured"; and a device that
         // is restored and later re-woken must not re-capture OUR restored
         // values as if they were its originals.
-        return { screenOffTimeout: timeout.outcome, stayOn: stayOn.outcome, reason: firstPowerReason(timeout, stayOn) }
+        return { screenOffTimeout: timeout.outcome, stayOn: stayOn.outcome, keyguard: null, reason: firstPowerReason(timeout, stayOn) }
       },
-      { screenOffTimeout: 'refused', stayOn: 'refused', reason: 'adb is not ready yet' },
+      { screenOffTimeout: 'refused', stayOn: 'refused', keyguard: null, reason: 'adb is not ready yet' },
     )
   }
 

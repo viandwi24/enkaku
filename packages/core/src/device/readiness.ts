@@ -468,6 +468,25 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       if (status === 'offline') blocked = 'offline'
       else if (status === 'quarantined') blocked = 'quarantined'
       else blocked = blockedReason.get(deviceId) ?? null
+    } else if (status !== 'offline' && status !== 'quarantined' && blockedReason.get(deviceId) === 'locked') {
+      /*
+        `locked` is the one reason that outlives rank parity, and it has to be.
+
+        Every other reason above describes this core's OWN bookkeeping failing
+        to reach `desired`, and `rawActual` is that bookkeeping — plan 125 §0.3
+        is explicit that it "says nothing whatsoever about the phone". A device
+        whose screen this core is holding awake therefore reads `actual:
+        'awake'` whether or not anybody can get past its lock screen, so the
+        rank guard would suppress `locked` in exactly the case it exists for,
+        every time, and the member would go on having no producer.
+
+        It is the same disagreement `observed` was added for (§4.2): the phone
+        is allowed to contradict the bookkeeping. This one is set only from a
+        real probe in `ensureAwake` and cleared by the next wake that gets
+        past the keyguard, so it can never be stale in the way the guard
+        protects the other reasons from.
+      */
+      blocked = 'locked'
     }
     // `observed` rides alongside `actual`, never in place of it (plan 125
     // §4.2) — `actual` stays the scheduling-relevant bookkeeping value every
@@ -538,13 +557,34 @@ export function createReadinessManager(deps: ReadinessManagerDeps): ReadinessMan
       // and no capture sink means no persisted timeout write (§0.2 rule 1).
       const policy = deps.awakePolicy?.() ?? null
       const injectKey = keyInjectorFor(deviceId)
-      await wakeDevice(transport, {
+      const result = await wakeDevice(transport, {
         keepAwake: keepAwakeModeFor(row),
         screenOffTimeoutMs: policy ? screenOffTimeoutFor(row) : null,
         ...(policy ? { capture: policy.captureSink(deviceId) } : {}),
         ...(injectKey ? { injectKey } : {}),
         log,
       })
+      /*
+        `blocked: 'locked'` finally has a producer.
+
+        The enum member has existed since plan 43 §4.1 and nothing ever set
+        it, so a phone that woke to a lock screen and stayed there reported
+        `blocked: null` — indistinguishable from a phone that came up clean.
+        On a sealed-box farm that is the difference between "Enkaku is broken"
+        and "this phone has a PIN on it", and the operator had no way to tell
+        which from the UI.
+
+        Only written over a `null`: `reconcile`'s `hot` branch calls this
+        after setting `hot_budget_full` or `error`, and a lock screen is the
+        less useful of the two answers there. Cleared the same way, so a
+        device that unlocks stops claiming it is locked.
+      */
+      const wasLocked = blockedReason.get(deviceId) === 'locked'
+      if (result.keyguard === 'showing') {
+        if ((blockedReason.get(deviceId) ?? null) === null) blockedReason.set(deviceId, 'locked')
+      } else if (result.keyguard !== null && wasLocked) {
+        blockedReason.set(deviceId, null)
+      }
     } catch (err) {
       log.warn(`readiness: wakeDevice failed for ${deviceId}: ${String(err)}`)
     } finally {

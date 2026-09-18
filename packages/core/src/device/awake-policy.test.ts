@@ -176,7 +176,7 @@ describe('awake policy — apply (plan 125 §3.3, acceptance criterion 4)', () =
     const { transport, state } = fakeDevice({ timeout: '60000', stayOn: '0' })
     const result = await createAwakePolicy(makeDeps(db, transport)).apply(row.id, 'always')
 
-    expect(result).toEqual({ screenOffTimeout: 'applied', stayOn: 'applied', reason: null })
+    expect(result).toEqual({ screenOffTimeout: 'applied', stayOn: 'applied', keyguard: null, reason: null })
     expect(state.timeout).toBe('1800000')
     expect(state.stayOn).toBe('7')
     // Captured what the device HAD, not what we just wrote.
@@ -211,7 +211,7 @@ describe('awake policy — apply (plan 125 §3.3, acceptance criterion 4)', () =
     const row = admit(db, 'a')
     const { transport, calls } = fakeDevice({ timeout: '1800000', stayOn: '7' })
     const result = await createAwakePolicy(makeDeps(db, transport)).apply(row.id, 'always')
-    expect(result).toEqual({ screenOffTimeout: 'unchanged', stayOn: 'unchanged', reason: null })
+    expect(result).toEqual({ screenOffTimeout: 'unchanged', stayOn: 'unchanged', keyguard: null, reason: null })
     // ONE read, nothing else — no `svc power stayon`, plan 96 §22's 1422 ms.
     // It was two calls until the pair was batched into a single `adb shell`.
     expect(calls).toEqual([READ_POWER])
@@ -236,7 +236,7 @@ describe('awake policy — apply (plan 125 §3.3, acceptance criterion 4)', () =
     db.update(devices).set({ status: 'offline' }).where(eq(devices.id, row.id)).run()
     const { transport, calls } = fakeDevice()
     const result = await createAwakePolicy(makeDeps(db, transport)).apply(row.id, 'always')
-    expect(result).toEqual({ screenOffTimeout: 'refused', stayOn: 'refused', reason: 'the device is offline' })
+    expect(result).toEqual({ screenOffTimeout: 'refused', stayOn: 'refused', keyguard: null, reason: 'the device is offline' })
     expect(calls).toEqual([])
   })
 })
@@ -254,7 +254,7 @@ describe('awake policy — restore (plan 125 acceptance criterion 3, §0.2 rule 
     expect(device.state).toEqual({ timeout: '1800000', stayOn: '7' })
 
     const result = await policy.restore(row.id)
-    expect(result).toEqual({ screenOffTimeout: 'applied', stayOn: 'applied', reason: null })
+    expect(result).toEqual({ screenOffTimeout: 'applied', stayOn: 'applied', keyguard: null, reason: null })
     expect(device.state).toEqual({ timeout: '30000', stayOn: '1' })
   })
 
@@ -268,7 +268,7 @@ describe('awake policy — restore (plan 125 acceptance criterion 3, §0.2 rule 
 
     for (let i = 0; i < 9; i++) {
       const again = await policy.restore(row.id)
-      expect(again).toEqual({ screenOffTimeout: 'unchanged', stayOn: 'unchanged', reason: null })
+      expect(again).toEqual({ screenOffTimeout: 'unchanged', stayOn: 'unchanged', keyguard: null, reason: null })
       expect(device.state).toEqual({ timeout: '30000', stayOn: '1' })
     }
     // The capture is deliberately NOT cleared by a restore — a later wake must

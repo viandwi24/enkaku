@@ -102,6 +102,30 @@ export const ObservedScreenSchema = z.object({
 export type ObservedScreen = z.infer<typeof ObservedScreenSchema>
 
 /**
+ * What the lock screen did on the way through a wake.
+ *
+ * A separate axis from `AwakeApplyOutcome` because it is not a setting we
+ * wrote and read back — it is a state the phone was in and may or may not
+ * have left. The three values are the three things a wake can honestly say:
+ *
+ * - `absent` — there was no keyguard up after the wake nudge. Nothing to do.
+ * - `dismissed` — there was one, and it is gone: we re-probed and the phone
+ *   answered `isKeyguardShowing=false`. This is the only value that may be
+ *   reported as an unlocked phone.
+ * - `showing` — there was one, and it is still there after every rung we
+ *   have. A secured device (PIN, pattern, password) always lands here and
+ *   that is a real limit, not a failure to handle: the farm never touches
+ *   lock-screen credentials (§3.4 of plan 125 refuses that category
+ *   outright). A swipe-only keyguard landing here is a bug.
+ *
+ * `null` on the result means "this pass said nothing about the keyguard" —
+ * `awake-policy.ts`'s `apply`/`restore` write power settings and never look
+ * at the lock screen, and must not be made to claim they did.
+ */
+export const AwakeKeyguardOutcomeSchema = z.enum(['absent', 'dismissed', 'showing'])
+export type AwakeKeyguardOutcome = z.infer<typeof AwakeKeyguardOutcomeSchema>
+
+/**
  * The result of one `apply`/`restore` pass: one outcome per setting written,
  * never a single boolean, because the two writes fail independently — a ROM
  * that ignores `screen_off_timeout` may still honour `svc power stayon`, and
@@ -110,6 +134,16 @@ export type ObservedScreen = z.infer<typeof ObservedScreenSchema>
 export const AwakeApplyResultSchema = z.object({
   screenOffTimeout: AwakeApplyOutcomeSchema,
   stayOn: AwakeApplyOutcomeSchema,
+  /**
+   * What happened to the lock screen, or `null` when this pass never looked.
+   *
+   * Nullable rather than required-and-meaningful, because the producers in
+   * `awake-policy.ts` write power settings over a transport and never probe
+   * the keyguard — forcing them to name an outcome would have made them
+   * invent one, which is exactly what `AwakeApplyOutcome`'s doc block above
+   * refuses for the settings. Only `wakeDevice` ever fills it.
+   */
+  keyguard: AwakeKeyguardOutcomeSchema.nullable().default(null),
   /** Human-readable, and only ever set when something was refused or skipped for a reason worth naming. */
   reason: z.string().nullable(),
 })
