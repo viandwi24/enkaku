@@ -62,36 +62,52 @@ export default definePlugin({
   /**
    * ## Changelog
    *
-   * **0.12.0 — twenty-six "the share screen did not open" failures were the Play
-   *   Store, and nothing in this pack ever looked.**
+   * **0.12.0 — the run was tapping "Get the app" and reporting a missing share screen.**
    *
-   *   Over three days on the owner's farm (2026-09-18) `post-video` failed 105 times. Reading the
-   *   tree each run had already saved beside its own error message — not guessing, not re-running —
-   *   twenty-six of them said `the share screen did not open after the editor`, on twenty-six
-   *   DIFFERENT phones, and all fourteen sampled `ig-06-share` artifacts held the same thing: the
-   *   Play Store's install sheet for "Edits: Editor Video", the app Instagram advertises from
-   *   inside this very Reel editor. Not one of those trees carried an Instagram node. The share
-   *   screen did not open because Instagram was not on the screen to open it.
+   *   Over three days on the owner's farm (2026-09-18) `post-video` failed 105 times, and
+   *   twenty-six of those said `the share screen did not open after the editor` — on twenty-six
+   *   DIFFERENT phones. Every sampled `ig-06-share` artifact held the Play Store's install sheet
+   *   for "Edits: Editor Video". Why the Play Store was there was the part nobody had, because the
+   *   artifact is saved after the damage and the screen that caused it was never captured.
    *
-   *   0.11.0 gave this pack a foreign-app guard and put it in exactly one place: `relaunch`. That
-   *   guards the first screen of a run. A sheet that lands mid-flow — which is when they land,
-   *   because that is when the app is being driven — met nothing at all, and the retap loop spent
-   *   its whole budget tapping a "Berikutnya" that had not been on the screen for a minute.
+   *   Job c1307de8's own trace still had it. The tree recorded one poll before the tap shows
+   *   Instagram's Edits promo — "Tingkatkan video Anda dengan Edits", "Dapatkan Aplikasi" — open
+   *   over the Reel editor, with both subtrees present at once:
    *
-   *   So the editor→share loop now recovers BEFORE it retaps: `recoverToApp` (`@enkaku/sdk`) backs
-   *   out of whatever is in front and brings Instagram's own task forward — never force-stopping
-   *   the intruder, which may be the owner's. One BACK is all the Play sheet needs, and Instagram
-   *   comes back still in its editor, so the retap that follows is usually enough.
+   *   ```
+   *   compose_bottom_sheet_container > bottom_sheet_compose_view > … > igds_button  [30,1394][690,1484]
+   *   … > clips_right_action_button ("Berikutnya")                                   [476,1425][697,1510]
+   *   ```
    *
-   *   And when it does not clear, the failure NAMES what was holding the screen instead of naming a
-   *   control that could not have been there. A message worded against an Instagram anchor, on a
-   *   screen that was never Instagram's, is what sent every reader of these runs to the one place
-   *   the answer was not.
+   *   The editor's Next button is still in the tree UNDER the sheet, so `editorNextButton` found
+   *   it, `editorReady` said yes, and the run tapped its centre — (587, 1468). That point is inside
+   *   the sheet's full-width "Dapatkan Aplikasi" button, which sits at very nearly the same height.
+   *   The tap asked to install a 112 MB app, the Play Store took the screen, and the run then failed
+   *   naming a share screen it had never got near. Not a flaky phone: a promo and a button that
+   *   overlap, which is every phone that gets shown the promo.
    *
-   *   `relaunch`'s own hand-rolled loop is now that same helper, which also gets it the case it
-   *   could never see: Samsung's accidental-touch protection is a full-screen System UI window, so
-   *   `foreignAppOnTop` excludes it by design, and six of the thirteen `ig-01-home` failures were
-   *   sitting under one. It answers to a swipe, not to BACK.
+   *   `promoDismissButton` could not catch it — that guard keys on a sheet offering "Lain kali",
+   *   and this sheet offers no refusal at all. So the question `sheetOverNextButton` asks is not
+   *   "which promo is this" but "is the button I am about to press the thing that would actually
+   *   receive the press", keyed on the SHEET's own container id rather than on any wording. The
+   *   next promo will be worded differently and will cover the same button in the same way.
+   *
+   *   Closed by its scrim (`Tutup lembaran`, measured, `[0,0][720,966]`) or by BACK — never by the
+   *   sheet's own primary button, which is the thing that caused this.
+   *
+   *   Two further guards for the runs already past that point, because a phone can lose the screen
+   *   for reasons this pack does not cause. `recoverToApp` (`@enkaku/sdk`) now runs in the
+   *   editor→share loop BEFORE each retap and in `relaunch`: it backs out of whatever is in front
+   *   and brings Instagram's task forward, never force-stopping the intruder, which may be the
+   *   owner's. BACK is pressed twice before the launch — measured on a moto g06, where the first
+   *   BACK only drops a Play sheet onto the store's own full screen and the second returns to
+   *   Instagram. It also gets the case `foreignAppOnTop` is built not to see: Samsung's
+   *   accidental-touch protection is a full-screen System UI window, and six of the thirteen
+   *   `ig-01-home` failures were sitting under one. It answers to a swipe, not to BACK.
+   *
+   *   And a failure that could not be cleared now NAMES what was holding the screen. A message
+   *   worded against an Instagram control, on a screen that was never Instagram's, is what sent
+   *   every reader of these runs to the one place the answer was not.
    *
    * **0.11.0 — another app over Instagram stopped being reported as a signed-out
  *   account.** This pack had no foreign-app guard at all, and that absence cost

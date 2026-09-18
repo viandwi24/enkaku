@@ -760,6 +760,26 @@ export async function tapCentre(ctx: ScriptContext<unknown>, node: UiNode): Prom
   await ctx.device.tap({ point: centre(node) })
 }
 
+/**
+ * A fingerprint of YOUTUBE'S OWN nodes — id, bounds and words — so "did the screen change?" can be
+ * asked of a screen that is playing a video.
+ *
+ * The status bar is deliberately excluded, and that is the entire point. A whole-tree comparison
+ * answers "changed" once a minute for ever, because the clock ticks: on the production run that
+ * prompted this (job 181b1bd7, 2026-09-18) the only two changes in 120 seconds were at t+56s and
+ * t+115s — fifty-nine seconds apart, which is a clock and nothing else. Read that as movement and
+ * a frozen screen looks alive.
+ */
+function screenSignature(tree: UiNode): string {
+  const parts: string[] = []
+  const walk = (n: UiNode): void => {
+    if (fromYouTube(n)) parts.push(`${n.resourceId}|${n.bounds.left},${n.bounds.top},${n.bounds.right},${n.bounds.bottom}|${n.text}|${n.desc}`)
+    for (const c of n.children) walk(c)
+  }
+  walk(tree)
+  return parts.join('\n')
+}
+
 /** Poll for a node by short id; returns it with the tree it was found in. */
 async function waitForId(ctx: ScriptContext<unknown>, shortId: string, budgetMs: number): Promise<{ node: UiNode | null; tree: UiNode }> {
   const got = await waitForTree(ctx, (t) => rowsById(t, shortId).length > 0, { budgetMs })
@@ -1476,6 +1496,31 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     screens.push('editor')
 
     let details = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: 30_000 })
+    /*
+      How the retaps below are delivered, and why that is now a variable (0.43.0).
+
+      0.39.4 raised the ceiling to four on the reasoning that "the answer to a swallowed tap is
+      another tap, not a longer wait". Production measured that and it is half right. Job 181bd7
+      (2026-09-18, SM-A075F) tapped "Berikutnya" five times over 97 seconds, and the run's own trace
+      records the result exactly: YouTube's nodes were byte-identical across all of it. Not "the
+      details screen was slow" — the editor did not move a pixel. The first tap, the one that
+      brought the editor to rest, worked; every tap after it reached a button that is `clickable`,
+      `enabled`, unobstructed, and inert. Eight runs in three days ended this way.
+
+      A fourth identical tap is not a new idea. What IS a different idea is a different DELIVERY:
+      this pack already sends the details screen's title tap `via: 'adb'` rather than through the
+      farm's pointer, because that screen would not take the pointer's taps either. So the ladder is
+      now pointer, then adb — and a screen that does not change under either is reported as the
+      frozen editor it is, rather than as a details screen that never opened.
+
+      Honest about what this is: adb delivery is not PROVEN to move this button (that needs the
+      screen in front of someone). It is the one remedy this pack already relies on for the same
+      symptom on the neighbouring screen, it costs one tap, and it cannot make things worse — the
+      button either advances or stays where it was.
+    */
+    let viaAdb = false
+    let frozenTaps = 0
+    let taps = 0
     for (let retap = 0; retap < EDITOR_RETAPS && !details.ok; retap++) {
       /*
         A "Berikutnya" YouTube did not act on (0.37.0). Production #25 and #57 (2026-09-15) were still on the Shorts editor,
@@ -1490,9 +1535,28 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       */
       const again = rowsById(details.tree, 'shorts_post_bottom_button')[0]
       if (!again || processingOverlay(details.tree) !== null) break
-      ctx.log.warn('still on the Shorts editor after "Berikutnya" — tapping it again', { retap: retap + 1 })
-      await tapCentre(ctx, again)
+      const before = screenSignature(details.tree)
+      ctx.log.warn('still on the Shorts editor after "Berikutnya" — tapping it again', { retap: retap + 1, via: viaAdb ? 'adb' : 'pointer' })
+      await ctx.device.tap({ point: centre(again) }, viaAdb ? { via: 'adb' } : undefined)
+      taps += 1
       details = await waitForTree(ctx, (t) => onDetailsScreen(t), { budgetMs: 20_000 })
+      if (details.ok) break
+      if (screenSignature(details.tree) !== before) {
+        frozenTaps = 0
+        continue
+      }
+      frozenTaps += 1
+      if (!viaAdb) {
+        viaAdb = true
+        ctx.log.warn('the editor did not change at all under that tap — sending the next one through adb instead of the pointer')
+        continue
+      }
+      /*
+        Two adb taps and the editor still has not moved. Another is the same idea a third time, and
+        the run has already spent a minute proving it: stop here so the failure below can say what
+        was actually measured.
+      */
+      if (frozenTaps >= 3) break
     }
     if (!details.ok && rowsById(details.tree, 'shorts_post_bottom_button').length === 0) {
       // "Berikutnya" was taken and YouTube is still getting the details screen ready (0.38.2): wait for it, up to DETAILS_LOAD_MS.
@@ -1503,7 +1567,15 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       // The tree too, not only a screenshot (0.35.0): production phone #2 (2026-09-15) showed the details screen
       // plainly on its screenshot while this wait failed, and with no dump the cause could not be read.
       await capture(ctx, 'yt-08-details', details.tree)
-      fail('E_ANCHOR_NOT_FOUND', 'the details screen did not open after the editor — see artifact yt-08-details.')
+      // Say which of the two failures this is (0.43.0). "The details screen did not open" sent every
+      // reader of these runs looking at the details screen, which had never been reached — the
+      // editor was still up and had ignored every press of its own button.
+      fail(
+        'E_ANCHOR_NOT_FOUND',
+        frozenTaps > 0 && rowsById(details.tree, 'shorts_post_bottom_button').length > 0
+          ? `the Shorts editor would not act on its own "Berikutnya": it was pressed ${taps} time${taps === 1 ? '' : 's'}${viaAdb ? ' (the last through adb)' : ''} and YouTube's own nodes did not change at all between them, so the details screen was never reached. Nothing was uploaded. See artifact yt-08-details.`
+          : 'the details screen did not open after the editor — see artifact yt-08-details.',
+      )
     }
     // It opens as a header over a spinner; aim nothing until it has finished drawing.
     const still = await waitForStillScreen(ctx, DETAILS_LOAD_MS)

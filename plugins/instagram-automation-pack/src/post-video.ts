@@ -272,6 +272,85 @@ export function editorNextButton(tree: UiNode): UiNode | null {
   return rowsById(tree, 'clips_right_action_button').find((n) => n.clickable) ?? null
 }
 
+/** Any container Instagram draws a bottom sheet in. Its OWN id, not a guess at the sheet's contents. */
+const SHEET_CONTAINER = /bottom_sheet/i
+
+/**
+ * A bottom sheet's own clickable sitting on the point "Berikutnya" would be tapped at — or null,
+ * which is the normal answer.
+ *
+ * ## The single most expensive bug this pack has had
+ *
+ * Twenty-six runs in three days (2026-09-18) failed with "the share screen did not open after the
+ * editor", on twenty-six different phones, and every sampled artifact held the Play Store's install
+ * sheet for "Edits: Editor Video". Why the PLAY STORE was there was the part nobody had: the
+ * artifact is saved after the damage, and the screen that caused it was never captured.
+ *
+ * Job c1307de8's trace still had it. The tree read one poll before the tap (`trace/ui`, the run's
+ * own recording) shows Instagram's Edits promo — "Tingkatkan video Anda dengan Edits", "Dapatkan
+ * Aplikasi" — open over the Reel editor, and the two subtrees side by side:
+ *
+ * ```
+ * hierarchy > FrameLayout > compose_bottom_sheet_container > bottom_sheet_compose_view > … > igds_button   [30,1394][690,1484]  clickable
+ * hierarchy > FrameLayout > … > clips_right_action_button ("Berikutnya")                                    [476,1425][697,1510]  clickable
+ * ```
+ *
+ * The editor's Next button is STILL IN THE TREE under the sheet, so `editorNextButton` finds it,
+ * `editorReady` says yes, and the run taps its centre — (587, 1468). That point is inside the
+ * sheet's "Dapatkan Aplikasi" button, which spans the full width at very nearly the same height.
+ * The tap installs an app instead of advancing the post, the Play Store takes the screen, and the
+ * run then fails naming a share screen it never got near.
+ *
+ * `promoDismissButton` could not catch this one: that guard keys on a sheet offering "Lain kali",
+ * and this sheet offers no refusal at all — it is closed by its scrim or by BACK.
+ *
+ * So the question this asks is not "which promo is this" but "is the button I am about to press
+ * the thing that would actually receive the press". Keyed on the SHEET's container id rather than
+ * on any wording, because the next promo will be worded differently and will cover the same button
+ * in the same way.
+ */
+export function sheetOverNextButton(tree: UiNode): UiNode | null {
+  const next = editorNextButton(tree)
+  if (next === null) return null
+  const point = centre(next)
+  let found: UiNode | null = null
+  const walk = (node: UiNode, inSheet: boolean): void => {
+    if (found !== null) return
+    const sheet = inSheet || SHEET_CONTAINER.test(node.resourceId)
+    if (
+      sheet &&
+      node.clickable &&
+      node !== next &&
+      node.bounds.left <= point.x &&
+      point.x <= node.bounds.right &&
+      node.bounds.top <= point.y &&
+      point.y <= node.bounds.bottom
+    ) {
+      found = node
+      return
+    }
+    for (const child of node.children) walk(child, sheet)
+  }
+  walk(tree, false)
+  return found
+}
+
+/**
+ * The scrim a sheet labels as its own way out, matched WHOLE and case-insensitively.
+ *
+ * `Tutup lembaran` is the measured one (job c1307de8, 2026-09-18): clickable, `[0,0][720,966]` —
+ * the dimmed area above the sheet, a long way from the "Dapatkan Aplikasi" button at y 1394-1484.
+ * That distance is the point. Nothing here ever taps an unlabelled control on a sheet whose whole
+ * purpose is to get an app installed.
+ */
+const SHEET_CLOSE_LABELS = ['tutup lembaran', 'tutup sheet', 'close sheet', 'tutup', 'close']
+
+export function sheetCloseControl(tree: UiNode): UiNode | null {
+  return (
+    all(tree, (n) => n.clickable && SHEET_CLOSE_LABELS.includes((n.desc.trim() || n.text.trim()).toLowerCase()))[0] ?? null
+  )
+}
+
 /** The share screen: its Share/Next button, with no sheet over it. */
 export function shareButton(tree: UiNode): UiNode | null {
   return rowsById(tree, 'share_button').find((n) => n.clickable) ?? null
@@ -950,14 +1029,35 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       Next tap would hit the sheet. The wait stops on either, the sheet is closed with "Lain kali"
       (never its "Buka pengaturan perangkat"), and the editor is waited for again.
     */
-    const editorReady = (t: UiNode): boolean => editorNextButton(t) !== null && promoDismissButton(t) === null
-    let editor = await waitForTree(ctx, (t) => editorReady(t) || promoDismissButton(t) !== null, { budgetMs: 25_000 })
+    /*
+      "Ready" now means the Next button would actually RECEIVE the tap (0.12.0) — see
+      `sheetOverNextButton` for the twenty-six runs that paid for the difference.
+    */
+    const blocked = (t: UiNode): boolean => promoDismissButton(t) !== null || sheetOverNextButton(t) !== null
+    const editorReady = (t: UiNode): boolean => editorNextButton(t) !== null && !blocked(t)
+    let editor = await waitForTree(ctx, (t) => editorReady(t) || blocked(t), { budgetMs: 25_000 })
     for (let round = 0; round < 3; round++) {
       const notNow = promoDismissButton(editor.tree)
-      if (!notNow) break
-      ctx.log.warn('an Instagram announcement sheet covered the Reel editor — closing it with "Lain kali"', { headline: rowsById(editor.tree, 'igds_headline_headline')[0]?.text ?? '' })
-      await tapCentre(ctx, notNow)
-      editor = await waitForTree(ctx, (t) => editorReady(t) || promoDismissButton(t) !== null, { budgetMs: 15_000 })
+      const covering = notNow ? null : sheetOverNextButton(editor.tree)
+      if (!notNow && !covering) break
+      if (notNow) {
+        ctx.log.warn('an Instagram announcement sheet covered the Reel editor — closing it with "Lain kali"', { headline: rowsById(editor.tree, 'igds_headline_headline')[0]?.text ?? '' })
+        await tapCentre(ctx, notNow)
+      } else {
+        /*
+          A sheet with no refusal on it. Its scrim is tapped when it labels one, and BACK otherwise —
+          never the sheet's own primary button, which on the measured sheet installs a 112 MB app.
+        */
+        const scrim = sheetCloseControl(editor.tree)
+        ctx.log.warn('a bottom sheet was sitting on the Reel editor\'s "Berikutnya" — closing it before anything is tapped', {
+          round: round + 1,
+          closing: scrim ? scrim.desc.trim() || scrim.text.trim() : 'BACK',
+          headline: all(editor.tree, (n) => /(?:^|\/)ig_text$/.test(n.resourceId) && n.text.trim() !== '')[0]?.text.slice(0, 60) ?? '',
+        })
+        if (scrim) await tapCentre(ctx, scrim)
+        else await ctx.device.key('BACK')
+      }
+      editor = await waitForTree(ctx, (t) => editorReady(t) || blocked(t), { budgetMs: 15_000 })
     }
     if (!editor.ok || !editorReady(editor.tree)) {
       await capture(ctx, 'ig-05-editor', editor.tree)
@@ -965,7 +1065,9 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         'E_ANCHOR_NOT_FOUND',
         promoDismissButton(editor.tree)
           ? 'an Instagram announcement sheet kept covering the Reel editor after "Lain kali" — see artifact ig-05-editor.'
-          : 'the Reel editor\'s "Berikutnya" did not appear after picking the video — see artifact ig-05-editor.',
+          : sheetOverNextButton(editor.tree)
+            ? 'a bottom sheet stayed over the Reel editor\'s "Berikutnya" and would not close, so nothing was tapped — tapping it anyway is how a run ends up in the Play Store. Nothing was posted. See artifact ig-05-editor.'
+            : 'the Reel editor\'s "Berikutnya" did not appear after picking the video — see artifact ig-05-editor.',
       )
     }
     screens.push('editor')
@@ -1004,7 +1106,8 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         if (share.ok) break
       }
       const next = editorNextButton(share.tree)
-      if (next && promoDismissButton(share.tree) === null) {
+      // The same guard as the editor step: a retap aimed through a sheet is how the Play Store got there.
+      if (next && promoDismissButton(share.tree) === null && sheetOverNextButton(share.tree) === null) {
         ctx.log.warn('still on the Reel editor after "Berikutnya" — tapping it again', { retap: retap + 1 })
         await tapCentre(ctx, next)
       }

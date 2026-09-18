@@ -15,6 +15,8 @@ import {
   keyboardShowing,
   draftSheet,
   editorNextButton,
+  sheetOverNextButton,
+  sheetCloseControl,
   gallerySurface,
   galleryVideoCells,
   hiddenDialog,
@@ -641,5 +643,128 @@ describe('another app over Instagram (0.11.0) — the accusation this pack was a
     const home = await fixture('screen-home.json')
     expect(foreignAppOnTop(home)).toBeNull()
     expect(isSignedOut(home)).toBe(false)
+  })
+})
+
+/*
+  The Edits promo, measured from job c1307de8's own trace (`trace/ui`, one poll before the tap that
+  sent that run into the Play Store; SM-A075F, 720x1600, id-ID, 2026-09-18). Only the nodes that
+  matter to the reading, at their real bounds — the point of the test is the GEOMETRY: the sheet's
+  button and the editor's "Berikutnya" sit in the same band, so a tap aimed at the second lands on
+  the first.
+*/
+const PROMO = { left: 30, top: 1394, right: 690, bottom: 1484 }
+const NEXT = { left: 476, top: 1425, right: 697, bottom: 1510 }
+
+function igNode(partial: Partial<UiNode>): UiNode {
+  return {
+    resourceId: '',
+    text: '',
+    desc: '',
+    className: 'android.view.View',
+    packageName: 'com.instagram.android',
+    bounds: { left: 0, top: 0, right: 0, bottom: 0 },
+    clickable: false,
+    enabled: true,
+    focused: false,
+    index: 0,
+    children: [],
+    ...partial,
+  }
+}
+
+const nextButton = (): UiNode =>
+  igNode({
+    resourceId: 'com.instagram.android:id/clips_right_action_button',
+    desc: 'Berikutnya',
+    clickable: true,
+    bounds: NEXT,
+  })
+
+/** The editor as it looks when nothing is over it. */
+const plainEditor = (): UiNode =>
+  igNode({
+    className: 'hierarchy',
+    packageName: '',
+    bounds: { left: 0, top: 0, right: 720, bottom: 1600 },
+    children: [igNode({ resourceId: 'com.instagram.android:id/clips_left_action_button', desc: 'Edit video', clickable: true, bounds: { left: 23, top: 1425, right: 208, bottom: 1510 } }), nextButton()],
+  })
+
+/** The same editor with Instagram's Edits sheet over it — the tree that cost twenty-six runs. */
+const editorUnderEditsPromo = (): UiNode =>
+  igNode({
+    className: 'hierarchy',
+    packageName: '',
+    bounds: { left: 0, top: 0, right: 720, bottom: 1600 },
+    children: [
+      igNode({
+        className: 'android.widget.FrameLayout',
+        bounds: { left: 0, top: 0, right: 720, bottom: 1600 },
+        children: [
+          igNode({
+            resourceId: 'com.instagram.android:id/compose_bottom_sheet_container',
+            bounds: { left: 0, top: 0, right: 720, bottom: 1600 },
+            children: [
+              igNode({
+                resourceId: 'com.instagram.android:id/bottom_sheet_compose_view',
+                bounds: { left: 0, top: 0, right: 720, bottom: 1600 },
+                children: [
+                  igNode({ desc: 'Tutup lembaran', clickable: true, bounds: { left: 0, top: 0, right: 720, bottom: 966 } }),
+                  igNode({ resourceId: 'com.instagram.android:id/ig_text', text: 'Tingkatkan video Anda dengan Edits', bounds: { left: 158, top: 1019, right: 521, bottom: 1162 } }),
+                  igNode({ resourceId: 'com.instagram.android:id/igds_button', clickable: true, bounds: PROMO }),
+                  igNode({ resourceId: 'com.instagram.android:id/ig_text', text: 'Dapatkan Aplikasi', bounds: { left: 249, top: 1423, right: 472, bottom: 1454 } }),
+                ],
+              }),
+            ],
+          }),
+        ],
+      }),
+      nextButton(),
+    ],
+  })
+
+describe('sheetOverNextButton — the tap that installed an app instead of posting (0.12.0)', () => {
+  test('a plain editor has nothing over its "Berikutnya"', () => {
+    expect(sheetOverNextButton(plainEditor())).toBeNull()
+  })
+
+  test("the Edits sheet's own button is found sitting on the point the run would tap", () => {
+    const covering = sheetOverNextButton(editorUnderEditsPromo())
+    expect(covering).not.toBeNull()
+    expect(covering?.resourceId).toContain('igds_button')
+  })
+
+  /* The reason the old guard missed it: the editor's button is still perfectly findable underneath. */
+  test('editorNextButton still finds the button under the sheet — which is exactly the trap', () => {
+    expect(editorNextButton(editorUnderEditsPromo())).not.toBeNull()
+  })
+
+  test('the covering button really does contain the point the old code tapped', () => {
+    const point = { x: Math.round((NEXT.left + NEXT.right) / 2), y: Math.round((NEXT.top + NEXT.bottom) / 2) }
+    // (587, 1468) — the tap recorded in job c1307de8's trace.
+    expect(point).toEqual({ x: 587, y: 1468 })
+    expect(PROMO.left <= point.x && point.x <= PROMO.right).toBe(true)
+    expect(PROMO.top <= point.y && point.y <= PROMO.bottom).toBe(true)
+  })
+
+  test('a sheet that does not reach the button is not treated as covering it', () => {
+    const high = editorUnderEditsPromo()
+    const sheet = high.children[0]?.children[0]?.children[0]
+    const button = sheet?.children.find((c) => c.resourceId.includes('igds_button'))
+    if (button) button.bounds = { left: 30, top: 400, right: 690, bottom: 490 }
+    expect(sheetOverNextButton(high)).toBeNull()
+  })
+})
+
+describe('sheetCloseControl — closing a sheet without touching what it is selling', () => {
+  test('the scrim Instagram labels "Tutup lembaran" is the way out', () => {
+    const scrim = sheetCloseControl(editorUnderEditsPromo())
+    expect(scrim?.desc).toBe('Tutup lembaran')
+    // Far above "Dapatkan Aplikasi" at y 1394-1484: that distance is the safety.
+    expect(scrim?.bounds.bottom).toBeLessThan(PROMO.top)
+  })
+
+  test('an editor with no sheet on it offers nothing to close', () => {
+    expect(sheetCloseControl(plainEditor())).toBeNull()
   })
 })

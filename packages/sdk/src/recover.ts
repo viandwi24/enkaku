@@ -33,10 +33,43 @@ const SETTLE_MS = 1_200
  */
 const BACK_ROUNDS = 2
 
-/** Rounds in total: BACK, BACK, launch, and one last look. */
-const ROUNDS = 4
+/** Rounds in total: the sheet's own exit, BACK, BACK, launch, and one last look. */
+const ROUNDS = 5
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Labels that mean "this control closes the thing in front", matched WHOLE and case-insensitively.
+ *
+ * `Tutup sheet` and `Tutup lembaran` are the measured ones (the Play Store's wording and Instagram's
+ * for the same control): it is the only labelled dismiss control on the Play Store
+ * install sheet that held twenty-six Instagram runs (production artifact `ig-06-share`,
+ * 2026-09-18), and it is the scrim above the sheet rather than the sheet's own "X" — which carries
+ * no text and no description at all, so nothing can match it safely. The others are the same
+ * control's wording in the other language and the two generic forms.
+ *
+ * Whole-label, never a substring, and never a guess at an unlabelled control. That sheet's
+ * `Instal` button is clickable too, sits 430 px below the scrim, and installs a 112 MB app on
+ * someone's phone. A recovery that tapped hopefully around a foreign app would eventually find it.
+ */
+const DISMISS_LABELS = new Set(['tutup sheet', 'tutup lembaran', 'close sheet', 'tutup', 'close', 'dismiss'])
+
+/** The foreign app's own way out, when it labels one. */
+function dismissControl(tree: UiNode, foreignPackage: string): UiNode | null {
+  const out: UiNode[] = []
+  const walk = (n: UiNode): void => {
+    if (
+      n.clickable &&
+      n.packageName === foreignPackage &&
+      (DISMISS_LABELS.has(n.desc.trim().toLowerCase()) || DISMISS_LABELS.has(n.text.trim().toLowerCase()))
+    ) {
+      out.push(n)
+    }
+    for (const c of n.children) walk(c)
+  }
+  walk(tree)
+  return out[0] ?? null
+}
 
 /**
  * Get the app under test back in front of whatever wandered over it, and say what that was.
@@ -69,8 +102,9 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  *
  * ## What it does, and what it deliberately does not
  *
- * One action per round: swipe up past a touch blocker, else BACK out of a foreign app (twice),
- * else launch the app under test again, then look once more.
+ * One action per round: swipe up past a touch blocker, else tap the foreign app's own labelled
+ * exit if it has one, else BACK out of it (twice), else launch the app under test again, then look
+ * once more.
  *
  * It never force-stops the intruder. A Play sheet, a system dialog, an update prompt — these may
  * be the owner's, and killing something the operator opened is not this function's call to make;
@@ -105,6 +139,7 @@ export async function recoverToApp(
   let tree: UiNode | null = opts.tree ?? null
   let blockedBy: string | null = null
   let backs = 0
+  let tappedDismiss = false
 
   for (let round = 0; round < rounds; round++) {
     if (tree === null) {
@@ -132,7 +167,20 @@ export async function recoverToApp(
     if (foreign === null) return { ok: true, did, blockedBy: null }
     blockedBy = foreign
 
-    if (backs < BACK_ROUNDS) {
+    const ownExit = tappedDismiss ? null : dismissControl(tree, foreign)
+    if (ownExit !== null) {
+      /*
+        The sheet's own exit first, when it labels one (2026-09-18). The owner reported phones that
+        stayed wedged on this Play sheet even after Instagram was closed by hand, and BACK is not
+        reliably its way out: on a moto g06 the first BACK drops the sheet onto the Play Store's own
+        full screen rather than leaving it. The control the sheet itself calls "Tutup sheet" closes
+        exactly the sheet, which is the thing in the way.
+      */
+      tappedDismiss = true
+      const point = { x: Math.round((ownExit.bounds.left + ownExit.bounds.right) / 2), y: Math.round((ownExit.bounds.top + ownExit.bounds.bottom) / 2) }
+      await ctx.device.tap({ point }).catch(() => undefined)
+      did.push(`tapped "${(ownExit.desc.trim() || ownExit.text.trim()).slice(0, 40)}" to close ${foreign}`)
+    } else if (backs < BACK_ROUNDS) {
       backs++
       await ctx.device.key('BACK').catch(() => undefined)
       did.push(`pressed BACK to leave ${foreign}`)

@@ -33,6 +33,23 @@ const ownApp = (): UiNode => screen(node({ packageName: APP, bounds: FRAME }))
 /** The Play Store's install sheet for "Edits" — what twenty-six share-screen failures were really looking at. */
 const playStore = (): UiNode => screen(node({ packageName: PLAY, bounds: FRAME }))
 
+/*
+  The same sheet as production saved it: the scrim it calls "Tutup sheet" above, its unlabelled "X"
+  beside the Play logo, and — 430 px below — the "Instal" button that must never be tapped.
+*/
+const playSheet = (): UiNode =>
+  screen(
+    node({
+      packageName: PLAY,
+      bounds: FRAME,
+      children: [
+        node({ packageName: PLAY, desc: 'Tutup sheet', clickable: true, bounds: { left: 0, top: 0, right: 720, bottom: 355 } }),
+        node({ packageName: PLAY, clickable: true, bounds: { left: 623, top: 363, right: 713, bottom: 453 } }),
+        node({ packageName: PLAY, text: 'Instal', clickable: true, bounds: { left: 46, top: 785, right: 675, bottom: 875 } }),
+      ],
+    }),
+  )
+
 /** Samsung's accidental-touch protection. */
 const pocketMode = (): UiNode =>
   screen(
@@ -45,6 +62,7 @@ const pocketMode = (): UiNode =>
 
 interface Recorded {
   keys: string[]
+  taps: { x: number; y: number }[]
   launches: string[]
   swipes: { from: { x: number; y: number }; to: { x: number; y: number } }[]
   dumps: number
@@ -56,7 +74,7 @@ interface Recorded {
  * claims to survive it.
  */
 function fakeCtx(trees: (UiNode | null)[]): { ctx: ScriptContext<unknown>; rec: Recorded } {
-  const rec: Recorded = { keys: [], launches: [], swipes: [], dumps: 0 }
+  const rec: Recorded = { keys: [], taps: [], launches: [], swipes: [], dumps: 0 }
   const device = {
     dump: async () => {
       const tree = trees[Math.min(rec.dumps, trees.length - 1)]
@@ -66,6 +84,9 @@ function fakeCtx(trees: (UiNode | null)[]): { ctx: ScriptContext<unknown>; rec: 
     },
     key: async (code: string) => {
       rec.keys.push(code)
+    },
+    tap: async (target: { point: { x: number; y: number } }) => {
+      rec.taps.push(target.point)
     },
     swipe: async (from: { x: number; y: number }, to: { x: number; y: number }) => {
       rec.swipes.push({ from, to })
@@ -157,6 +178,45 @@ describe('recoverToApp — getting the app back in front', () => {
     expect(out.blockedBy).toBe(PLAY)
     expect(rec.launches).toEqual([])
     expect(rec.keys).toEqual(['BACK', 'BACK'])
+  })
+
+  /*
+    The owner's report (2026-09-18): phones stayed wedged on this sheet even after Instagram was
+    closed by hand. The sheet's own exit is tried before BACK, which on a moto g06 only drops it
+    onto the Play Store's full screen.
+  */
+  test("a sheet that labels its own exit is closed with it, not with BACK", async () => {
+    const { ctx, rec } = fakeCtx([playSheet(), ownApp()])
+    const out = await recoverToApp(ctx, { ownPackage: APP, settleMs: 0 })
+    expect(out.ok).toBe(true)
+    expect(rec.keys).toEqual([])
+    expect(rec.taps).toEqual([{ x: 360, y: 178 }])
+    expect(out.did[0]).toContain('Tutup sheet')
+  })
+
+  test('the "Instal" button on that sheet is never tapped', async () => {
+    const { ctx, rec } = fakeCtx([playSheet()])
+    await recoverToApp(ctx, { ownPackage: APP, settleMs: 0 })
+    // 875 is the bottom of Instal; every tap must be the scrim at the top.
+    for (const tap of rec.taps) expect(tap.y).toBeLessThan(400)
+    expect(rec.taps).toHaveLength(1)
+  })
+
+  test('a foreign app with no labelled exit still gets BACK', async () => {
+    const { ctx, rec } = fakeCtx([playStore(), ownApp()])
+    const out = await recoverToApp(ctx, { ownPackage: APP, settleMs: 0 })
+    expect(out.ok).toBe(true)
+    expect(rec.taps).toEqual([])
+    expect(rec.keys).toEqual(['BACK'])
+  })
+
+  test('a sheet whose own exit does not work falls through to BACK and then a launch', async () => {
+    const { ctx, rec } = fakeCtx([playSheet(), playSheet(), playSheet(), playSheet(), ownApp()])
+    const out = await recoverToApp(ctx, { ownPackage: APP, settleMs: 0 })
+    expect(out.ok).toBe(true)
+    expect(rec.taps).toHaveLength(1)
+    expect(rec.keys).toEqual(['BACK', 'BACK'])
+    expect(rec.launches).toEqual([APP])
   })
 
   test('a blocker over a foreign app is cleared in the order the screen stacks them', async () => {
