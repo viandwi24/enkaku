@@ -33,6 +33,40 @@ export function computeAutoStreams(nonOfflineDeviceCount: number): number {
 }
 
 /**
+ * The fleet size past which this repo already states the adb server, not any budget of ours, is
+ * the limit — see `computeAutoStreams` above, whose own table ends "26+ → 64 (the adb server, not
+ * this budget, is the limit past there)".
+ */
+const ADB_SERVER_PRESSURE_INFLECTION = 26
+
+/**
+ * How many session builds may run at once, farm-wide.
+ *
+ * This was a flat 16 (`SESSION_BUILD_FARM_CEILING`) at every fleet size, and 16 is the number that
+ * took the owner's 73-phone farm down on 2026-09-18. A build is not cheap and it is not one round
+ * trip: it pushes and starts a scrcpy server, brings up an inspector, and asserts the rotation
+ * lock. Sixteen of those at once, on top of ~70 sessions already holding sockets, is a burst the
+ * adb server does not survive — the log shows `scrcpy server exited unexpectedly (code 255)` one
+ * second after a wave of fourteen builds, then `track-devices dropped` three seconds later, taking
+ * every session on the farm with it.
+ *
+ * So the ceiling holds the BURST roughly constant instead of the count: unchanged for any farm at
+ * or below the inflection above (nothing small gets slower), then decaying so the pressure at 73
+ * phones is about what it was at 26.
+ *
+ *  10 → 16 (unchanged)   26 → 16 (unchanged)   40 → 10   73 → 6
+ *
+ * The floor is 6 because a farm must still come up in a reasonable time: 73 phones at 6 at a time
+ * is roughly half a minute of ramp, against a farm that otherwise does not come up at all.
+ * `ENKAKU_SESSION_BUILD_CEILING` still overrides this outright — an operator who has measured
+ * their own hardware outranks this formula.
+ */
+export function computeAutoBuildCeiling(nonOfflineDeviceCount: number, base: number): number {
+  if (nonOfflineDeviceCount <= ADB_SERVER_PRESSURE_INFLECTION) return base
+  return Math.max(6, Math.round((base * ADB_SERVER_PRESSURE_INFLECTION) / nonOfflineDeviceCount))
+}
+
+/**
  * How wide one `POST /api/actions/:verb` fans out over its selection (plan
  * 227 §3.2).
  *

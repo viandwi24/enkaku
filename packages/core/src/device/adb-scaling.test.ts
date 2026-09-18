@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { computeAsyncFanout, computeAutoConcurrency, computeAutoStreams, computeSyncFanout } from './adb-scaling'
+import { computeAsyncFanout, computeAutoBuildCeiling, computeAutoConcurrency, computeAutoStreams, computeSyncFanout } from './adb-scaling'
 
 describe('computeAutoConcurrency (plan 23 §3.2, §7)', () => {
   test.each([
@@ -61,6 +61,67 @@ describe('computeAutoStreams (plan 85 §3.1, §4.2)', () => {
       expect(v).toBeGreaterThanOrEqual(prev)
       prev = v
     }
+  })
+})
+
+/*
+  The session-build ceiling was a flat 16 at every fleet size until 2026-09-18,
+  and 16 is the number that took the owner's 73-phone farm down twice in five
+  minutes: a wave of fourteen builds, `scrcpy server exited unexpectedly (code
+  255)` one second later, `track-devices dropped` three seconds after that, and
+  every session on the farm gone with it.
+
+  A build is not one round trip — it pushes and starts a scrcpy server, brings
+  up an inspector, and asserts the rotation lock. So what this bounds is the
+  BURST, and the property worth pinning is that the burst stops growing with
+  the fleet, which is the opposite of what the other two formulas here do.
+*/
+describe('computeAutoBuildCeiling (2026-09-18)', () => {
+  const BASE = 16
+
+  test.each([
+    [0, 16],
+    [10, 16],
+    [26, 16],
+    [40, 10],
+    [73, 6],
+    [200, 6],
+  ])('%i non-offline devices → %i concurrent builds', (deviceCount, expected) => {
+    expect(computeAutoBuildCeiling(deviceCount, BASE)).toBe(expected)
+  })
+
+  test('no farm at or below the inflection changes behaviour at all', () => {
+    for (let n = 0; n <= 26; n++) expect(computeAutoBuildCeiling(n, BASE)).toBe(BASE)
+  })
+
+  /** The whole point: unlike concurrency and streams, this must NOT climb with the fleet. */
+  test('is monotonically non-increasing as device count grows', () => {
+    let prev = Number.POSITIVE_INFINITY
+    for (let n = 0; n <= 200; n++) {
+      const v = computeAutoBuildCeiling(n, BASE)
+      expect(v).toBeLessThanOrEqual(prev)
+      prev = v
+    }
+  })
+
+  /**
+   * A farm must still come up. At the floor, 73 phones is roughly half a minute
+   * of ramp — against a farm that otherwise does not come up at all.
+   */
+  test('never narrows past the floor of 6, however large the fleet', () => {
+    expect(computeAutoBuildCeiling(10_000, BASE)).toBe(6)
+  })
+
+  test('holds the burst roughly constant past the inflection', () => {
+    // 26 × 16 = 416 device-builds of pressure; every larger farm stays near it.
+    for (const n of [30, 40, 50, 73, 100]) {
+      expect(computeAutoBuildCeiling(n, BASE) * n).toBeLessThan(26 * BASE * 1.6)
+    }
+  })
+
+  test('an operator who pins a lower base is never widened by the formula', () => {
+    expect(computeAutoBuildCeiling(10, 4)).toBe(4)
+    expect(computeAutoBuildCeiling(73, 4)).toBe(6)
   })
 })
 

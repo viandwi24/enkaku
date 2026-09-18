@@ -157,7 +157,7 @@ import { createJobRoutes } from './api/jobs'
 import { createSettingsRoutes } from './api/settings'
 import { createBatteryMonitor, type BatteryMonitor } from './device/battery'
 import { createQuarantineGrace } from './device/quarantine-grace'
-import { computeAutoConcurrency, computeAutoStreams } from './device/adb-scaling'
+import { computeAutoBuildCeiling, computeAutoConcurrency, computeAutoStreams } from './device/adb-scaling'
 import { createAdbMetricsStore } from './device/adb-metrics'
 import { createHostAdb, type HostAdb } from './device/host-adb'
 import { createUsbRootCache } from './device/usb-root-cache'
@@ -1198,14 +1198,24 @@ let blobGc: BlobGc | null = null
       // Logged once at info ONLY when the effective value actually changes —
       // this is called on every status broadcast, and a log line per battery
       // poll would make later performance reports unreadable (plan 23 §4.3).
-      const recomputeAdbConcurrency = () => {
-        if (!adb) return
-        const cfg = adbConstants(settingsStore.get())
-        const nonOfflineCount = db
+      /**
+       * How many phones this farm has right now, offline ones excluded — the input every
+       * fleet-size formula in `device/adb-scaling.ts` takes. Defined once because three callers
+       * need it since 2026-09-18 (the adb semaphore, the stream budget, and the session-build
+       * ceiling), and a second copy of this filter is a second place for "offline" to quietly stop
+       * meaning offline.
+       */
+      const countNonOfflineDevices = (): number =>
+        db
           .select({ status: devices.status })
           .from(devices)
           .all()
           .filter((r) => (r.status ?? 'offline') !== 'offline').length
+
+      const recomputeAdbConcurrency = () => {
+        if (!adb) return
+        const cfg = adbConstants(settingsStore.get())
+        const nonOfflineCount = countNonOfflineDevices()
         const target = cfg.maxConcurrent > 0 ? cfg.maxConcurrent : computeAutoConcurrency(nonOfflineCount)
         adb.setMaxConcurrent(target)
         if (target !== lastLoggedAdbConcurrency) {
@@ -3647,7 +3657,13 @@ let blobGc: BlobGc | null = null
               // block (a per-viewer idle TTL, a farm-wide idle cap, and a
               // build-lane cap) is gone with the idle model it governed.
               buildsPerUsbRoot: s.advanced.sessionBuildsPerUsbRoot,
-              farmCeiling: Number(process.env.ENKAKU_SESSION_BUILD_CEILING ?? SESSION_BUILD_FARM_CEILING),
+              // The SAME expression the builder enforces (`farmCeiling` on the always-on deps
+              // below) — a stats field that reported the flat constant while the builder used a
+              // fleet-scaled one would be a number an operator cannot act on.
+              farmCeiling:
+                process.env.ENKAKU_SESSION_BUILD_CEILING !== undefined
+                  ? Number(process.env.ENKAKU_SESSION_BUILD_CEILING)
+                  : computeAutoBuildCeiling(countNonOfflineDevices(), SESSION_BUILD_FARM_CEILING),
               maxTiles: maxTilesAuto
                 ? computeAutoTiles(resolveVideoProfile(s.capture, null, 'wall').bitRate, {
                     decodeTileCeiling: WALL_DECODE_TILE_CEILING,
@@ -4759,7 +4775,17 @@ let blobGc: BlobGc | null = null
           },
           activities: activityPortAdapter,
           buildsPerUsbRoot: () => settingsStore.get().advanced.sessionBuildsPerUsbRoot,
-          farmCeiling: () => Number(process.env.ENKAKU_SESSION_BUILD_CEILING ?? SESSION_BUILD_FARM_CEILING),
+          /*
+            The burst, not the count, is what the adb server dies of (2026-09-18) — so this ceiling
+            follows the fleet instead of staying the flat 16 that took the owner's 73-phone farm
+            down twice in five minutes. Read on every pump, so a farm that grows through the
+            inflection narrows without a restart. An explicit `ENKAKU_SESSION_BUILD_CEILING` still
+            wins outright: an operator who has measured their own hardware outranks the formula.
+          */
+          farmCeiling: () =>
+            process.env.ENKAKU_SESSION_BUILD_CEILING !== undefined
+              ? Number(process.env.ENKAKU_SESSION_BUILD_CEILING)
+              : computeAutoBuildCeiling(countNonOfflineDevices(), SESSION_BUILD_FARM_CEILING),
           /*
             The adb-server health monitor is already probing `host:version`
             every `adbHealthIntervalSec` (30 s by default) and naming
