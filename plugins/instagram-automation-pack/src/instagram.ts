@@ -1,5 +1,5 @@
 import type { ScriptContext } from '@enkaku/sdk'
-import { foreignAppOnTop as sdkForeignAppOnTop } from '@enkaku/sdk'
+import { foreignAppOnTop as sdkForeignAppOnTop, recoverToApp, touchBlockerOnTop } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { all, flatten, rowsById } from './tree'
 
@@ -329,15 +329,12 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
     used to answer yes for any app in front with a "Log in" button and throw the operator at an
     account that was fine.
   */
-  for (let round = 0; round < 3 && !nav.ok; round++) {
-    const intruder = foreignAppOnTop(nav.tree)
-    if (intruder === null) break
-    ctx.log.warn(`${intruder} is standing over Instagram — closing it with BACK and bringing Instagram back`, { round: round + 1 })
-    await ctx.device.key('BACK')
-    await sleep(1_500)
-    await ctx.device.app.launch(INSTAGRAM_PACKAGE)
-    await sleep(2_000)
-    nav = await waitForTree(ctx, (t) => isReady(t) || isSignedOut(t), { budgetMs: 12_000 })
+  if (!nav.ok) {
+    const recovered = await recoverToApp(ctx, { ownPackage: INSTAGRAM_PACKAGE, tree: nav.tree })
+    if (recovered.did.length > 0) {
+      ctx.log.warn(`the screen at launch was not Instagram's — ${recovered.did.join('; ')}`, { blockedBy: recovered.blockedBy, back: recovered.ok })
+      nav = await waitForTree(ctx, (t) => isReady(t) || isSignedOut(t), { budgetMs: 12_000 })
+    }
   }
 
   if (isSignedOut(nav.tree)) {
@@ -345,11 +342,11 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
     throw Object.assign(new Error('Instagram on this phone is signed out. Sign in to the account this phone should use, then re-run.'), { code: 'E_NOT_SIGNED_IN' })
   }
   if (!nav.ok) {
-    const stillThere = foreignAppOnTop(nav.tree)
+    const stillThere = touchBlockerOnTop(nav.tree) ?? foreignAppOnTop(nav.tree)
     ctx.log.warn(
       stillThere === null
         ? `instagram did not show its navigation within ${READY_TIMEOUT_MS / 1000}s — continuing, and the next anchor will say where the device is`
-        : `instagram never came to the front — "${stillThere}" held the screen through three attempts to clear it. The run continues, and its first anchor will name it rather than blame an Instagram control.`,
+        : `instagram never came to the front — "${stillThere}" held the screen through every attempt to clear it. The run continues, and its first anchor will name it rather than blame an Instagram control.`,
     )
     return nav.tree
   }

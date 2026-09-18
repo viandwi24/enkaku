@@ -52,7 +52,7 @@ import clearDrafts from './clear-drafts'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.11.0',
+  version: '0.12.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -61,6 +61,37 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.12.0 — twenty-six "the share screen did not open" failures were the Play
+   *   Store, and nothing in this pack ever looked.**
+   *
+   *   Over three days on the owner's farm (2026-09-18) `post-video` failed 105 times. Reading the
+   *   tree each run had already saved beside its own error message — not guessing, not re-running —
+   *   twenty-six of them said `the share screen did not open after the editor`, on twenty-six
+   *   DIFFERENT phones, and all fourteen sampled `ig-06-share` artifacts held the same thing: the
+   *   Play Store's install sheet for "Edits: Editor Video", the app Instagram advertises from
+   *   inside this very Reel editor. Not one of those trees carried an Instagram node. The share
+   *   screen did not open because Instagram was not on the screen to open it.
+   *
+   *   0.11.0 gave this pack a foreign-app guard and put it in exactly one place: `relaunch`. That
+   *   guards the first screen of a run. A sheet that lands mid-flow — which is when they land,
+   *   because that is when the app is being driven — met nothing at all, and the retap loop spent
+   *   its whole budget tapping a "Berikutnya" that had not been on the screen for a minute.
+   *
+   *   So the editor→share loop now recovers BEFORE it retaps: `recoverToApp` (`@enkaku/sdk`) backs
+   *   out of whatever is in front and brings Instagram's own task forward — never force-stopping
+   *   the intruder, which may be the owner's. One BACK is all the Play sheet needs, and Instagram
+   *   comes back still in its editor, so the retap that follows is usually enough.
+   *
+   *   And when it does not clear, the failure NAMES what was holding the screen instead of naming a
+   *   control that could not have been there. A message worded against an Instagram anchor, on a
+   *   screen that was never Instagram's, is what sent every reader of these runs to the one place
+   *   the answer was not.
+   *
+   *   `relaunch`'s own hand-rolled loop is now that same helper, which also gets it the case it
+   *   could never see: Samsung's accidental-touch protection is a full-screen System UI window, so
+   *   `foreignAppOnTop` excludes it by design, and six of the thirteen `ig-01-home` failures were
+   *   sitting under one. It answers to a swipe, not to BACK.
    *
    * **0.11.0 — another app over Instagram stopped being reported as a signed-out
  *   account.** This pack had no foreign-app guard at all, and that absence cost

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { UiNode } from '@enkaku/protocol'
-import { foreignAppOnTop } from './screen'
+import { foreignAppOnTop, touchBlockerOnTop } from './screen'
 
 const APP = 'com.ss.android.ugc.trill'
 const FRAME = { left: 0, top: 0, right: 720, bottom: 1640 }
@@ -86,5 +86,93 @@ describe('foreignAppOnTop — which app is actually in front', () => {
       node({ packageName: 'com.android.settings', bounds: FRAME }),
     )
     expect(foreignAppOnTop(tree, APP)).toBe('com.android.settings')
+  })
+})
+
+/*
+  The real thing, node for node: the tree an Instagram post-video run saved as `ig-01-home` while
+  reporting "Instagram's bottom navigation is not on screen after launch" (the owner's farm,
+  SM-A075F, 720x1600, 2026-09-18). There is no Instagram node in it and never was — the phone was
+  showing Samsung's accidental-touch protection, and fourteen runs across all three platforms died
+  against it in three days, each blaming its own app's UI.
+*/
+const SYSUI = 'com.android.systemui'
+const pocketNode = (partial: Partial<UiNode>): UiNode => node({ packageName: SYSUI, ...partial })
+
+function pocketModeScreen(): UiNode {
+  return screen(
+    pocketNode({
+      className: 'android.widget.LinearLayout',
+      bounds: { left: 0, top: 0, right: 720, bottom: 1600 },
+      children: [
+        pocketNode({
+          className: 'android.widget.LinearLayout',
+          bounds: { left: 45, top: 0, right: 675, bottom: 427 },
+          children: [
+            pocketNode({
+              resourceId: `${SYSUI}:id/unintentional_title`,
+              className: 'android.widget.TextView',
+              text: 'Perlindungan dari sentuhan tidak sengaja',
+              bounds: { left: 45, top: 204, right: 675, bottom: 312 },
+            }),
+            pocketNode({
+              resourceId: `${SYSUI}:id/unintentional_body`,
+              className: 'android.widget.TextView',
+              text: 'Ponsel Anda sedang dilindungi dari sentuhan tidak sengaja.',
+              bounds: { left: 45, top: 346, right: 675, bottom: 427 },
+            }),
+          ],
+        }),
+        pocketNode({
+          className: 'android.widget.FrameLayout',
+          bounds: { left: 45, top: 427, right: 675, bottom: 1600 },
+          children: [
+            pocketNode({ resourceId: `${SYSUI}:id/unintentional_locker_img_cue_mtrl_L`, className: 'android.widget.ImageView', bounds: { left: 345, top: 761, right: 375, bottom: 778 } }),
+            pocketNode({ resourceId: `${SYSUI}:id/locker_image_ring`, className: 'android.widget.ImageView', bounds: { left: 296, top: 949, right: 424, bottom: 1077 } }),
+            pocketNode({
+              resourceId: `${SYSUI}:id/unintentional_drag_to_unlock`,
+              className: 'android.widget.TextView',
+              text: 'Usap ke atas untuk mengabaikan perlindungan sentuhan yang tidak disengaja.',
+              bounds: { left: 45, top: 1116, right: 675, bottom: 1185 },
+            }),
+          ],
+        }),
+      ],
+    }),
+  )
+}
+
+describe('touchBlockerOnTop — the overlay that swallows every touch', () => {
+  test('names the production tree that cost fourteen runs', () => {
+    expect(touchBlockerOnTop(pocketModeScreen())).toBe('Perlindungan dari sentuhan tidak sengaja')
+  })
+
+  test('foreignAppOnTop cannot see it, which is why this exists', () => {
+    // The system UI is excluded there on purpose — the bars are on every screen.
+    expect(foreignAppOnTop(pocketModeScreen(), APP)).toBeNull()
+  })
+
+  test('an ordinary screen is not a blocker', () => {
+    expect(touchBlockerOnTop(screen(statusBar, node({ bounds: FRAME })))).toBeNull()
+  })
+
+  test('the id is the key, not the Indonesian wording', () => {
+    const english = screen(
+      pocketNode({
+        resourceId: `${SYSUI}:id/unintentional_title`,
+        text: 'Accidental touch protection',
+        bounds: { left: 45, top: 204, right: 675, bottom: 312 },
+      }),
+    )
+    expect(touchBlockerOnTop(english)).toBe('Accidental touch protection')
+  })
+
+  test('a blocker whose title carries no text still answers', () => {
+    const untitled = screen(pocketNode({ resourceId: `${SYSUI}:id/unintentional_locker_img_cue_mtrl_L2`, bounds: { left: 345, top: 817, right: 375, bottom: 834 } }))
+    expect(touchBlockerOnTop(untitled)).toBe('accidental-touch protection')
+  })
+
+  test('an empty tree is not evidence of one', () => {
+    expect(touchBlockerOnTop(screen())).toBeNull()
   })
 })

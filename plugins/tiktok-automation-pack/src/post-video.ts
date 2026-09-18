@@ -1,4 +1,4 @@
-import { ui, type PluginMemberScript, type ScriptContext } from '@enkaku/sdk'
+import { recoverToApp, ui, type PluginMemberScript, type ScriptContext } from '@enkaku/sdk'
 import { removeStalePushedVideos } from './pushed-videos'
 import type { Bounds, Selector, UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
@@ -615,6 +615,12 @@ async function enterScreen(
   // a wrong screen is a false failure, and a false failure on a posting run is the expensive kind.
   const rounds = opts?.rounds ?? 5
   const retaps = new Map<number, number>()
+  /*
+    What was holding the screen, when it was not TikTok — carried out to the failure below so the
+    message names it instead of naming the screen this call was looking for.
+  */
+  let heldBy: string | null = null
+  let recoveries = 0
   for (let round = 0; round < rounds; round += 1) {
     if (round > 0) await sleep(2_000)
     const swept = await sweepModals(ctx, policies)
@@ -641,6 +647,29 @@ async function enterScreen(
     tree = read
     screen = detectScreen(read)
     if (screen === expected) return { tree: read, cleared }
+    /*
+      "unknown" is sometimes not a TikTok screen at all (1.53.0).
+
+      `detectScreen` names the screens of THIS app; handed a tree with no TikTok node in it, the
+      only honest answer it has is "unknown", and every round after that re-reads the same stranger.
+      On the owner's farm (2026-09-18) five of the nine runs that failed `expected the "camera"
+      screen but the dump reads "unknown"` had saved a tree holding nothing but Samsung's
+      accidental-touch protection, one had Android Settings, and one had the launcher. The camera
+      was never the problem, and no number of settle rounds was going to reach it.
+
+      Recovery is attempted twice at most: a swipe past a touch blocker, a BACK out of whatever else
+      is in front, and TikTok brought forward again. Then this loop goes round as it always did — a
+      screen that has genuinely not arrived yet is still given its remaining rounds.
+    */
+    if (screen === 'unknown' && recoveries < 2) {
+      const recovered = await recoverToApp(ctx, { ownPackage: TIKTOK_PACKAGE, tree: read })
+      if (recovered.did.length > 0) {
+        recoveries += 1
+        heldBy = recovered.blockedBy
+        ctx.log.warn(`the screen was not TikTok's while waiting for "${expected}" — ${recovered.did.join('; ')}`, { blockedBy: recovered.blockedBy, back: recovered.ok })
+        continue
+      }
+    }
     const at = (opts?.retapWhen ?? []).findIndex(
       (r, i) =>
         (Array.isArray(r.screen) ? r.screen.includes(screen) : r.screen === screen) &&
@@ -703,6 +732,14 @@ async function enterScreen(
   const phoneHint = cleared.includes('tt.phone-prompt')
     ? ` — TikTok's "add phone number" sheet was on screen and was closed; if it returns every time "+" is tapped, this account may need a phone number before TikTok lets it post`
     : ''
+  if (heldBy !== null && screen === 'unknown') {
+    throw Object.assign(
+      new Error(
+        `expected the "${expected}" screen, but "${heldBy}" was holding the phone's screen and did not let go, so TikTok was never in front to show it. Nothing was posted.`,
+      ),
+      { code: 'E_UNEXPECTED_SCREEN' },
+    )
+  }
   throw Object.assign(
     new Error(`expected the "${expected}" screen but the dump reads "${screen}" after ${rounds} settle rounds${cleared.length > 0 ? ` (cleared: ${cleared.join(', ')})` : ' (no modal matched)'}${phoneHint}`),
     { code: 'E_UNEXPECTED_SCREEN' },

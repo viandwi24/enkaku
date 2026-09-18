@@ -1,5 +1,5 @@
 import type { ScriptContext } from '@enkaku/sdk'
-import { aimInside, foreignAppOnTop as sdkForeignAppOnTop } from '@enkaku/sdk'
+import { aimInside, clearTouchBlocker, foreignAppOnTop as sdkForeignAppOnTop } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { dismissPopups } from './popups'
 import { all, flatten } from './tree'
@@ -339,6 +339,20 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
     rounds do not clear it, the caller's own anchor reports what it found — but the log will already
     have named the app, so the failure is not blamed on a missing button.
   */
+  /*
+    The phone's own touch blocker (0.43.0). Samsung's accidental-touch protection is a full-screen
+    System UI window, so `foreignAppOnTop` cannot see it — it excludes the system UI on purpose —
+    and the loop below would spend three BACK-and-launch rounds against a screen that only answers
+    to a swipe. One swipe clears it; the loop below is unchanged and still answers for another APP
+    being in front.
+  */
+  if (!isReady(nav.tree)) {
+    const blocker = await clearTouchBlocker(ctx, { tree: nav.tree })
+    if (blocker !== null) {
+      ctx.log.warn(`the phone was showing "${blocker}" instead of YouTube — swiped past it and looking again`)
+      nav = await waitForTree(ctx, readyOrAccountPage, { budgetMs: 12_000 })
+    }
+  }
   for (let round = 0; round < 3 && !isReady(nav.tree); round++) {
     const intruder = foreignAppOnTop(nav.tree)
     if (intruder === null) break

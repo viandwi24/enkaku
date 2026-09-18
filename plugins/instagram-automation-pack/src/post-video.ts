@@ -1,6 +1,6 @@
 import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { removeStalePushedVideos } from './pushed-videos'
-import { ui } from '@enkaku/sdk'
+import { recoverToApp, ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { all, rowsById, treeFrame, within } from './tree'
@@ -977,7 +977,32 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       share screen nothing had asked for. So while the editor is still up with nothing over it, Next is tapped again.
     */
     let share = await waitForTree(ctx, (t) => shareButton(t) !== null, { budgetMs: 8_000 })
-    for (let retap = 0; retap < 2 && !share.ok; retap++) {
+    let heldBy: string | null = null
+    for (let retap = 0; retap < 3 && !share.ok; retap++) {
+      /*
+        Instagram may not be the app on the screen at all (0.12.0), and until now nothing here ever
+        asked.
+
+        This is the single most expensive defect the owner's farm carried: twenty-six post-video
+        runs in three days (2026-09-18) failed here with "the share screen did not open after the
+        editor", on twenty-six DIFFERENT phones, and every one of the fourteen trees sampled from
+        their own `ig-06-share` artifacts held the Play Store's install sheet for "Edits: Editor
+        Video" — the app Instagram advertises from inside this very editor — with no Instagram node
+        anywhere in them. The share screen did not open because Instagram was not there to open it,
+        and the retap loop below spent its whole budget tapping a "Berikutnya" that had not been on
+        the screen for a minute.
+
+        The sheet closes with one BACK, and Instagram comes back still in its editor, so the retap
+        that follows is usually all it then needs. Recovery runs FIRST in each round for that
+        reason: a tap aimed into another app's window is not a retry, it is a tap on a stranger.
+      */
+      const recovered = await recoverToApp(ctx, { ownPackage: INSTAGRAM_PACKAGE, tree: share.tree })
+      if (recovered.did.length > 0) {
+        heldBy = recovered.blockedBy
+        ctx.log.warn(`something else was holding the screen after "Berikutnya" — ${recovered.did.join('; ')}`, { blockedBy: recovered.blockedBy, back: recovered.ok })
+        share = await waitForTree(ctx, (t) => shareButton(t) !== null, { budgetMs: 8_000 })
+        if (share.ok) break
+      }
       const next = editorNextButton(share.tree)
       if (next && promoDismissButton(share.tree) === null) {
         ctx.log.warn('still on the Reel editor after "Berikutnya" — tapping it again', { retap: retap + 1 })
@@ -986,7 +1011,16 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       share = await waitForTree(ctx, (t) => shareButton(t) !== null, { budgetMs: 11_000 })
     }
     await capture(ctx, 'ig-06-share', share.tree)
-    if (!share.ok) fail('E_ANCHOR_NOT_FOUND', 'the share screen did not open after the editor — see artifact ig-06-share.')
+    if (!share.ok) {
+      // Name what was really there. A failure worded against an Instagram control, on a screen that
+      // was never Instagram's, is what sent every reader of these runs to the wrong place.
+      fail(
+        'E_ANCHOR_NOT_FOUND',
+        heldBy !== null
+          ? `the share screen did not open after the editor: "${heldBy}" was holding the phone's screen and did not let go. Nothing was posted. See artifact ig-06-share.`
+          : 'the share screen did not open after the editor — see artifact ig-06-share.',
+      )
+    }
     screens.push('share')
 
     // --- information sheets over the share screen ------------------------------

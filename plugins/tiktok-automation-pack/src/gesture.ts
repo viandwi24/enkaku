@@ -1,5 +1,5 @@
 import type { ScriptContext } from '@enkaku/sdk'
-import { aimInside, foreignAppOnTop as sdkForeignAppOnTop, pick } from '@enkaku/sdk'
+import { aimInside, clearTouchBlocker, foreignAppOnTop as sdkForeignAppOnTop, pick } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { between, sleep, pngSize } from './human'
 import { flatten } from './tree'
@@ -188,6 +188,25 @@ async function launchAndWait(ctx: ScriptContext<unknown>, budgetMs: number): Pro
 export async function relaunch(ctx: ScriptContext<unknown>): Promise<boolean> {
   await answerPermissionsBeforeLaunch(ctx)
   if (await launchAndWait(ctx, READY_TIMEOUT_MS)) return true
+
+  /*
+    The phone's own touch blocker (1.53.0), which `foreignAppOnTop` cannot see and must not.
+
+    Samsung's accidental-touch protection is a full-screen System UI window that swallows every
+    touch until someone swipes up. A run that meets one reads a tree with no TikTok node in it at
+    all — and `foreignAppOnTop` excludes the system UI on purpose, so it answers `null` and this
+    function used to report "the feed did not appear", which sent the reader to TikTok. Seven
+    post-video runs on the owner's farm died that way in three days (2026-09-18), reporting the
+    camera screen as "unknown".
+
+    `clearTouchBlocker` swipes past it, which is all this case needs; the foreign-app path below is
+    unchanged and still the one that answers for another APP being in front.
+  */
+  const blocker = await clearTouchBlocker(ctx)
+  if (blocker !== null) {
+    ctx.log.warn(`the phone was showing "${blocker}" instead of TikTok — swiped past it and launching once more`)
+    if (await launchAndWait(ctx, RETRY_TIMEOUT_MS)) return true
+  }
 
   let intruder: string | null = null
   try {

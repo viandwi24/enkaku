@@ -86,7 +86,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.42.0',
+  version: '0.43.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -95,6 +95,23 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.43.0 — the overlay `foreignAppOnTop` is built not to see.**
+   *
+   *   Samsung's accidental-touch protection ("Perlindungan dari sentuhan tidak sengaja") is a
+   *   full-screen `com.android.systemui` window that swallows every touch until someone swipes up.
+   *   `foreignAppOnTop` excludes the system UI on purpose — the bars are on every screen — so it
+   *   answers `null`, and the relaunch loop below it would spend three BACK-and-launch rounds
+   *   against a screen that only ever answers to a swipe.
+   *
+   *   Measured on the owner's farm (2026-09-18): fourteen `post-video` runs across all three
+   *   platforms failed under one of these in three days, each blaming its own app's UI. YouTube's
+   *   share of that is small — one run — but the guard costs one dump on a healthy launch and the
+   *   pack that cannot see it reports the wrong thing every time it happens.
+   *
+   *   `clearTouchBlocker` (`@enkaku/sdk`) is the narrow half of that helper, deliberately: it
+   *   swipes and nothing else. The foreign-app loop this pack has had since 0.39.14 is untouched
+   *   and still the one that answers for another APP being in front.
    *
    * **0.42.0 — `foreignAppOnTop` moved to the SDK, and now names the app rather
  *   than being re-derived.** `tiktok-automation-pack` had written this function

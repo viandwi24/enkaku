@@ -69,3 +69,34 @@ export function foreignAppOnTop(tree: UiNode, ownPackage: string): string | null
   )
   return cover?.packageName ?? null
 }
+
+/**
+ * Samsung's accidental-touch protection ("pocket mode") — the headline it shows, or `null`.
+ *
+ * This is not an app and not a dialog: it is a full-screen `com.android.systemui` window that
+ * swallows every touch until someone swipes up. `foreignAppOnTop` cannot see it, and must not —
+ * it excludes the system UI on purpose, because the system's own bars are on every screen.
+ *
+ * So a run that meets one reads a tree with NO app node in it at all, and every pack in this repo
+ * words that as its own app having lost a control. Measured on the owner's farm (2026-09-18):
+ * fourteen post-video runs across all three platforms failed this way in three days — Instagram
+ * said its bottom navigation was missing, TikTok said the camera screen read "unknown", YouTube
+ * said its details screen never opened. Not one of those phones had anything wrong with the app.
+ *
+ * Keyed on the `unintentional_` resource-id prefix, which is what the overlay's own views carry
+ * (`unintentional_title`, `unintentional_body`, `unintentional_drag_to_unlock`, and three
+ * `unintentional_locker_img_cue_mtrl_*` chevrons). The TEXT is deliberately not the key: the
+ * production trees are Indonesian ("Perlindungan dari sentuhan tidak sengaja"), an English phone
+ * words it differently, and this pack has already paid twice for matching a localised label —
+ * see `youtube-automation-pack` 0.45.0 and 0.50.0, the same defect in two languages.
+ *
+ * Returns the headline so a log can name what it found, falling back to the id when the title
+ * carries no text.
+ */
+export function touchBlockerOnTop(tree: UiNode): string | null {
+  const nodes = flatten(tree)
+  const own = nodes.filter((n) => /(?:^|\/)unintentional_/.test(n.resourceId))
+  if (own.length === 0) return null
+  const title = own.find((n) => /(?:^|\/)unintentional_title$/.test(n.resourceId))
+  return title?.text.trim() || own[0]?.text.trim() || 'accidental-touch protection'
+}

@@ -1061,6 +1061,22 @@ export default definePlugin({
   // `node` descriptor now carries the SAME icon as a top-level field
   // (`node.icon` stays as a fallback read for a core older than this plan).
   // Cosmetic; nothing about how any member runs changed.
+  // 1.53.0 — "the dump reads unknown" was sometimes not a TikTok screen at all.
+  //   `detectScreen` names the screens of THIS app. Handed a tree with no TikTok node in it, the
+  //   only honest answer it has is "unknown" — and then the settle loop re-reads the same stranger
+  //   for every round it has left.
+  //   Measured on the owner's farm (2026-09-18) by reading the artifacts those runs had already
+  //   saved: of the nine `post-video` runs that failed `expected the "camera" screen but the dump
+  //   reads "unknown"`, five held nothing but Samsung's accidental-touch protection, one Android
+  //   Settings, one the launcher. The camera was never the problem and no number of settle rounds
+  //   was going to reach it.
+  //   Two things, both narrow. `waitForScreen` now recovers at most twice when it reads "unknown"
+  //   (`recoverToApp` — swipe past a touch blocker, BACK out of whatever else is in front, bring
+  //   TikTok forward, never force-stop the intruder) and then goes round as it always did, so a
+  //   screen that has genuinely not arrived yet still gets its remaining rounds. And when it still
+  //   fails, the message names what was holding the screen rather than the screen it wanted.
+  //   `relaunch` gets the blocker case alone (`clearTouchBlocker`), because the foreign-app path
+  //   1.52.0 added is already the right answer for another app and did not need a second one.
   // 1.52.0 — a phone another app is holding gets a second launch instead of a whole rotation
   //   spent in someone else's UI.
   //   1.51.0 made that failure legible and said, in its own commit message, that WHY those phones
@@ -1645,7 +1661,7 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.52.0',
+  version: '1.53.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

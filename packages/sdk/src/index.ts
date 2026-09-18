@@ -47,7 +47,15 @@ export {
   MAX_REFRESHES_IN_A_ROW,
 } from './human'
 export type { AimBox, DwellBucket, RevisitMove, RevisitStep, RevisitPlan } from './human'
-export { foreignAppOnTop } from './screen'
+export { foreignAppOnTop, touchBlockerOnTop } from './screen'
+/**
+ * The recovery half of `foreignAppOnTop` (2026-09-18). Detecting that something else is holding
+ * the screen was never the hard part; every pack could already do it at launch and none of them
+ * could do anything about it mid-flow, which is where half of the owner's farm's upload failures
+ * turned out to be. See `recover.ts` for the measurements.
+ */
+export { recoverToApp, clearTouchBlocker } from './recover'
+export type { RecoveryOutcome } from './recover'
 export { definePlugin, isPlugin } from './plugin'
 export type { PluginDefinition, PluginMemberScript, Plugin } from './plugin'
 /**
