@@ -415,6 +415,57 @@ describe('ensureRotationLock / releaseRotationLock — the sessionless paths', (
     expect(calls).toEqual([])
   })
 
+  /*
+    A device adb no longer has is not a device that drifted (2026-09-18).
+
+    Every failure used to count as drift, which is right for a phone that is
+    present and wrong for one that is gone: the read always fails on a missing
+    device, so the full five-call write ran every time, and `createSession`
+    then went on to the farm tag and scrcpy. Six doomed round trips per build,
+    times a hub-sized drop, aimed at an adb server that had just restarted —
+    that traffic is what the owner's second farm collapse was made of.
+  */
+  function goneDevice() {
+    const calls: string[] = []
+    const transport = {
+      exec: async (cmd: string) => {
+        calls.push(cmd)
+        throw new Error("device 'R9RY90A6X4X' not found")
+      },
+    } as unknown as Transport
+    return { transport, calls }
+  }
+
+  test('a device adb has lost costs ONE call, not the whole five-call write', async () => {
+    const { transport, calls } = goneDevice()
+    const { log } = silentLog()
+    const outcome = await ensureRotationLock(transport, 'lock-portrait', log)
+    expect(calls).toEqual([READBACK_COMMAND])
+    expect(outcome.applied).toBe(false)
+    expect(outcome.drifted).toBeUndefined()
+    expect(outcome.reason).toBe('the device is not attached to this farm right now')
+  })
+
+  test('a gone device is never reported as locked — the guarantee the old behaviour bought with five calls', async () => {
+    const { transport } = goneDevice()
+    const { log } = silentLog()
+    expect((await ensureRotationLock(transport, 'lock-portrait', log)).applied).toBe(false)
+    expect((await ensureRotationLock(transport, 'lock-current', log)).applied).toBe(false)
+  })
+
+  /**
+   * The narrowness that matters: only "no such device" short-circuits. A read
+   * that fails for any OTHER reason is still drift and still writes, which is
+   * the rule this file has always had.
+   */
+  test('a read that fails for any other reason still counts as drift and still writes', async () => {
+    const { transport, store } = fakeDevice({ accel: '1', user: '0', throwOn: READBACK_COMMAND })
+    const { log } = silentLog()
+    const outcome = await ensureRotationLock(transport, 'lock-portrait', log)
+    expect(outcome.drifted).toBe(true)
+    expect(store.accelerometer_rotation).toBe('0')
+  })
+
   test('a release the device refuses is reported', async () => {
     const { transport } = fakeDevice({ accel: '0', user: '0', declineWrite: ['accelerometer_rotation'] })
     const { log, warnings } = silentLog()

@@ -1,3 +1,4 @@
+import { isDeviceGone } from '@enkaku/adb'
 import type { RotationMode, Transport } from '@enkaku/protocol'
 import type { Logger } from './logger'
 
@@ -246,12 +247,20 @@ async function put(transport: Transport, cmd: string): Promise<string | null> {
   }
 }
 
-async function readback(transport: Transport): Promise<RotationReadback | null> {
+/**
+ * The read-back, carrying the one distinction `ensureRotationLock` needs: a device adb no longer
+ * has is not a device that drifted. Every other failure (a read that parsed to nothing, an OEM
+ * build that declines it) stays `gone: false` and is still treated as drift, which is the rule this
+ * file has always had.
+ */
+type ReadbackResult = { ok: true; value: RotationReadback } | { ok: false; gone: boolean }
+
+async function readback(transport: Transport): Promise<ReadbackResult> {
   try {
     const r = await transport.exec(READBACK_COMMAND, { profile: 'probe' })
-    return parseReadback(r.stdout)
-  } catch {
-    return null
+    return { ok: true, value: parseReadback(r.stdout) }
+  } catch (err) {
+    return { ok: false, gone: isDeviceGone(err) }
   }
 }
 
@@ -279,10 +288,10 @@ export async function assertRotationLock(transport: Transport, mode: Exclude<Rot
   const pin = await wm(transport, cmds.pin.slice('wm '.length))
   if (!pin.ok) log.warn(`rotation: could not pin the display to the lock (${pin.output || 'no answer'}) — an app that requests its own orientation may still rotate`)
   const observed = await readback(transport)
-  if (observed === null) problems.push('the settings could not be read back')
+  if (!observed.ok) problems.push('the settings could not be read back')
   else {
-    if (observed.accel !== '0') problems.push(`accelerometer_rotation reads back "${observed.accel || 'nothing'}", not "0"`)
-    if (observed.user !== target) problems.push(`user_rotation reads back "${observed.user || 'nothing'}", not "${target}"`)
+    if (observed.value.accel !== '0') problems.push(`accelerometer_rotation reads back "${observed.value.accel || 'nothing'}", not "0"`)
+    if (observed.value.user !== target) problems.push(`user_rotation reads back "${observed.value.user || 'nothing'}", not "${target}"`)
   }
   if (problems.length === 0) return { mode, target, applied: true }
   const reason = problems.join('; ')
@@ -304,8 +313,8 @@ export async function releaseRotationLock(transport: Transport, log: Logger): Pr
   const unpin = await wm(transport, unpinCmd.slice('wm '.length))
   if (!unpin.ok) log.warn(`rotation: could not clear the display pin (${unpin.output || 'no answer'}) — the display may stay fixed to its last orientation`)
   const observed = await readback(transport)
-  if (observed === null) problems.push('the settings could not be read back')
-  else if (observed.accel !== '1') problems.push(`accelerometer_rotation reads back "${observed.accel || 'nothing'}", not "1"`)
+  if (!observed.ok) problems.push('the settings could not be read back')
+  else if (observed.value.accel !== '1') problems.push(`accelerometer_rotation reads back "${observed.value.accel || 'nothing'}", not "1"`)
   if (problems.length === 0) return { mode: 'device', target: null, applied: true }
   const reason = problems.join('; ')
   log.warn(`rotation release did not take on this device — ${reason}`)
@@ -319,15 +328,32 @@ export async function releaseRotationLock(transport: Transport, log: Logger): Pr
  *
  * A failed read counts as drift: the write path reports its own outcome, and "could not tell" must
  * never be reported as "in force".
+ *
+ * ### The one failure that is NOT drift (2026-09-18)
+ *
+ * "adb has no such device" is not a phone that drifted, it is no phone at all — and treating it as
+ * drift is expensive in exactly the moment the farm can least afford it. The write path is five
+ * serialised shell calls; on a phone adb has lost, the read always fails, so every build of a
+ * vanished device spent six doomed round trips here before `createSession` even reached the farm
+ * tag and scrcpy. On the owner's 73-phone farm a hub-sized drop put hundreds of those on an adb
+ * server that had just restarted, and the second collapse of the morning was made entirely of this
+ * recovery traffic.
+ *
+ * So a gone device returns immediately, unapplied and with a reason, having spent one call. It is
+ * still never reported as "in force" — that guarantee is untouched, and it is the reason this
+ * returns `applied: false` rather than the cheaper-looking `applied: true`.
  */
 export async function ensureRotationLock(transport: Transport, mode: RotationMode, log: Logger): Promise<RotationOutcome> {
   if (!isLockMode(mode)) return { mode, target: null, applied: true }
   const target = mode === 'lock-current' ? null : FIXED_TARGET[mode]
   const observed = await readback(transport)
-  if (observed !== null && lockInForce(observed, target)) return { mode, target: target ?? observed.user, applied: true }
-  log.info(
-    `rotation: device drifted off "${mode}" (accelerometer_rotation=${observed?.accel || '?'}, user_rotation=${observed?.user || '?'}) — locking again`,
-  )
+  if (observed.ok && lockInForce(observed.value, target)) return { mode, target: target ?? observed.value.user, applied: true }
+  if (!observed.ok && observed.gone) {
+    return { mode, target, applied: false, reason: 'the device is not attached to this farm right now' }
+  }
+  const accel = observed.ok ? observed.value.accel : ''
+  const user = observed.ok ? observed.value.user : ''
+  log.info(`rotation: device drifted off "${mode}" (accelerometer_rotation=${accel || '?'}, user_rotation=${user || '?'}) — locking again`)
   return { ...(await assertRotationLock(transport, mode, log)), drifted: true }
 }
 

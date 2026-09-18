@@ -20,7 +20,7 @@ export {
 export { Semaphore, PerDeviceQueue, type QueueRunOptions } from './queue'
 export { shellQuote } from './shell-quote'
 export { AdbSocket, encodeRequest, type AdbSocketOptions } from './socket'
-export { AdbError, type AdbErrorCode } from './errors'
+export { AdbError, isDeviceGone, type AdbErrorCode } from './errors'
 export {
   ADB_TIMEOUTS,
   resolveExecTimeout,

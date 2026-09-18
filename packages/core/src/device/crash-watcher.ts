@@ -1,3 +1,4 @@
+import { isDeviceGone } from '@enkaku/adb'
 import type { ArtifactInfo, MonitorEndReason, MonitorKind } from '@enkaku/protocol'
 import type { Logger } from '../util/logger'
 import { createCrashParser, type CrashEvent } from './crash-parser'
@@ -89,8 +90,12 @@ const DEFAULT_MAX_PER_MINUTE = 20
 /** The resubscribe backoff's floor and ceiling (plan 85 §3.2, §5 step 85.4) — 2 s → 60 s, doubling. */
 const DEFAULT_RESTART_INITIAL_MS = 2_000
 const DEFAULT_RESTART_MAX_MS = 60_000
-/** adb's words for "there is no such device right now" (`AdbError: device '<serial>' not found`, `device offline`). */
-const DEVICE_GONE = /device '[^']*' not found|device not found|device offline/i
+/*
+  "adb has no such device right now" used to be a regex private to this file.
+  It is `isDeviceGone` in `@enkaku/adb` since 2026-09-18, because the session
+  build path needed the same judgement and a second copy of the phrasing is a
+  second thing to get wrong when adb's wording changes.
+*/
 
 interface Watch {
   deviceId: string
@@ -164,7 +169,7 @@ export function createCrashWatcher(deps: CrashWatcherDeps): CrashWatcher {
   function scheduleRestart(deviceId: string, reason: string, attempt: number): void {
     if (!desired.has(deviceId)) return // the session closed under us — nothing to restart for
     if (!crashWatchEnabled()) return // the farm traded detection for the stream slot (plan 85 §3.2) — do not fight that choice
-    if (DEVICE_GONE.test(reason)) {
+    if (isDeviceGone(reason)) {
       /*
         adb says the device is not there (a USB flap, or a hub reset taking
         twenty phones at once). Retrying every 2-4 s cannot succeed until it

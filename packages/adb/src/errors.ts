@@ -45,3 +45,27 @@ export class AdbError extends Error {
     this.name = 'AdbError'
   }
 }
+
+/** adb's words for "there is no such device right now". */
+const DEVICE_GONE = /device '[^']*' not found|device not found|device offline/i
+
+/**
+ * Does this failure mean the DEVICE is not attached, rather than that the operation failed on a
+ * device that is?
+ *
+ * The distinction is not cosmetic, and it is not about logging. adb answers `device '<serial>' not
+ * found` for every command aimed at a phone it no longer has — a USB flap, a hub reset, an adb
+ * server that just restarted. A caller that cannot tell this apart from "the command did not work"
+ * retries, and on a farm of 73 phones a hub-sized drop turns one lost link into hundreds of adb
+ * round trips aimed at nothing, on a server that is already the reason they are failing. The
+ * owner's farm collapsed twice in five minutes that way on 2026-09-18, the second time purely from
+ * the recovery traffic of the first.
+ *
+ * Deliberately a string match: adb reports this as the FAIL text of an otherwise ordinary command,
+ * so there is no distinct `AdbErrorCode` to key on and inventing one would not change what the
+ * server sends. Accepts `unknown` because callers hold it as an `Error` (the build path) or as a
+ * `reason` string already stringified by a stream's end (the crash watcher).
+ */
+export function isDeviceGone(err: unknown): boolean {
+  return DEVICE_GONE.test(err instanceof Error ? err.message : String(err))
+}
