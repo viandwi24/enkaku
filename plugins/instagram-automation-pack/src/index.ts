@@ -52,7 +52,7 @@ import clearDrafts from './clear-drafts'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.12.0',
+  version: '0.13.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -94,6 +94,22 @@ export default definePlugin({
    *
    *   Closed by its scrim (`Tutup lembaran`, measured, `[0,0][720,966]`) or by BACK — never by the
    *   sheet's own primary button, which is the thing that caused this.
+   *
+   *
+   *   Numbered 0.13.0 and not 0.12.0 although it is the same investigation: `v0.2.61` was tagged
+   *   between the two halves and shipped 0.12.0 WITHOUT this fix. A pack is seeded once per
+   *   `name@version` and a version already in `seeded-packs.json` is skipped on every later boot,
+   *   so re-cutting 0.12.0 would have left this sitting in the repo, fully tested, never reaching a
+   *   phone — which is exactly what plan 124 did and how it was found.
+   *
+
+   * **0.12.0 — a screen another app is holding is taken back, wherever the run is.**
+   *
+   *   The recovery half of the same investigation, and what `v0.2.61` shipped. Reading the trees
+   *   103 failed `post-video` runs had already saved beside their own error messages (2026-09-18):
+   *   31 held the Play Store, 14 Samsung's accidental-touch protection, 4 the keyboard alone. Half
+   *   of every "upload failure" was not one, and every message named a control in an app that was
+   *   not on the screen.
    *
    *   Two further guards for the runs already past that point, because a phone can lose the screen
    *   for reasons this pack does not cause. `recoverToApp` (`@enkaku/sdk`) now runs in the

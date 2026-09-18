@@ -86,7 +86,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.43.0',
+  version: '0.44.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -95,6 +95,33 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.44.0 — a "Berikutnya" pressed five times against a screen that never moved.**
+   *
+   *   Job 181bd7 (2026-09-18, SM-A075F) tapped the Shorts editor's own button five times over 97
+   *   seconds and failed reporting that the details screen did not open. The run's trace says what
+   *   really happened: YouTube's nodes were byte-identical across all of it. The only two changes
+   *   in 120 seconds were 59 seconds apart — that is the status bar's clock, not the screen. The
+   *   first tap, the one that brought the editor to rest, worked; every tap after it reached a
+   *   button that is `clickable`, `enabled`, unobstructed and inert. Eight runs in three days.
+   *
+   *   0.39.4 raised the retap ceiling on the reasoning that "the answer to a swallowed tap is
+   *   another tap, not a longer wait". Production measured that and it is half right: a fourth
+   *   identical tap is not a new idea. A different DELIVERY is — this pack already sends the
+   *   details screen's title `via: 'adb'` because that screen would not take the pointer's taps
+   *   either. So the ladder is pointer, then adb, and `screenSignature` (YouTube's own nodes, with
+   *   the status bar excluded so a ticking clock is not read as movement) decides when to escalate
+   *   and when to stop.
+   *
+   *   Honest about what this is: adb delivery is not PROVEN to move this button — that needs the
+   *   screen in front of someone. It is the remedy this pack already relies on for the same symptom
+   *   on the neighbouring screen, it costs one tap, and it cannot make things worse. What IS fixed
+   *   either way is the report: a frozen editor now says so, instead of naming a details screen the
+   *   run never reached.
+   *
+   *   Numbered 0.44.0 because `v0.2.61` was tagged after 0.43.0 and shipped it without this. A pack
+   *   is seeded once per `name@version` and a version already seeded is skipped on every later
+   *   boot, so re-cutting 0.43.0 would have left this in the repo and off every phone.
    *
    * **0.43.0 — the overlay `foreignAppOnTop` is built not to see.**
    *
