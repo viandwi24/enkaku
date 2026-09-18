@@ -154,12 +154,44 @@ describe('DeviceReconciler.runOnce — adopt (plan 85 §3.3 point 3, fixes F8/F9
 })
 
 describe('DeviceReconciler.runOnce — drop (plan 85 §3.3 point 4, safety net)', () => {
-  test('a device known to the registry but gone from adb entirely is dropped', async () => {
+  test('a device known to the registry but gone from adb entirely is dropped — after the empty-farm deferral lapses', async () => {
     const { deps, registry } = makeDeps({ list: [], known: ['SER-GONE'] })
+    const reconciler = createDeviceReconciler(deps)
+    // An adb server that answers "no devices at all" is assumed to be
+    // restarting, for a bounded number of scans — nothing is dropped yet.
+    for (let i = 0; i < 3; i++) {
+      const deferred = await reconciler.runOnce()
+      expect(deferred.dropped).toEqual([])
+      expect(registry.removeCalls).toEqual([])
+    }
+    // Past the bound the farm really is empty, whatever the cause.
+    const report = await reconciler.runOnce()
+    expect(report.dropped).toEqual(['SER-GONE'])
+    expect(registry.removeCalls).toEqual(['SER-GONE'])
+  })
+
+  test('a PARTIAL adb list still drops the missing device immediately — a dead hub is what this net is for', async () => {
+    const { deps, registry } = makeDeps({ list: [{ serial: 'SER1', state: 'device' }], known: ['SER1', 'SER-GONE'] })
     const reconciler = createDeviceReconciler(deps)
     const report = await reconciler.runOnce()
     expect(report.dropped).toEqual(['SER-GONE'])
     expect(registry.removeCalls).toEqual(['SER-GONE'])
+  })
+
+  test('a device reappearing resets the deferral, so a later empty scan gets the full budget again', async () => {
+    const { deps, registry } = makeDeps({ list: [], known: ['SER1'] })
+    const reconciler = createDeviceReconciler(deps)
+    await reconciler.runOnce()
+    await reconciler.runOnce()
+    // adb re-enumerated: the farm is back.
+    deps.client = fakeClient({ list: [{ serial: 'SER1', state: 'device' }] }) as typeof deps.client
+    await reconciler.runOnce()
+    expect(registry.removeCalls).toEqual([])
+    // It drops out again — the counter restarted, so two more scans are still absorbed.
+    deps.client = fakeClient({ list: [] }) as typeof deps.client
+    await reconciler.runOnce()
+    await reconciler.runOnce()
+    expect(registry.removeCalls).toEqual([])
   })
 
   test('a known device still present in ANY adb state (not just "device") is not dropped', async () => {

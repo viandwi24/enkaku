@@ -6,15 +6,10 @@ const err = (code: string, message = 'x') => ({ code, message })
 describe('classifyFailure — the infra table (plan 36 §3.2, §4.1)', () => {
   const infraCodes = [
     'E_ADB_TIMEOUT',
-    'E_ADB_CONNECT_TIMEOUT',
     'E_ADB_HANDSHAKE_TIMEOUT',
-    'E_ADB_UNAVAILABLE',
     'E_DEVICE_NOT_READY',
-    'node_offline',
     'device_not_found',
     'device_not_ready',
-    'engine_not_found',
-    'port_range_exhausted',
     'CHILD_CRASHED',
     'DEVICE_DISCONNECTED',
     'HEARTBEAT_EXPIRED',
@@ -26,6 +21,31 @@ describe('classifyFailure — the infra table (plan 36 §3.2, §4.1)', () => {
       const result = classifyFailure(err(code), { timeoutIsInfra: false })
       expect(result.class).toBe('infra')
       expect(result.blameDevice).toBe(true)
+      expect(result.code).toBe(code)
+    })
+  }
+})
+
+describe('classifyFailure — infra that is the FARM\'s fault never blames a device', () => {
+  /*
+    Each of these describes something shared. Blaming the device feeds
+    `DeviceHealth` (via `executor-host.ts`) for a condition that hits every
+    run at once, which is how a whole farm quarantines itself while nothing
+    is wrong with any phone.
+  */
+  const farmCodes = [
+    'E_ADB_CONNECT_TIMEOUT', // could not reach the adb server at 127.0.0.1:5037
+    'E_ADB_UNAVAILABLE', // ensureServer() gave up: the adb server is not there
+    'node_offline', // the node that owns this device is disconnected
+    'port_range_exhausted', // the HOST ran out of forward ports
+    'engine_not_found', // configuration, true of every device asking for it
+  ]
+
+  for (const code of farmCodes) {
+    test(`${code} is still infra (retried and rebound) but never blames the device`, () => {
+      const result = classifyFailure(err(code), { timeoutIsInfra: false })
+      expect(result.class).toBe('infra')
+      expect(result.blameDevice).toBe(false)
       expect(result.code).toBe(code)
     })
   }

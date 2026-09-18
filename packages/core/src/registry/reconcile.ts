@@ -68,6 +68,17 @@ export interface DeviceReconciler {
   offlineSerials(): Map<string, number>
 }
 
+/**
+ * How many consecutive scans reporting an entirely empty farm are absorbed
+ * before the drop sweep believes it.
+ *
+ * Three at the default `scanIntervalSec` of 10 is ~30 s, deliberately the same
+ * budget as `DEFAULT_TRACKER_REENUMERATION_GRACE_MS` — the two roads into the
+ * same cascade should not disagree about how long adb is allowed to take
+ * re-enumerating a large USB farm.
+ */
+const EMPTY_SCANS_BEFORE_DROP = 3
+
 const EMPTY_REPORT: ReconcileReport = {
   seen: 0,
   adopted: [],
@@ -98,6 +109,8 @@ export function createDeviceReconciler(deps: DeviceReconcilerDeps): DeviceReconc
   const nudgeCounts = new Map<string, number>()
   let timer: ReturnType<typeof setTimeout> | null = null
   let running = false
+  /** Consecutive scans where adb reported nothing while the registry knew devices — see the drop sweep below. */
+  let emptyScans = 0
 
   async function runOnce(): Promise<ReconcileReport> {
     const cfg = deps.settings()
@@ -149,11 +162,39 @@ export function createDeviceReconciler(deps: DeviceReconcilerDeps): DeviceReconc
     // Known to the registry but gone from adb entirely — the tracker's own
     // `remove` event usually gets here first; this is the safety net (plan
     // 85 §3.3 point 4).
+    //
+    // Unless adb just told us the farm is EMPTY while we know devices. That is
+    // not a fleet event — no plausible cause unplugs every phone between two
+    // ticks — it is `host:devices-l` answered by an adb server that has just
+    // restarted and has not re-enumerated USB yet. Acting on it removes the
+    // whole farm at once, which is the same cascade
+    // `DEFAULT_TRACKER_REENUMERATION_GRACE_MS` exists to stop on the tracker's
+    // side; this is the other road into it (73-phone farm, 2026-09-17/18).
+    //
+    // The deferral is BOUNDED, and that bound is the whole design. On a farm
+    // of one phone, "adb is empty" is genuinely ambiguous — it is equally the
+    // server restarting and that single phone being unplugged — so a guard
+    // that waits forever would mean a one-device farm never goes offline at
+    // all. After `EMPTY_SCANS_BEFORE_DROP` consecutive empty scans the farm
+    // really is empty and the sweep proceeds, whatever the cause.
+    //
+    // A PARTIAL list is left alone deliberately: a dead hub is a real event
+    // this net exists to catch, and `onRemove`'s own
+    // `DEVICE_OFFLINE_GRACE_SEC` already absorbs the brief ones.
     const dropped: string[] = []
-    for (const serial of known) {
-      if (!seenSerials.has(serial)) {
-        dropped.push(serial)
-        deps.registry.onRemove(serial)
+    if (seenSerials.size === 0 && known.size > 0) emptyScans++
+    else emptyScans = 0
+    const deferring = emptyScans > 0 && emptyScans <= EMPTY_SCANS_BEFORE_DROP
+    if (deferring) {
+      log.warn(
+        `adb reports no devices at all while ${known.size} are known (scan ${emptyScans}/${EMPTY_SCANS_BEFORE_DROP}) — treating it as an adb server restart, not ${known.size} removals`,
+      )
+    } else {
+      for (const serial of known) {
+        if (!seenSerials.has(serial)) {
+          dropped.push(serial)
+          deps.registry.onRemove(serial)
+        }
       }
     }
 

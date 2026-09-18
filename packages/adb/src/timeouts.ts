@@ -11,6 +11,33 @@ export const DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024
 export const DEFAULT_MAX_QUEUE_DEPTH = 32
 
 /**
+ * How long after a `host:track-devices` RECONNECT the tracker refuses to
+ * report a device as removed.
+ *
+ * A dropped tracker usually means the adb server died, and `DeviceTracker`'s
+ * own loop then calls `ensureServer()`, which may `start-server` a brand new
+ * one. A fresh adb server begins with an EMPTY device list and re-enumerates
+ * USB over the seconds that follow. The first snapshot after such a reconnect
+ * is therefore a baseline, not the truth — and diffing the old snapshot
+ * against it emits `remove` for EVERY device on the farm at once.
+ *
+ * Downstream that is indistinguishable from 80 phones being unplugged
+ * simultaneously: sessions torn down, jobs failed, rows marked offline. It is
+ * the cascade behind "semuanya reconnecting … sampai akhirnya disconnect"
+ * (73-phone farm, 2026-09-17/18), and the reason an operator had to replug
+ * USB by hand — the farm had thrown away state adb was about to hand back.
+ *
+ * Thirty seconds is sized against USB re-enumeration of a large farm, which
+ * comfortably exceeds `DEVICE_OFFLINE_GRACE_SEC` (20 s) and so could not be
+ * absorbed by that grace alone. Nothing is lost by waiting: `add`/`change`
+ * still flow during the window (a device coming back is good news and is
+ * reported immediately), and a device that really did leave is caught by the
+ * reconciler's own `host:devices-l` sweep, which is exactly the safety net it
+ * exists to be.
+ */
+export const DEFAULT_TRACKER_REENUMERATION_GRACE_MS = 30_000
+
+/**
  * The streaming lane's three clocks (plan 24 §3.3) — deliberately separate
  * from `ADB_TIMEOUTS`/`MAX_EXEC_TIMEOUT_MS` above: a stream is expected to
  * stay open for minutes, which a one-shot `exec()` must never be allowed to

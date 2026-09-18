@@ -1,5 +1,5 @@
 import { AdbSocket } from './socket'
-import { DEFAULT_HANDSHAKE_TIMEOUT_MS } from './timeouts'
+import { DEFAULT_HANDSHAKE_TIMEOUT_MS, DEFAULT_TRACKER_REENUMERATION_GRACE_MS } from './timeouts'
 
 export type AdbDeviceState = 'device' | 'offline' | 'unauthorized' | 'authorizing' | (string & {})
 
@@ -72,6 +72,14 @@ export interface DeviceTrackerOptions {
    * Optional so a test (and any other embedder) can leave it out.
    */
   ensureServer?: () => Promise<void>
+  /**
+   * How long after a RECONNECT removals are withheld — see
+   * `DEFAULT_TRACKER_REENUMERATION_GRACE_MS` for why a reconnect's first
+   * snapshot cannot be trusted to mean "these devices are gone". 0 restores
+   * the pre-grace behaviour (every reconnect diffs immediately), which is
+   * what the existing tests assert.
+   */
+  reenumerationGraceMs?: number
 }
 
 /**
@@ -86,6 +94,13 @@ export class DeviceTracker {
   private socket: AdbSocket | null = null
   private stopped = true
   private loopPromise: Promise<void> | null = null
+  /**
+   * While `Date.now()` is below this, a serial missing from a snapshot is
+   * treated as "not re-enumerated yet", not as "removed". Set on every
+   * reconnect, never on the first connect — the initial snapshot of a server
+   * that was already running IS authoritative.
+   */
+  private settleUntil = 0
 
   constructor(private opts: DeviceTrackerOptions) {}
 
@@ -113,8 +128,28 @@ export class DeviceTracker {
   }
 
   private emitFromSnapshot(next: TrackedDevice[]): void {
-    const events = diffSnapshots(this.current, next)
-    this.current = next
+    const settling = this.settleUntil > 0 && Date.now() < this.settleUntil
+    let effective = next
+    if (settling) {
+      /*
+        Carry forward every device the snapshot does not mention, at its last
+        known state. Two things follow, and both are the point:
+
+        - `diffSnapshots` sees no absentee, so it emits no `remove`.
+        - `this.current` keeps the device, so when the window lapses the NEXT
+          snapshot still diffs against a farm that includes it — a device that
+          genuinely left is reported then, not silently forgotten.
+
+        `add`/`change` are unaffected: a device that re-enumerates during the
+        window is in `next` and diffs normally against its carried-forward
+        entry, so a phone that came back `unauthorized` still says so at once.
+      */
+      const seen = new Set(next.map((d) => d.serial))
+      const carried = this.current.filter((d) => !seen.has(d.serial))
+      if (carried.length > 0) effective = [...next, ...carried]
+    }
+    const events = diffSnapshots(this.current, effective)
+    this.current = effective
     for (const ev of events) {
       for (const cb of this.listeners) cb(ev)
     }
@@ -124,10 +159,23 @@ export class DeviceTracker {
     let backoffMs = 1000
     /** Set by the catch below; cleared once the restart attempt has been made. */
     let serverMayBeDown = false
+    /** The first connect of this loop is not a RE-connect — its snapshot is authoritative. */
+    let reconnecting = false
+    const graceMs = this.opts.reenumerationGraceMs ?? DEFAULT_TRACKER_REENUMERATION_GRACE_MS
     while (!this.stopped) {
       try {
         const socket = await AdbSocket.connect(this.opts.host, this.opts.port)
         this.socket = socket
+        // Armed BEFORE the first snapshot of this connection is read: that
+        // snapshot is the one a restarted adb server serves empty.
+        this.settleUntil = reconnecting && graceMs > 0 ? Date.now() + graceMs : 0
+        if (reconnecting && graceMs > 0) {
+          this.opts.onLog?.(
+            'debug',
+            `track-devices reconnected — withholding removals for ${Math.round(graceMs / 1000)}s while adb re-enumerates`,
+          )
+        }
+        reconnecting = true
         socket.send('host:track-devices')
         // A real handshake — the adb server should ack this immediately.
         await socket.readStatus({ timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS })

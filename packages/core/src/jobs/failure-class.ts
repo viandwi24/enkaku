@@ -61,6 +61,43 @@ const INFRA_CODES = new Set<string>([
 ])
 
 /**
+ * Infra codes that are NOT the device's fault, so they must never reach the
+ * health tracker (`executor-host.ts` calls `health.note()` on `blameDevice`).
+ *
+ * Every one of these describes something the farm shares. Blaming the device
+ * for it is the same misattribution that mass-quarantined a 73-phone farm
+ * through `DeviceHealth` (2026-09-17/18): the condition hits every run at
+ * once, so every device on the farm accumulates a streak it did nothing to
+ * earn, and the fleet quarantines itself as `adb:unreachable` while nothing
+ * is wrong with any phone.
+ *
+ * - `E_ADB_CONNECT_TIMEOUT` — `AdbSocket.connect` could not reach the adb
+ *   server at 127.0.0.1:5037. The serial is not in that code path.
+ * - `E_ADB_UNAVAILABLE` — `ensureServer()` gave up after three attempts.
+ *   This code's whole meaning is "the adb server is not there".
+ * - `node_offline` — "the node that owns this device is currently
+ *   disconnected". One node carries many devices; the node is the fault.
+ * - `port_range_exhausted` — the HOST ran out of forward ports.
+ * - `engine_not_found` — a configuration problem, true of every device that
+ *   asks for that engine.
+ *
+ * They stay `infra`: still retried, still rebound to another device, still
+ * capped by `JOB_MAX_INFRA_REBINDS`. Only the blame changes.
+ *
+ * `E_ADB_TIMEOUT` and `E_ADB_HANDSHAKE_TIMEOUT` are deliberately NOT here.
+ * Both keep real per-device meaning (a slow phone, a wedged transport), and
+ * the farm-wide detector in `device/health.ts` is what stops them
+ * mass-quarantining when the true cause is load.
+ */
+const NOT_THE_DEVICES_FAULT = new Set<string>([
+  'E_ADB_CONNECT_TIMEOUT',
+  'E_ADB_UNAVAILABLE',
+  'node_offline',
+  'port_range_exhausted',
+  'engine_not_found',
+])
+
+/**
  * Load, not infra (plan 22.1 §3.1, plan 23 §3.6): the queue was saturated,
  * not the device. Retried, but `blameDevice` is always false — Plan 23 split
  * these clocks precisely so this distinction exists (acceptance #5).
@@ -98,7 +135,7 @@ export function classifyFailure(err: unknown, opts: { timeoutIsInfra: boolean })
     return { class: 'load', code, message, blameDevice: false }
   }
   if (INFRA_CODES.has(code)) {
-    return { class: 'infra', code, message, blameDevice: true }
+    return { class: 'infra', code, message, blameDevice: !NOT_THE_DEVICES_FAULT.has(code) }
   }
   if (SCRIPT_CODES.has(code)) {
     return { class: 'script', code, message, blameDevice: false }

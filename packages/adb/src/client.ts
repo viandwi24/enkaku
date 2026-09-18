@@ -269,6 +269,12 @@ export interface AdbClientOptions {
   maxStreamsPerDevice?: number
   /** The streaming lane's farm-wide budget (plan 24 §3.2). Default 4. */
   maxStreams?: number
+  /**
+   * How long after a `host:track-devices` reconnect the tracker withholds
+   * removals — see `DEFAULT_TRACKER_REENUMERATION_GRACE_MS`. Passed in rather
+   * than read here, because this client never reads env itself.
+   */
+  reenumerationGraceMs?: number
   onLog?: (level: 'debug' | 'warn', msg: string) => void
   /** One call per settled exec/execOut task (plan 22.1 §4.6, wired up by plan 23). */
   onMetric?: (m: AdbMetric) => void
@@ -329,6 +335,7 @@ export class AdbClient {
   /** Per-serial verdict on `shell,v2,raw` support (plan 53 §3.4); unset means "not yet known". */
   private shellFramedSupported = new Map<string, boolean>()
   private tracker: DeviceTracker | null = null
+  private reenumerationGraceMs?: number
   /** The in-flight `ensureServer()` attempt, shared by every concurrent caller — see that method. */
   private ensuring: Promise<void> | null = null
   private onLog?: (level: 'debug' | 'warn', msg: string) => void
@@ -348,6 +355,7 @@ export class AdbClient {
     )
     this.onLog = opts.onLog
     this.onMetric = opts.onMetric
+    this.reenumerationGraceMs = opts.reenumerationGraceMs
   }
 
   /**
@@ -926,6 +934,7 @@ export class AdbClient {
         // dead adb server within seconds, so it is also the right place to try
         // bringing it back. Single-flighted inside `ensureServer` itself.
         ensureServer: () => this.ensureServer(),
+        ...(this.reenumerationGraceMs !== undefined ? { reenumerationGraceMs: this.reenumerationGraceMs } : {}),
       })
     }
     return this.tracker
