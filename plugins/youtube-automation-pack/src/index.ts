@@ -7,6 +7,7 @@ import searchPlay from './search-play'
 import watchVideo from './watch-video'
 import postVideo from './post-video'
 import clearDrafts from './clear-drafts'
+import checkNotifications from './check-notifications'
 
 /**
  * YouTube automation pack.
@@ -84,15 +85,36 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.39.17',
+  version: '0.40.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
   description: 'Search, browse, watch, like, read comments, download, and post Shorts in the YouTube app on a farm device.',
-  scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay, watchVideo, postVideo, clearDrafts],
+  scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay, watchVideo, postVideo, clearDrafts, checkNotifications],
 
   /**
    * ## Changelog
+   *
+   * **0.40.0 — the bell this pack never had.** The warm-up rotation could
+   * search, scroll Shorts, watch and download, but it could not do the one
+   * thing every real viewer does first: look at what YouTube has to tell them.
+   * `check-notifications` opens the bell and reads the screen, and reads only
+   * — it never taps a notification, subscribes, or replies, which is the farm's
+   * standing rule for every notifications surface on every platform.
+   *
+   * The anchors are measured, not guessed (owner's moto g06 power, 720x1640,
+   * en-US, 2026-09-18): the bell is `menu_item_view` `desc="Notifications"` at
+   * `[552,70][636,154]` in the HOME toolbar, with Search its immediate
+   * neighbour 84px right — so it is matched by description, never by position.
+   * The screen is `filter_bar` plus a "Notifications" title;
+   * `__fixtures__/screen-notifications-empty.json` is the capture.
+   *
+   * Two distinctions this member is careful about, both of which the Instagram
+   * pack learned the hard way in its own 0.2.0. Reaching the screen is a
+   * REQUIREMENT, so a run that never got there fails rather than reporting an
+   * empty inbox. And `empty` is set only by YouTube's own empty-state marker,
+   * never by "we walked the tree and found no rows" — those two look identical
+   * in a result and mean opposite things.
    *
    * **0.39.17 — 0.39.16 is reverted: the text ladder cannot carry this title,
    * and the reason is worth more than the revert.**
