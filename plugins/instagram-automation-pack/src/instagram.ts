@@ -1,4 +1,5 @@
 import type { ScriptContext } from '@enkaku/sdk'
+import { foreignAppOnTop as sdkForeignAppOnTop } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { all, flatten, rowsById } from './tree'
 
@@ -99,11 +100,40 @@ export function readableInstagramNodes(tree: UiNode): UiNode[] {
 }
 
 /**
+ * Which other app is holding the screen, or `null` when Instagram is still there.
+ *
+ * Added 0.11.0, last of the three packs to get it, and the only one that had paid for the absence
+ * twice over — see `isSignedOut` directly below and `relaunch`'s recovery loop. The rule itself
+ * lives in `@enkaku/sdk`, which carries the production trees from the other two.
+ */
+export function foreignAppOnTop(tree: UiNode): string | null {
+  return sdkForeignAppOnTop(tree, INSTAGRAM_PACKAGE)
+}
+
+/**
  * The signed-out entry screen: no navigation, and a login call to action.
  * Worded in both languages this farm meets.
+ *
+ * ## Why it asks who is in front first (0.11.0)
+ *
+ * This reads the WHOLE tree, not Instagram's nodes, so ANY app in front with a "Log in" button
+ * answered yes: a Google sign-in page, a Play sheet, a browser. And `relaunch` does not merely
+ * report that — it THROWS `E_NOT_SIGNED_IN`, whose message tells the operator to go and sign in
+ * the account this phone should use. On a phone that was signed in the whole time, that sends
+ * someone to the one place the fault is not, and the phone looks like an account problem rather
+ * than a stuck screen.
+ *
+ * `youtube-automation-pack` shipped the identical wrong accusation ("that is usually a signed-out
+ * YouTube", over a Play Store sheet) and fixed it in 0.39.14. This is the same bug in a second
+ * pack, found by looking rather than by another farm paying for it.
+ *
+ * The question "is Instagram signed out" is only meaningful when Instagram is the app on screen.
+ * When it is not, the honest answer is not `true`, and it is not `false` either — it is that this
+ * is the wrong question, which the caller now asks in the right order.
  */
 export function isSignedOut(tree: UiNode): boolean {
   if (isReady(tree)) return false
+  if (foreignAppOnTop(tree) !== null) return false
   const strings = flatten(tree).map((n) => `${n.text} ${n.desc}`.trim().toLowerCase()).filter((s) => s !== '')
   return strings.some((s) => /^(masuk|log in|login)$/.test(s) || s.includes('buat akun baru') || s.includes('create new account'))
 }
@@ -287,12 +317,40 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
     await sleep(1_500)
     nav = await waitForTree(ctx, (t) => isReady(t) || isSignedOut(t), { budgetMs: 12_000 })
   }
+  /*
+    Another app over Instagram (0.11.0) — the guard this pack was missing entirely.
+
+    BACK closes a sheet; `launch` brings Instagram's own task back to the front. The intruder is
+    NEVER force-stopped: on a production phone that package may be something of the owner's that
+    has nothing to do with this run, and killing it to tidy a run is not this pack's call. Three
+    rounds, then the caller's own anchor reports — but the log will already have named the app.
+
+    Order matters here and is the point: this runs BEFORE the signed-out check, because that check
+    used to answer yes for any app in front with a "Log in" button and throw the operator at an
+    account that was fine.
+  */
+  for (let round = 0; round < 3 && !nav.ok; round++) {
+    const intruder = foreignAppOnTop(nav.tree)
+    if (intruder === null) break
+    ctx.log.warn(`${intruder} is standing over Instagram — closing it with BACK and bringing Instagram back`, { round: round + 1 })
+    await ctx.device.key('BACK')
+    await sleep(1_500)
+    await ctx.device.app.launch(INSTAGRAM_PACKAGE)
+    await sleep(2_000)
+    nav = await waitForTree(ctx, (t) => isReady(t) || isSignedOut(t), { budgetMs: 12_000 })
+  }
+
   if (isSignedOut(nav.tree)) {
     await capture(ctx, 'ig-signed-out', nav.tree)
     throw Object.assign(new Error('Instagram on this phone is signed out. Sign in to the account this phone should use, then re-run.'), { code: 'E_NOT_SIGNED_IN' })
   }
   if (!nav.ok) {
-    ctx.log.warn(`instagram did not show its navigation within ${READY_TIMEOUT_MS / 1000}s — continuing, and the next anchor will say where the device is`)
+    const stillThere = foreignAppOnTop(nav.tree)
+    ctx.log.warn(
+      stillThere === null
+        ? `instagram did not show its navigation within ${READY_TIMEOUT_MS / 1000}s — continuing, and the next anchor will say where the device is`
+        : `instagram never came to the front — "${stillThere}" held the screen through three attempts to clear it. The run continues, and its first anchor will name it rather than blame an Instagram control.`,
+    )
     return nav.tree
   }
   let previous = -1

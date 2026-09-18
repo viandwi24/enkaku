@@ -37,7 +37,7 @@ import {
 import { MAX_REFRESHES_IN_A_ROW, PROFILE_PULL_BAND, makeRng, planConfirmStep, pullToRefreshPath } from './behavior'
 import type { ConfirmMove, ConfirmStep } from './behavior'
 import { rowsById, treeFrame } from './tree'
-import { humanCheckAccount, isReady, isSignedOut, phoneNumberWallShowing, promoDismissButton, waitForTree, withheldByDialog } from './instagram'
+import { foreignAppOnTop, humanCheckAccount, isReady, isSignedOut, phoneNumberWallShowing, promoDismissButton, waitForTree, withheldByDialog } from './instagram'
 import { inboxItems, inboxStrings, onInbox } from './check-inbox'
 import { feedLikeState, feedPosts, onHomeFeed } from './scroll-feed'
 import { inStoryViewer, trayStories } from './watch-stories'
@@ -560,5 +560,86 @@ describe('the "confirm you are human" gate (0.10.4)', () => {
     line.text = 'Konfirmasikan bahwa Anda adalah manusia'
     line.desc = 'Konfirmasikan bahwa Anda adalah manusia'
     expect(humanCheckAccount(stripped)).toBe('this account')
+  })
+})
+
+/*
+  Synthetic trees, and deliberately so: no fixture on this farm captured another app standing over
+  Instagram, which is exactly why the pack shipped without a guard for it. The shape is taken from
+  the two trees that WERE captured, on the other two packs' farms — Android Settings over TikTok
+  and a Play Store sheet over YouTube.
+*/
+const IG = 'com.instagram.android'
+const IG_FRAME = { left: 0, top: 0, right: 1080, bottom: 2340 }
+
+function uiNode(partial: Partial<UiNode>): UiNode {
+  return {
+    resourceId: '',
+    text: '',
+    desc: '',
+    className: 'android.view.ViewGroup',
+    packageName: IG,
+    bounds: { left: 0, top: 0, right: 0, bottom: 0 },
+    clickable: false,
+    enabled: true,
+    focused: false,
+    index: 0,
+    children: [],
+    ...partial,
+  }
+}
+
+describe('another app over Instagram (0.11.0) — the accusation this pack was about to make', () => {
+  /**
+   * The bug, stated plainly: `isSignedOut` reads the WHOLE tree, so a Google sign-in page in front
+   * of Instagram answered yes. `relaunch` does not report that — it THROWS `E_NOT_SIGNED_IN`,
+   * telling the operator to go and sign in an account that was signed in the whole time.
+   *
+   * `youtube-automation-pack` shipped this same wrong accusation and fixed it in 0.39.14.
+   */
+  test('a Google sign-in page in front is NOT read as a signed-out Instagram', () => {
+    const googleSignIn = uiNode({
+      className: 'hierarchy',
+      packageName: '',
+      children: [
+        uiNode({
+          packageName: 'com.google.android.gms',
+          bounds: IG_FRAME,
+          children: [uiNode({ packageName: 'com.google.android.gms', text: 'Log in', clickable: true, bounds: { left: 100, top: 1800, right: 980, bottom: 1900 } })],
+        }),
+        uiNode({ packageName: 'com.android.systemui', text: '3:31', bounds: { left: 20, top: 20, right: 140, bottom: 70 } }),
+      ],
+    })
+    expect(foreignAppOnTop(googleSignIn)).toBe('com.google.android.gms')
+    expect(isSignedOut(googleSignIn)).toBe(false)
+  })
+
+  /**
+   * The other half, and the one that makes the guard honest rather than merely quiet: Instagram's
+   * OWN login screen must still be recognised. A guard that suppressed this too would trade a wrong
+   * accusation for a phone that silently never runs.
+   */
+  test("Instagram's own login screen is still read as signed out", () => {
+    const login = uiNode({
+      className: 'hierarchy',
+      packageName: '',
+      children: [
+        uiNode({
+          bounds: IG_FRAME,
+          children: [
+            uiNode({ text: 'Masuk', clickable: true, bounds: { left: 100, top: 1500, right: 980, bottom: 1600 } }),
+            uiNode({ text: 'Buat akun baru', clickable: true, bounds: { left: 100, top: 1700, right: 980, bottom: 1800 } }),
+          ],
+        }),
+      ],
+    })
+    expect(foreignAppOnTop(login)).toBeNull()
+    expect(isSignedOut(login)).toBe(true)
+  })
+
+  test('a signed-in home feed is neither foreign nor signed out', async () => {
+    const home = await fixture('screen-home.json')
+    expect(foreignAppOnTop(home)).toBeNull()
+    expect(isSignedOut(home)).toBe(false)
   })
 })

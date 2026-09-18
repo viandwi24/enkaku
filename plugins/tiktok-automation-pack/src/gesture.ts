@@ -1,5 +1,5 @@
 import type { ScriptContext } from '@enkaku/sdk'
-import { aimInside, pick } from '@enkaku/sdk'
+import { aimInside, foreignAppOnTop as sdkForeignAppOnTop, pick } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { between, sleep, pngSize } from './human'
 import { flatten } from './tree'
@@ -41,24 +41,18 @@ export const TIKTOK_PACKAGE = 'com.ss.android.ugc.trill'
  *
  * Shape, not a list of known intruders: any package that is not TikTok and not the system UI,
  * covering most of the screen, with no TikTok node anywhere. The launcher qualifies, which is
- * correct — that is TikTok having failed to come up at all. Mirrors the YouTube pack's
- * `foreignAppOnTop`, copied rather than imported because a pack is bundled standalone.
+ * correct — that is TikTok having failed to come up at all.
+ *
+ * The rule itself moved to the SDK (1.52.0). It used to say it was "copied rather than imported
+ * because a pack is bundled standalone" — which `aimInside` had already disproved by moving there
+ * a day earlier and being imported from here ever since. What forced the move is that
+ * `youtube-automation-pack` had written this function independently, with identical logic and a
+ * different return type, and Instagram was about to become the third copy. `@enkaku/sdk`'s
+ * `foreignAppOnTop` carries the evidence from both packs; this keeps the one-argument shape the
+ * members already call.
  */
 export function foreignAppOnTop(tree: UiNode): string | null {
-  const nodes = flatten(tree)
-  if (nodes.some((n) => n.packageName === TIKTOK_PACKAGE)) return null
-  const width = Math.max(0, ...nodes.map((n) => n.bounds.right))
-  const height = Math.max(0, ...nodes.map((n) => n.bounds.bottom))
-  if (width === 0 || height === 0) return null
-  const cover = nodes.find(
-    (n) =>
-      n.packageName !== '' &&
-      n.packageName !== TIKTOK_PACKAGE &&
-      n.packageName !== 'com.android.systemui' &&
-      n.bounds.right - n.bounds.left >= width * 0.9 &&
-      n.bounds.bottom - n.bounds.top >= height * 0.5,
-  )
-  return cover?.packageName ?? null
+  return sdkForeignAppOnTop(tree, TIKTOK_PACKAGE)
 }
 
 /** The bottom-nav failure, worded by what is actually on screen (2026-09-18). */

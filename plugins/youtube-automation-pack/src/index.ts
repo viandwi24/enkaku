@@ -86,7 +86,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.41.0',
+  version: '0.42.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -96,7 +96,20 @@ export default definePlugin({
   /**
    * ## Changelog
    *
-   * **0.41.0 — the account's own page.** `check-profile` opens the "You" tab
+   * **0.42.0 — `foreignAppOnTop` moved to the SDK, and now names the app rather
+ *   than being re-derived.** `tiktok-automation-pack` had written this function
+ *   independently, with identical logic and a different return type, after
+ *   paying for the same lesson on its own farm (1082 failed jobs, `shop-browse`
+ *   reporting a missing tab over an artifact of Android Settings). Instagram was
+ *   about to be the third copy, so the rule is `@enkaku/sdk`'s now — the same
+ *   move `aimInside` made, for the same reason.
+ *
+ *   One behaviour change, and it is an improvement: the relaunch loop used to
+ *   name the intruder as "the first package that is not YouTube and not the
+ *   system UI", which is not necessarily the one covering the screen. It is now
+ *   the covering node itself. Nothing about WHEN the loop fires changed.
+ *
+ * **0.41.0 — the account's own page.** `check-profile` opens the "You" tab
    * and reads it: account name, the library rows (History, the playlists,
    * Downloads), and whether the Settings gear is there. Reading only — it never
    * switches account, opens a playlist, taps Get Premium, or enters Settings.

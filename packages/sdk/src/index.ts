@@ -47,6 +47,7 @@ export {
   MAX_REFRESHES_IN_A_ROW,
 } from './human'
 export type { AimBox, DwellBucket, RevisitMove, RevisitStep, RevisitPlan } from './human'
+export { foreignAppOnTop } from './screen'
 export { definePlugin, isPlugin } from './plugin'
 export type { PluginDefinition, PluginMemberScript, Plugin } from './plugin'
 /**

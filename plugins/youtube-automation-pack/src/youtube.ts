@@ -1,5 +1,5 @@
 import type { ScriptContext } from '@enkaku/sdk'
-import { aimInside } from '@enkaku/sdk'
+import { aimInside, foreignAppOnTop as sdkForeignAppOnTop } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { dismissPopups } from './popups'
 import { all, flatten } from './tree'
@@ -225,21 +225,16 @@ export function googleAccountPageOnTop(tree: UiNode): boolean {
  * `com.android.vending`. So this one is deliberately about SHAPE, not about Play: any package that
  * is not YouTube and not the system UI, covering the screen, with no YouTube node anywhere. The
  * launcher qualifies too, which is correct — that is YouTube having failed to come up at all.
+ *
+ * The rule moved to `@enkaku/sdk` (0.42.0): `tiktok-automation-pack` had written this function
+ * independently, with identical logic, after paying for the same lesson on its own farm, and
+ * Instagram was about to be the third copy. It returns the package NAME now rather than a boolean,
+ * which is what the loop below wanted all along — it used to re-derive it as "the first package
+ * that is not YouTube and not the system UI", and that is not necessarily the one covering the
+ * screen.
  */
-export function foreignAppOnTop(tree: UiNode): boolean {
-  const nodes = flatten(tree)
-  if (nodes.some((n) => n.packageName === YOUTUBE_PACKAGE)) return false
-  const width = Math.max(0, ...nodes.map((n) => n.bounds.right))
-  const height = Math.max(0, ...nodes.map((n) => n.bounds.bottom))
-  if (width === 0 || height === 0) return false
-  return nodes.some(
-    (n) =>
-      n.packageName !== '' &&
-      n.packageName !== YOUTUBE_PACKAGE &&
-      n.packageName !== 'com.android.systemui' &&
-      n.bounds.right - n.bounds.left >= width * 0.9 &&
-      n.bounds.bottom - n.bounds.top >= height * 0.5,
-  )
+export function foreignAppOnTop(tree: UiNode): string | null {
+  return sdkForeignAppOnTop(tree, YOUTUBE_PACKAGE)
 }
 
 /**
@@ -317,7 +312,7 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
   await sleep(3_000)
   // A Google account page can open over YouTube at launch (`googleAccountPageOnTop`). BACK leaves it
   // without answering anything on it — its only buttons add a recovery phone or open settings.
-  const readyOrAccountPage = (t: UiNode): boolean => isReady(t) || googleAccountPageOnTop(t) || pictureInPictureOnly(t) || foreignAppOnTop(t)
+  const readyOrAccountPage = (t: UiNode): boolean => isReady(t) || googleAccountPageOnTop(t) || pictureInPictureOnly(t) || foreignAppOnTop(t) !== null
   let nav = await waitForTree(ctx, readyOrAccountPage, { budgetMs: READY_TIMEOUT_MS })
   /*
     Counted, because the caller's failure depends on it (0.39.7). Production #54 (2026-09-16) met this
@@ -344,11 +339,9 @@ export async function relaunch(ctx: ScriptContext<unknown>, opts?: { clearRecent
     rounds do not clear it, the caller's own anchor reports what it found — but the log will already
     have named the app, so the failure is not blamed on a missing button.
   */
-  for (let round = 0; round < 3 && !isReady(nav.tree) && foreignAppOnTop(nav.tree); round++) {
-    const intruder =
-      flatten(nav.tree)
-        .map((n) => n.packageName)
-        .find((pkg) => pkg !== '' && pkg !== YOUTUBE_PACKAGE && pkg !== 'com.android.systemui') ?? 'an unknown app'
+  for (let round = 0; round < 3 && !isReady(nav.tree); round++) {
+    const intruder = foreignAppOnTop(nav.tree)
+    if (intruder === null) break
     ctx.log.warn(`${intruder} is standing over YouTube — closing it with BACK and bringing YouTube back`, { round: round + 1 })
     await ctx.device.key('BACK')
     await sleep(1_500)

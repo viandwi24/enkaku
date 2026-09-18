@@ -52,7 +52,7 @@ import clearDrafts from './clear-drafts'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.10.10',
+  version: '0.11.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
@@ -62,7 +62,33 @@ export default definePlugin({
   /**
    * ## Changelog
    *
-   * **0.10.10 — the drafts tab is tapped until it opens, and the failure stops
+   * **0.11.0 — another app over Instagram stopped being reported as a signed-out
+ *   account.** This pack had no foreign-app guard at all, and that absence cost
+ *   twice.
+ *
+ *   `isSignedOut` reads the WHOLE tree, so ANY app in front carrying a "Log in"
+ *   button answered yes — a Google sign-in page, a Play sheet, a browser. And
+ *   `relaunch` does not merely report that: it THROWS `E_NOT_SIGNED_IN`, whose
+ *   message sends the operator to sign in the account this phone should use. On
+ *   a phone that was signed in the whole time, that is the most expensive wrong
+ *   lead available, and it makes a stuck screen look like an account problem.
+ *   `youtube-automation-pack` shipped the identical accusation ("that is usually
+ *   a signed-out YouTube", over a Play Store sheet) and fixed it in 0.39.14;
+ *   this is the same bug in a second pack, found by looking rather than by
+ *   another farm paying for it.
+ *
+ *   So: `foreignAppOnTop` (`@enkaku/sdk`, carrying both other packs' production
+ *   trees), `isSignedOut` answers false when Instagram is not the app on screen,
+ *   and `relaunch` gets the recovery loop YouTube has had since 0.39.14 — three
+ *   rounds of BACK and launch, running BEFORE the signed-out check, and never
+ *   force-stopping the intruder, which may be something of the owner's. The
+ *   give-up warning names the app that held the screen.
+ *
+ *   Instagram's own login screen is still read as signed out — asserted
+ *   directly, because a guard that suppressed that too would trade a wrong
+ *   accusation for a phone that silently never runs.
+ *
+ * **0.10.10 — the drafts tab is tapped until it opens, and the failure stops
    * blaming the wrong button.**
    * `clear-drafts` reported `the "Draf" tab opened but its "Kelola" button was
    * not found` on the owner's moto g06 (2026-09-17). The tree saved beside that

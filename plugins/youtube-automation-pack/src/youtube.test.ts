@@ -126,11 +126,11 @@ function youtubeHome(): UiNode {
 
 describe('foreignAppOnTop — one cause behind five different accusations (0.39.14)', () => {
   test('a screen-covering Play Store sheet with no YouTube node is recognised', () => {
-    expect(foreignAppOnTop(playStoreSheet())).toBe(true)
+    expect(foreignAppOnTop(playStoreSheet())).toBe('com.android.vending')
   })
 
   test('an ordinary YouTube home screen is NOT — a guard that fires here would relaunch a healthy run', () => {
-    expect(foreignAppOnTop(youtubeHome())).toBe(false)
+    expect(foreignAppOnTop(youtubeHome())).toBeNull()
   })
 
   test('the System UI alone never counts as a foreign app', () => {
@@ -141,7 +141,7 @@ describe('foreignAppOnTop — one cause behind five different accusations (0.39.
         node({ packageName: 'com.android.systemui', desc: 'Kembali', clickable: true, bounds: { left: 83, top: 1556, right: 221, bottom: 1640 } }),
       ],
     })
-    expect(foreignAppOnTop(barsOnly)).toBe(false)
+    expect(foreignAppOnTop(barsOnly)).toBeNull()
   })
 
   test('the launcher standing alone IS caught — that is YouTube never having started', () => {
@@ -152,7 +152,7 @@ describe('foreignAppOnTop — one cause behind five different accusations (0.39.
         node({ packageName: 'com.android.systemui', text: '05.29', bounds: { left: 14, top: 20, right: 98, bottom: 50 } }),
       ],
     })
-    expect(foreignAppOnTop(launcher)).toBe(true)
+    expect(foreignAppOnTop(launcher)).not.toBeNull()
   })
 
   test('the Play sheet is not mistaken for the two guards that could not see it', () => {
