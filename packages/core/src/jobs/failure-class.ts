@@ -11,6 +11,8 @@
  * novel bug loop forever; defaulting to "report it" is the honest failure
  * mode (§3.2, acceptance #9).
  */
+import { isDeviceGone } from '@enkaku/adb'
+
 export type FailureClass = 'infra' | 'script' | 'load'
 
 export interface ClassifiedFailure {
@@ -41,6 +43,10 @@ export interface ClassifiedFailure {
  *    and unconditionally infra: unlike a run `TIMEOUT`, it never depends on
  *    `timeoutIsInfra`, because there is no script behaviour to blame here),
  *  - the tunnel/cloud vocabulary (`node_offline`, `E_DEVICE_NOT_READY`).
+ *
+ * One infra failure is NOT in this set and cannot be: adb's own "device '<serial>' not found",
+ * which arrives as the text of an ordinary command's FAIL rather than as a code, and is matched on
+ * the message by `isDeviceGone` in the classifier below.
  */
 const INFRA_CODES = new Set<string>([
   'E_ADB_TIMEOUT',
@@ -136,6 +142,33 @@ export function classifyFailure(err: unknown, opts: { timeoutIsInfra: boolean })
   }
   if (INFRA_CODES.has(code)) {
     return { class: 'infra', code, message, blameDevice: !NOT_THE_DEVICES_FAULT.has(code) }
+  }
+  /*
+    The one infra failure with no code of its own — and the largest single bucket of "failed" jobs
+    on the owner's farm: 187 of 1305 (14%) over three days, every one of them recorded against the
+    script that happened to be running.
+
+    adb reports a phone it no longer has as the FAIL TEXT of an otherwise ordinary command,
+    `device '<serial>' not found`, so the failure arrives as a plain `E_ADB_FAIL` and falls past
+    every check above into the default. That default is `script`, which is right for an UNKNOWN
+    failure and wrong for this one: a USB flap, a hub reset or an adb-tcp drop is the farm's
+    problem, not the script's, and classifying it as the script's spends the script's retry budget
+    and leaves the device's own health untouched.
+
+    Matched on the MESSAGE, which is not a shortcut. `packages/adb/src/errors.ts` has carried
+    `isDeviceGone` for this exact text since the farm collapsed twice over it, and its header says
+    why there is no code to match: adb sends this as command output, and inventing an
+    `AdbErrorCode` would not change what the server sends. Nothing had ever asked it here.
+
+    Blamed on the device, like `E_ADB_TIMEOUT` and unlike the farm-wide codes above: a transport
+    that keeps dropping is a real per-device fact, and `device/health.ts`'s farm-wide detector is
+    what stops a hub-sized outage from quarantining everything.
+
+    Placed after the code checks so an explicit code always wins, and before the default so an
+    unknown failure still classifies as `script`.
+  */
+  if (isDeviceGone(message)) {
+    return { class: 'infra', code, message, blameDevice: true }
   }
   if (SCRIPT_CODES.has(code)) {
     return { class: 'script', code, message, blameDevice: false }

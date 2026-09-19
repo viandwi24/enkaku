@@ -138,3 +138,48 @@ describe('classifyFailure — TIMEOUT is configurable (plan 36 §3.3)', () => {
     expect(result.blameDevice).toBe(true)
   })
 })
+
+/*
+  The largest single bucket of "failed" jobs on the owner's farm (187 of 1305 over three days,
+  2026-09-18), every one of them recorded against the script that happened to be running. adb has
+  no code for it: it is the FAIL text of an ordinary command, so it arrives as E_ADB_FAIL.
+*/
+describe('classifyFailure — adb says the device is gone, in words rather than in a code', () => {
+  test("`device '<serial>' not found` is infra, not the script's fault", () => {
+    const result = classifyFailure(err('E_ADB_FAIL', "device 'R9RY602DPCR' not found"), { timeoutIsInfra: false })
+    expect(result.class).toBe('infra')
+  })
+
+  test('it blames the device, like E_ADB_TIMEOUT and unlike the farm-wide codes', () => {
+    const result = classifyFailure(err('E_ADB_FAIL', "device 'R9RL100WZ9P' not found"), { timeoutIsInfra: false })
+    expect(result.blameDevice).toBe(true)
+  })
+
+  test("adb's other wordings for the same fact are caught too", () => {
+    for (const message of ['device not found', 'device offline', "error: device 'X' not found"]) {
+      expect(classifyFailure(err('E_ADB_FAIL', message), { timeoutIsInfra: false }).class).toBe('infra')
+    }
+  })
+
+  test('the same text reaches the classifier from a bare Error as well as a coded one', () => {
+    expect(classifyFailure(new Error("device 'ZP2222RMBS' not found"), { timeoutIsInfra: false }).class).toBe('infra')
+  })
+
+  /* The default must still be `script`: an unknown failure is reported, never retried for ever. */
+  test('an ordinary script failure is untouched by this', () => {
+    const result = classifyFailure(err('E_ANCHOR_NOT_FOUND', 'the share screen did not open after the editor'), { timeoutIsInfra: false })
+    expect(result.class).toBe('script')
+    expect(result.blameDevice).toBe(false)
+  })
+
+  test('a message that merely mentions a device is not a device that is gone', () => {
+    expect(classifyFailure(err('E_ANCHOR_NOT_FOUND', 'the device settings screen did not open'), { timeoutIsInfra: false }).class).toBe('script')
+  })
+
+  /* An explicit code still wins: this check sits after the code table, not in front of it. */
+  test('a coded failure keeps its own classification even if the message says otherwise', () => {
+    const result = classifyFailure(err('E_ADB_BUSY', "device 'X' not found"), { timeoutIsInfra: false })
+    expect(result.class).toBe('load')
+    expect(result.blameDevice).toBe(false)
+  })
+})

@@ -26,6 +26,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        # Tags and history, because `check-pack-versions.ts` compares this commit against the last
+        # `v*` tag. The default shallow checkout fetches neither, and that check answers "nothing to
+        # compare against" and passes — which is the honest thing for it to do and useless here.
+        with:
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         # Pinned, not "latest" — Bun 1.4.0 has a confirmed regression: a
         # `net.Socket.end(data)` immediately followed by `.destroy()`, with a
@@ -48,6 +53,13 @@ jobs:
       # release path. Cheap, and it catches a drift that is otherwise invisible
       # until a tag is already published.
       - run: bash scripts/check-release-packs.sh
+      # A pack whose source changed since the last release at the same version number never reaches
+      # a farm: packs are seeded once per `name@version` and a version already in
+      # `seeded-packs.json` is skipped on every later boot. Plan 124 lost two plugin UIs that way
+      # and only a field report found it; `v0.2.61` did it again on 2026-09-18 and only a manual
+      # check of the tag found that. Nothing else in CI can see it — the build is fine, the tests
+      # pass, and the artifact is simply never loaded.
+      - run: bun run scripts/check-pack-versions.ts
       # AGENTS.md and CLAUDE.md are one document with two addressees. They
       # drifted once and nothing noticed — AGENTS.md spent weeks telling an
       # agent the release workflow does not build the guest agent APK, that CI
