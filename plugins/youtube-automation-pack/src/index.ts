@@ -86,7 +86,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.46.0',
+  version: '0.47.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -95,6 +95,44 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.47.0 — the title is aimed at the title field again, and two theories about the frozen
+   *   editor are buried with evidence.**
+   *
+   *   `readableDetails` has returned a `title` node since 0.37.0 and no caller has ever used it:
+   *   0.38.1 saw the thumbnail editor open twice from tapping that node's middle and made every
+   *   phone use a measured offset instead, which fixed the symptom by giving up on the reading.
+   *
+   *   Walked again by hand on the owner's moto g06 power (720x1640, en-US, YouTube 21.36.47,
+   *   2026-09-19) — Create → gallery → trim → editor → Next — and dumped where it arrived:
+   *
+   *   ```
+   *   content                               [0,70][720,1556]
+   *   ImageView  desc='Edit thumbnail'      [35,189][77,231]
+   *   EditText   text='Caption your Short'  [192,190][699,258]  clickable
+   *   ```
+   *
+   *   The field is an `EditText` starting at x=192; the thumbnail control is a 42px square at x=35,
+   *   115px clear of it. The measured point (445, 224) is the exact centre of that field — which is
+   *   why the offset has always worked here, and why it says nothing about the phones where it does
+   *   not. 0.38.1's failure is what a CONTAINER looks like when you tap its middle.
+   *
+   *   So `titleTapPoint` uses the node when it is an `EditText`, does not contain the thumbnail
+   *   control, is at least 40px tall and sits inside the content frame — and keeps the measure for
+   *   everything else. On both phones this pack has measured, the two answers are the same point:
+   *   the reading only changes anything on a phone whose field is somewhere else, which is the only
+   *   kind this failure has been reported from.
+   *
+   *   Two things ruled OUT on that walk, recorded so nobody spends a day on them again:
+   *
+   *   - **The IME is not covering the button.** `dumpsys window` does put `InputMethod` above the
+   *     creation activity in the stack, which would explain everything — a window uiautomator does
+   *     not dump, over the bottom bar. It is not showing: `mViewVisibility=0x8`, `mHasSurface=false`,
+   *     `isReadyForDisplay()=false`, `mInputShown=false`.
+   *   - **A "swallowed" tap is sometimes just a slow one.** The gallery's own Next button appeared
+   *     to eat four taps over ninety seconds; the screen had in fact moved on to the trim page and
+   *     the dump was simply behind. That is the same shape as the frozen editor and it is worth
+   *     knowing before reading a stuck tree as a stuck app.
    *
    * **0.46.0 — 0.44.0's adb escalation is reverted; it made YouTube markedly worse.**
    *

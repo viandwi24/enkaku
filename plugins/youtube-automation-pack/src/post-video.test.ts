@@ -8,6 +8,7 @@ import {
   cellShowsTitle,
   cellTitleKey,
   channelHeaderShown,
+  titleTapPoint,
   createButton,
   detailsGeometry,
   discardButton,
@@ -753,5 +754,86 @@ describe('discardButton — only a discard control named exactly (0.31.0)', () =
     expect(discardButton(await fixture('screen-channel-draft.json'))).toBeNull()
     expect(discardButton(await fixture('screen-resume-draft.json'))).toBeNull()
     expect(discardButton(await fixture('screen-premium-page.json'))).toBeNull()
+  })
+})
+
+
+/*
+  The details screen as it stands, walked by hand on the owner's moto g06 power (720x1640, en-US,
+  YouTube 21.36.47, 2026-09-19): Create -> gallery -> trim -> editor -> Next, then dumped where it
+  arrived. Nothing here is inferred — these are the node classes and bounds that dump reported.
+*/
+const CONTENT = { left: 0, top: 70, right: 720, bottom: 1556 }
+const FIELD = { left: 192, top: 190, right: 699, bottom: 258 }
+const THUMB = { left: 35, top: 189, right: 77, bottom: 231 }
+
+function detailsScreen(over: { field?: Partial<UiNode>; withThumb?: boolean } = {}): UiNode {
+  return node({
+    className: 'hierarchy',
+    packageName: '',
+    bounds: { left: 0, top: 0, right: 720, bottom: 1640 },
+    children: [
+      node({
+        resourceId: 'com.google.android.youtube:id/content',
+        bounds: CONTENT,
+        children: [
+          node({ text: 'Add details', bounds: { left: 126, top: 88, right: 322, bottom: 136 } }),
+          ...(over.withThumb === false ? [] : [node({ className: 'android.widget.ImageView', desc: 'Edit thumbnail', bounds: THUMB })]),
+          node({ className: 'android.widget.EditText', text: 'Caption your Short', clickable: true, bounds: FIELD, ...(over.field ?? {}) }),
+          node({ resourceId: 'com.google.android.youtube:id/upload_bottom_button', text: 'Upload Short', clickable: true, bounds: { left: 370, top: 1465, right: 699, bottom: 1535 } }),
+        ],
+      }),
+    ],
+  })
+}
+
+describe('titleTapPoint — aiming at the title field instead of at an offset (0.47.0)', () => {
+  test("a readable EditText is aimed at by its own bounds", () => {
+    const tree = detailsScreen()
+    const aim = titleTapPoint(tree, detailsGeometry(tree))
+    expect(aim.from).toBe('field')
+    expect(aim.point).toEqual({ x: 446, y: 224 })
+  })
+
+  /*
+    The measure and the field agree on this phone to within a pixel, which is exactly why the blind
+    offset has always worked here and says nothing about the phones where it does not.
+  */
+  test('on this phone the measured offset lands in the same place, so nothing changes for it', () => {
+    const tree = detailsScreen()
+    const measured = detailsGeometry(tree).title
+    expect(measured).toEqual({ x: 445, y: 224 })
+    expect(Math.abs(measured.x - titleTapPoint(tree, detailsGeometry(tree)).point.x)).toBeLessThanOrEqual(1)
+  })
+
+  /* 0.38.1's failure, reproduced: a wrapper holding both the thumbnail and the caption. */
+  test('a node that contains the thumbnail control is a container, not the field, and is refused', () => {
+    const tree = detailsScreen({ field: { bounds: { left: 20, top: 180, right: 700, bottom: 270 } } })
+    expect(titleTapPoint(tree, detailsGeometry(tree)).from).toBe('measure')
+  })
+
+  test('a node that is not an EditText is refused', () => {
+    const tree = detailsScreen({ field: { className: 'android.view.ViewGroup' } })
+    expect(titleTapPoint(tree, detailsGeometry(tree)).from).toBe('measure')
+  })
+
+  test('a sliver from a half-laid-out screen is refused', () => {
+    const tree = detailsScreen({ field: { bounds: { left: 192, top: 190, right: 699, bottom: 205 } } })
+    expect(titleTapPoint(tree, detailsGeometry(tree)).from).toBe('measure')
+  })
+
+  test('a screen with no readable field at all falls back to the measure, as it always did', () => {
+    const hidden = node({ className: 'hierarchy', packageName: '', bounds: { left: 0, top: 0, right: 720, bottom: 1640 }, children: [node({ resourceId: 'com.google.android.youtube:id/content', bounds: CONTENT })] })
+    expect(titleTapPoint(hidden, detailsGeometry(hidden)).from).toBe('measure')
+  })
+
+  /* A field somewhere else entirely — the only case where this changes anything, and the reason it exists. */
+  test('a field the measured offset would miss is now aimed at correctly', () => {
+    const moved = { left: 192, top: 400, right: 699, bottom: 470 }
+    const tree = detailsScreen({ field: { bounds: moved } })
+    const aim = titleTapPoint(tree, detailsGeometry(tree))
+    expect(aim.from).toBe('field')
+    expect(aim.point.y).toBe(435)
+    expect(detailsGeometry(tree).title.y).toBe(224)
   })
 })

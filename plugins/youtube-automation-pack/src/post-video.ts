@@ -408,6 +408,67 @@ export function readableDetails(tree: UiNode): { upload: UiNode | null; title: U
   return { upload, title }
 }
 
+/** The thumbnail control on the details screen — the thing a mis-aimed title tap lands on. */
+function thumbnailControl(tree: UiNode): UiNode | null {
+  return all(tree, (n) => fromYouTube(n) && /edit thumbnail|ubah thumbnail|edit gambar mini/i.test(n.desc)).sort((a, b) => a.bounds.top - b.bounds.top)[0] ?? null
+}
+
+/**
+ * Where to tap for the title: the field's OWN bounds when they can be trusted, the measured offset
+ * otherwise — and which of the two it was, so the log can say.
+ *
+ * ## Why this was blind, and why it is not any more
+ *
+ * 0.37.0 tapped the middle of the readable "Caption your Short" node and production opened the
+ * THUMBNAIL editor twice, so 0.38.1 made every phone use a measured offset instead. That fixed the
+ * symptom by giving up on the reading entirely — `readableDetails` has returned `title` ever since
+ * and no caller has used it.
+ *
+ * Walked again on the owner's moto g06 (720x1640, en-US, YouTube 21.36.47, 2026-09-19), this time
+ * with the screen reached by hand and dumped where it stands:
+ *
+ * ```
+ * content                                  [0,70][720,1556]
+ * ImageView   desc='Edit thumbnail'        [35,189][77,231]
+ * EditText    text='Caption your Short'    [192,190][699,258]   clickable
+ * ```
+ *
+ * The field is an `EditText`, it starts at x=192, and the thumbnail control is a 42px square at
+ * x=35 — 115px clear of it. The measured point (445, 224) is the exact centre of that field, which
+ * is why the offset has worked on this phone and why it tells us nothing about the phones where it
+ * does not.
+ *
+ * So the node is used when it is a real field and plainly not a wrapper, and the measure is kept
+ * for everything else:
+ *
+ *  - it must be an `EditText` — the 0.38.1 failure is what a CONTAINER looks like when you tap its
+ *    middle, and a container holding both the thumbnail and the caption has its centre between
+ *    them;
+ *  - it must not contain the thumbnail control, for the same reason, checked directly rather than
+ *    inferred from the class;
+ *  - it must be at least 40px tall and sit inside the content frame, so a half-laid-out screen
+ *    cannot offer a sliver.
+ *
+ * Falling back is not a defeat: on the two phones this pack has measured, both answers are the same
+ * point. The reading only changes anything on a phone whose field is somewhere else — which is the
+ * only kind of phone this failure has ever been reported from.
+ */
+export function titleTapPoint(tree: UiNode, geometry: DetailsGeometry): { point: { x: number; y: number }; from: 'field' | 'measure' } {
+  const field = readableDetails(tree)?.title ?? null
+  if (field === null || !/EditText$/.test(field.className)) return { point: geometry.title, from: 'measure' }
+  const height = field.bounds.bottom - field.bounds.top
+  if (height < Math.round((40 * frameOf(tree).width) / 720)) return { point: geometry.title, from: 'measure' }
+  const thumb = thumbnailControl(tree)
+  if (thumb !== null && thumb.bounds.left >= field.bounds.left && thumb.bounds.right <= field.bounds.right && thumb.bounds.top >= field.bounds.top && thumb.bounds.bottom <= field.bounds.bottom) {
+    return { point: geometry.title, from: 'measure' }
+  }
+  const point = { x: Math.round((field.bounds.left + field.bounds.right) / 2), y: Math.round((field.bounds.top + field.bounds.bottom) / 2) }
+  const content = geometry.content
+  const frame = frameOf(tree)
+  if (point.y < content.top * frame.height || point.y > content.bottom * frame.height) return { point: geometry.title, from: 'measure' }
+  return { point, from: 'field' }
+}
+
 /**
  * The title field's text on a READABLE details screen (0.38.3): `''` when it shows only its placeholder ("Caption your
  * Short" / "Tambahkan teks pada video Shorts"), `null` when no field can be read (a hidden details screen). The field is
@@ -1699,13 +1760,15 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     // On a readable details screen the title area and Upload are aimed at by their own bounds (0.37.0); hidden, by the measure.
     const readable = readableDetails(settled)
     /*
-      The title keeps its MEASURED point even on a readable screen (0.38.1). 0.37.0 tapped the middle of the "Caption your
-      Short" / "Tambahkan teks pada video Shorts" node, and on production (2026-09-15, 2 runs) the typed title then opened the
-      thumbnail editor twice — that point was not the field. The measured offset is the one every earlier post on both the
-      moto and the Samsung typed into; only Upload is aimed at by its own bounds.
+      The title is aimed at its own field again when that field can be trusted (0.47.0) — see
+      `titleTapPoint` for the walk that made the difference readable, and for the three guards that
+      keep 0.38.1's container failure from coming back. On both phones this pack has measured the
+      two answers are the same point; the reading only changes anything on a phone whose field is
+      somewhere else, which is the only kind this failure has been reported from.
     */
-    const titlePoint = geometry.title
-    if (readable) ctx.log.info('the details screen is readable — aiming at its Upload button by its own bounds', { title: readable.title !== null, upload: readable.upload !== null })
+    const aimedTitle = titleTapPoint(settled, geometry)
+    const titlePoint = aimedTitle.point
+    if (readable) ctx.log.info('the details screen is readable — aiming at its Upload button by its own bounds', { title: readable.title !== null, upload: readable.upload !== null, titleAim: aimedTitle.from })
     /*
       Focus cannot be PROVEN on this screen, so it is not claimed.
 
