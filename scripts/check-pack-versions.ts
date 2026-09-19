@@ -77,20 +77,27 @@ function currentVersion(name: string): string | null {
   }
 }
 
-/** Did anything that actually ships change? Tests and fixtures do not. */
-function shippingSourceChanged(ref: string, name: string): boolean {
+/**
+ * Files under `src/` that actually ship, changed between the two refs.
+ *
+ * Filtered HERE rather than with git's `:(exclude)` pathspecs, which is how this was first written
+ * and which silently did not work. The excluding pattern required a directory between `src` and the
+ * file, so a test sitting directly in `src` — `readings.test.ts` — was never excluded, and a
+ * test-only commit was reported as a missing version bump. Git's glob rules are subtle enough that
+ * a wrong pattern looks exactly like a right one until something trips it. A plain list and an
+ * explicit filter cannot fail that way.
+ */
+function shippingFilesChanged(ref: string, head: string, name: string): string[] {
   const base = `${PLUGINS_DIR}/${name}/src`
-  const diff = git([
-    'diff',
-    '--name-only',
-    `${ref}..${head}`,
-    '--',
-    base,
-    `:(exclude)${base}/**/*.test.ts`,
-    `:(exclude)${base}/**/*.test.tsx`,
-    `:(exclude)${base}/**/__fixtures__/**`,
-  ])
-  return diff.ok && diff.out.length > 0
+  const diff = git(['diff', '--name-only', `${ref}..${head}`, '--', base])
+  if (!diff.ok || diff.out === '') return []
+  return diff.out
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+    .filter((line) => !/\.test\.tsx?$/.test(line))
+    .filter((line) => !line.includes('/__fixtures__/'))
+    .filter((line) => !/\.type-test\.tsx?$/.test(line))
 }
 
 const tag = Bun.argv[2] ?? git(['describe', '--tags', '--abbrev=0', '--match', 'v*']).out
@@ -116,10 +123,10 @@ for (const name of names) {
   const now = currentVersion(name)
   if (now === null) continue
   compared += 1
-  if (!shippingSourceChanged(tag, name)) continue
+  const changed = shippingFilesChanged(tag, head, name)
+  if (changed.length === 0) continue
   if (now !== released) continue
-  const files = git(['diff', '--name-only', `${tag}..${head}`, '--', `${PLUGINS_DIR}/${name}/src`]).out.split('\n').filter(Boolean).length
-  stale.push({ name, version: now, files })
+  stale.push({ name, version: now, files: changed.length })
 }
 
 if (stale.length > 0) {
