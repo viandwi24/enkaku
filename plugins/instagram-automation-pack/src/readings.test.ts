@@ -768,3 +768,27 @@ describe('sheetCloseControl — closing a sheet without touching what it is sell
     expect(sheetCloseControl(plainEditor())).toBeNull()
   })
 })
+
+/*
+  The false positive this guard could have caused, checked against hardware rather than reasoned
+  about.
+
+  A real Reel editor CONTAINS a container whose id matches `bottom_sheet` — `bottom_sheet_camera_
+  container`, which wraps the camera surface and is on screen whether or not any sheet is open. A
+  guard keyed on that id alone would report every editor as covered and stop every post. Confirmed
+  on the owner's moto g06 power (2026-09-19) by walking to the editor and running the function
+  against the dump: `clips_right_action_button` at [571,1481][699,1556], `sheetOverNextButton` null.
+  The committed fixture carries the same shape, so this stays true without a device.
+*/
+describe('sheetOverNextButton — it must not fire on an ordinary Reel editor', () => {
+  test('a real editor carries a bottom_sheet container and is still not covered', async () => {
+    const tree = await fixture('screen-reel-editor.json')
+    expect(rowsById(tree, 'bottom_sheet_camera_container').length).toBeGreaterThan(0)
+    expect(editorNextButton(tree)).not.toBeNull()
+    expect(sheetOverNextButton(tree)).toBeNull()
+  })
+
+  test('and offers nothing to close, so nothing is tapped on it', async () => {
+    expect(sheetCloseControl(await fixture('screen-reel-editor.json'))).toBeNull()
+  })
+})
