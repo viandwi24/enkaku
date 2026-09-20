@@ -326,7 +326,13 @@ export async function runAction(deps: ActionsDeps, request: ActionRequest, actor
   }
 
   if (request.verb === 'run-workflow' && candidates.length > 0) {
-    const workflowDoc = deps.workflows.snapshotForJob(request.workflowName)
+    /*
+      An inline document runs as given; a named one is read from the store
+      (plan 907). Both are the same `WorkflowDocSchema` shape by the time they
+      get here — the inline one was parsed by the request schema, the stored one
+      by `snapshotForJob` — so nothing downstream has to know which it was.
+    */
+    const workflowDoc = request.workflowDoc ?? deps.workflows.snapshotForJob(request.workflowName)
     const batchDeps = deps.batchesFor(actor)
     const { batch, jobs: memberJobs } = createWorkflowBatch(batchDeps, {
       workflowName: request.workflowName,

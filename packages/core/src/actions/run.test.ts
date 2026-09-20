@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
+import { ActionRequestSchema } from '@enkaku/protocol'
 import type { ActionRequest, DeviceActivity } from '@enkaku/protocol'
 import { openDb, runMigrations, type Db } from '../db'
 import { devices } from '../db/schema'
@@ -432,5 +433,60 @@ describe('quarantine / unquarantine', () => {
     // operator to look at a phone that is fine.
     const res = await runAction(deps, { verb: 'unquarantine', target: { deviceIds: ['d-online'] }, force: false } as ActionRequest, actor)
     expect(res.results[0]).toMatchObject({ status: 'failed', code: 'E_NOT_SUPPORTED' })
+  })
+})
+
+/*
+  A composition an operator authors is a saved project with a name, a version
+  and an editor. A composition a PLUGIN authors is neither: it is drawn per run
+  from the fleet as it is at that moment, and saving eighty of them a day as
+  projects would fill the operator's own list with rows nobody wrote and nobody
+  can usefully edit.
+
+  So `run-workflow` takes the document itself. These tests use the harness's own
+  stubs as the witness: `workflows` and `batchesFor` both throw when touched, and
+  WHICH of them throws says whether the store was consulted.
+*/
+describe('run-workflow with an inline document (plan 907)', () => {
+  const inlineDoc = {
+    schema: 2 as const,
+    name: 'warmup-sequence',
+    title: 'Warm-up sequence',
+    entry: 'start',
+    nodes: [
+      { id: 'start', title: 'Start', ui: { x: 0, y: 0 }, enabled: true, kind: 'start' as const, next: 'done' },
+      { id: 'done', title: 'Done', ui: { x: 0, y: 120 }, enabled: true, kind: 'finish' as const, status: 'succeed' as const, message: '' },
+    ],
+  }
+
+  test('an inline document is run without the store being asked at all', async () => {
+    const { deps } = setUp()
+    // Reaching `batchesFor` means the document was resolved; `workflows` was never touched.
+    await expect(
+      runAction(deps, { verb: 'run-workflow', target: { deviceIds: ['d-online'] }, force: true, workflowName: 'warmup-sequence', workflowDoc: inlineDoc, params: {} } as never, actor),
+    ).rejects.toThrow('batchesFor is not exercised by this test')
+  })
+
+  test('without one, the name is still read from the store, exactly as before', async () => {
+    const { deps } = setUp()
+    await expect(
+      runAction(deps, { verb: 'run-workflow', target: { deviceIds: ['d-online'] }, force: true, workflowName: 'saved-one', params: {} } as never, actor),
+    ).rejects.toThrow('workflows is not exercised by this test')
+  })
+
+  /*
+    The direct path must not be a way round the checks the editor's own save
+    goes through. Both of these are refused by `WorkflowDocSchema` itself, at
+    parse time, before anything is dispatched.
+  */
+  test('an inline document is held to the same schema as a stored one', () => {
+    const tooMany = { ...inlineDoc, nodes: Array.from({ length: 51 }, (_, i) => ({ id: `n${i}`, title: 'n', ui: { x: 0, y: i }, enabled: true, kind: 'finish' as const, status: 'succeed' as const, message: '' })) }
+    expect(ActionRequestSchema.safeParse({ verb: 'run-workflow', target: { deviceIds: ['d-online'] }, workflowName: 'x', workflowDoc: tooMany }).success).toBe(false)
+    expect(ActionRequestSchema.safeParse({ verb: 'run-workflow', target: { deviceIds: ['d-online'] }, workflowName: 'x', workflowDoc: { schema: 2, name: 'x', nodes: [] } }).success).toBe(false)
+  })
+
+  test('a valid inline document parses, and the name stays required as its label', () => {
+    expect(ActionRequestSchema.safeParse({ verb: 'run-workflow', target: { deviceIds: ['d-online'] }, workflowName: 'warmup-sequence', workflowDoc: inlineDoc }).success).toBe(true)
+    expect(ActionRequestSchema.safeParse({ verb: 'run-workflow', target: { deviceIds: ['d-online'] }, workflowDoc: inlineDoc }).success).toBe(false)
   })
 })

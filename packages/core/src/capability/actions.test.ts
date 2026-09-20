@@ -95,6 +95,41 @@ describe('actionsRun handler (plan 207 §4.10)', () => {
     expect(response.operationId).toBe('op-1')
   })
 
+  /*
+    Direct-run workflow (plan 907) needs no capability of its own: `params` is a
+    free record here and is validated by the full `ActionRequestSchema` on the
+    way through, so a plugin hands the DOCUMENT in `params` and reaches the same
+    targeting, pacing, batching and audit every other workflow run uses.
+  */
+  test('a plugin can hand the workflow document itself, through the door that already exists', async () => {
+    const actor: CapabilityActor = { id: 'u1', role: 'admin' }
+    const { actions, calls } = spyActions()
+    const doc = {
+      schema: 2 as const,
+      name: 'warmup-sequence',
+      title: 'Warm-up sequence',
+      entry: 'start',
+      nodes: [
+        { id: 'start', title: 'Start', ui: { x: 0, y: 0 }, enabled: true, kind: 'start' as const, next: 'done' },
+        { id: 'done', title: 'Done', ui: { x: 0, y: 120 }, enabled: true, kind: 'finish' as const, status: 'succeed' as const, message: '' },
+      ],
+    }
+    const ctx = fakeContext({ actions, actor })
+    await actionsRun.handler(ctx, { verb: 'run-workflow', target: { deviceIds: ['d1'] }, params: { workflowName: 'warmup-sequence', workflowDoc: doc, concurrency: 1 }, force: true })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.request).toMatchObject({ verb: 'run-workflow', workflowName: 'warmup-sequence' })
+    expect((calls[0]?.request as { workflowDoc?: { nodes: unknown[] } }).workflowDoc?.nodes).toHaveLength(2)
+  })
+
+  /* The same door, the same validation: a bad document is refused here, not on a phone. */
+  test('a malformed workflow document never reaches ctx.actions.run', () => {
+    const actor: CapabilityActor = { id: 'u1', role: 'admin' }
+    const { actions, calls } = spyActions()
+    const ctx = fakeContext({ actions, actor })
+    expect(() => actionsRun.handler(ctx, { verb: 'run-workflow', target: { deviceIds: ['d1'] }, params: { workflowName: 'x', workflowDoc: { schema: 2, name: 'x', nodes: [] } }, force: false })).toThrow()
+    expect(calls).toHaveLength(0)
+  })
+
   test('a request that fails ActionRequestSchema validation (e.g. a verb/params mismatch) throws before reaching ctx.actions.run', () => {
     const { actions, calls } = spyActions()
     const ctx = fakeContext({ actions, actor: { id: 'u1', role: 'admin' } })

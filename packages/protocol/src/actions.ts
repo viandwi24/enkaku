@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { ConnectionMediumSchema } from './device'
 import { DeviceSettingsSchema } from './settings'
+import { WorkflowDocSchema } from './workflow'
 
 /**
  * The MVP 07 actions API (plan 207) — one endpoint per verb, taking a
@@ -300,6 +301,26 @@ export const ActionRequestSchema = z.discriminatedUnion('verb', [
   CommonSchema.extend({
     verb: z.literal('run-workflow'),
     workflowName: z.string().min(1),
+    /**
+     * The document to run, INLINE — instead of looking `workflowName` up in
+     * the `workflows` table (plan 907).
+     *
+     * A composition an operator authors is a saved project with a name, a
+     * version and an editor. A composition a PLUGIN authors is neither: it is
+     * drawn per run, from the fleet as it is at that moment, and saving eighty
+     * of them a day as projects would fill the operator's own list with rows
+     * nobody wrote and nobody can edit usefully.
+     *
+     * So a caller may hand the document itself. `workflowName` stays required
+     * and becomes the LABEL — the batch, the jobs and the run view all show it,
+     * and an unnamed thing running on eighty phones is not something an
+     * operator should have to identify by its node ids.
+     *
+     * Validated by the SAME `WorkflowDocSchema` a stored document is, bounds
+     * and structural checks included: a direct run must not be a way round the
+     * checks the editor's own save goes through.
+     */
+    workflowDoc: WorkflowDocSchema.optional(),
     params: z.unknown().optional(),
     /**
      * The same three batch controls `run-script` above has taken since plan
