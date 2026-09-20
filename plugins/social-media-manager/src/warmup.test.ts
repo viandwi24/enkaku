@@ -353,12 +353,29 @@ describe('the plan itself', () => {
 
   test("the operator's like settings reach the members that accept them", () => {
     const plan = planWarmup({ devices: fleet(30), settings: settings({ like: { chance: 0.42, commentChance: 0.05, keywordBoost: 7 } }), platforms: PLATFORMS, phase: 0, nowMs: NOW, random: rng(6) })
-    const withLikes = plan.flatMap((a) => a.steps).filter((s) => 'likeProbability' in s.params)
+    const steps = plan.flatMap((a) => a.steps)
+    const withLikes = steps.filter((s) => 'likeProbability' in s.params)
     expect(withLikes.length).toBeGreaterThan(0)
-    for (const step of withLikes) {
-      expect(step.params.likeProbability).toBe(0.42)
-      expect(step.params.keywordBoostFactor).toBe(7)
-    }
+    for (const step of withLikes) expect(step.params.likeProbability).toBe(0.42)
+
+    // The boost is asserted only where it is SENT, not everywhere a like is:
+    // `instagram/watch-stories` takes a like chance and declares no keyword
+    // boost at all — it never reads a caption — and sending one would be
+    // refused at dispatch. `scripts/check-warmup-params.ts` is what holds that
+    // pairing right; this only refuses to assume it.
+    const withBoost = steps.filter((s) => 'keywordBoostFactor' in s.params)
+    expect(withBoost.length).toBeGreaterThan(0)
+    for (const step of withBoost) expect(step.params.keywordBoostFactor).toBe(7)
+  })
+
+  test("and the comment chance reaches every member that accepts one", () => {
+    // The gap this closes: eight of nine styles sent the like and not the
+    // comment, so a session's keywords tilted what a phone liked and never
+    // what it opened and read.
+    const plan = planWarmup({ devices: fleet(30), settings: settings({ like: { chance: 0.1, commentChance: 0.33, keywordBoost: 3 } }), platforms: PLATFORMS, phase: 0, nowMs: NOW, random: rng(6) })
+    const withComments = plan.flatMap((a) => a.steps).filter((s) => 'commentProbability' in s.params)
+    expect(withComments.length).toBeGreaterThan(0)
+    for (const step of withComments) expect(step.params.commentProbability).toBe(0.33)
   })
 })
 

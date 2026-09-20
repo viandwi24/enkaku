@@ -29,7 +29,7 @@ import {
 import { PLATFORM_IDS, type PlatformId } from '../../platforms'
 import { DevicePicker, newPick, pickRefusal, resolvePick, type DevicePick } from './device-picker'
 import { readDuration, rollUpByDevice, sessionReport, type DeviceRollup } from '../../warmup-report'
-import { listDevices, listGroups, listWarmupRuns, pickHost, platformLabel, runMember, type Device, type Group, type WarmupRun, type WarmupStep } from '../shared'
+import { listDevices, listGroups, listWarmupRuns, pickHost, platformLabel, runMember, setSessionStopped, type Device, type Group, type WarmupRun, type WarmupStep } from '../shared'
 
 /**
  * The Warm-up screen (plan 900 D5, wave 4).
@@ -152,20 +152,13 @@ export function WarmupPanel({ refreshKey, onOpen, onNew }: { refreshKey: number;
   const [reloadKey, setReloadKey] = useState(0)
   const { run, isPending } = useAction()
 
-  /*
-    Stopping writes through a phone, like every other member: `runMember` needs
-    a device to carry the paperwork, and refusing early is better than a button
-    that appears to work on a farm with nothing online.
-  */
+  /* Stopping needs no phone: it writes this plugin's own rows and cancels the farm's jobs, both as the operator. */
   const stopSession = useCallback(
     (group: Group, action: 'stop' | 'start') => {
       void run(
         `stop:${group.id}`,
-        async () => {
-          const host = pickHost(await listDevices())
-          if (host === null) throw new Error('No phone is online. This writes through one of the farm’s own phones, so at least one has to be connected — nothing has been changed.')
-          return runMember('smm/stop-session@latest', { groupId: group.id, action }, host.id)
-        },
+        /* No phone needed — see `setSessionStopped`. */
+        () => setSessionStopped(group, action),
         {
           success:
             action === 'stop'

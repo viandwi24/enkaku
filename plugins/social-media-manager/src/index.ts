@@ -18,7 +18,6 @@ import { platformPostTexts } from './platform-captions'
 import { GROUP_PREFIX, GroupSchema, groupKeyFor, isRowDue, roomInFlight, withProgress, type Group, type RowState } from './groups'
 import retryFailed from './retry-failed'
 import addWarmup from './add-warmup'
-import stopSession from './stop-session'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
 import { WARMUP_PREFIX, WarmupRunSchema, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRun } from './warmup-runs'
 import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
@@ -82,6 +81,29 @@ import {
  * memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.57.1 — Stop needs no phone, and the session list counts phones.**
+ *   Two things the owner found in one look at 0.57.0.
+ *
+ *   *"masa mau stop atau start harus jalanin jobs terpisah dulu, ini buat
+ *   apa?"* — and they were right. Stop was a member, so halting a session
+ *   needed a phone online: the one condition you cannot count on at the moment
+ *   you most want to stop everything. It now runs in the browser
+ *   (`ui/shared.ts`'s `setSessionStopped`) through doors the operator already
+ *   has — this plugin's own KV, which Remove has always written, and the
+ *   farm's `POST /api/jobs/:id/cancel`. `smm/stop-session` is gone and
+ *   `job.cancel` left the permissions with it: the plugin is never granted the
+ *   power to cancel work. `add-warmup` stays a member, and the reason is the
+ *   one Stop lacked — a SCHEDULE can only run a script, and a nightly warm-up
+ *   has to be one.
+ *
+ *   And *"kok ada yang waiting ... jangan sampai ghost state"*: the session
+ *   list reported a fourteen-phone farm as "42 phones", because it counted
+ *   stored ROWS and a three-phase session stores three per phone. The states
+ *   were real; the noun was wrong, which is worse — a number nobody can check
+ *   against the shelf makes every number beside it suspect. `warmupProgress`
+ *   now rolls a phone's phases up first, by the same ladder the detail page
+ *   uses, and the two share one implementation so they cannot drift.
  *
  * - **0.57.0 — a warm-up you can start, stop and actually read.** Five things,
  *   all of them from the owner using 0.56.0 on a real fleet:
@@ -2105,11 +2127,11 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.57.0',
+  version: '0.57.1',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
-  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts, addWarmup, stopSession],
+  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts, addWarmup],
   /*
     Plan 315 — workflows this plugin ships. Registered on the farm as
     `smm/<name>` when this version is activated, read-only there; an operator
@@ -2143,7 +2165,7 @@ export default definePlugin({
      * exactly one place — `stop-session.ts`, on job ids the session's own rows
      * are waiting for — and never on a job this plugin did not dispatch.
      */
-    permissions: ['device.list', 'job.run', 'job.get', 'job.cancel', 'artifact.get', 'actions.run'],
+    permissions: ['device.list', 'job.run', 'job.get', 'artifact.get', 'actions.run'],
     setup: (ctx) => {
       const timer = setInterval(() => {
         void maybeRunTick(ctx).catch((err) => ctx.log.warn('router tick failed', { error: messageOf(err) }))

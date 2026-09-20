@@ -1,5 +1,6 @@
 import { api } from '@enkaku/ui'
 import { z } from 'zod'
+import { resumeWarmupRun, stopPostRow, stopWarmupRun } from '../session-control'
 
 /**
  * The one screen's shared vocabulary: what it reads from the farm, and how.
@@ -241,6 +242,101 @@ export async function listWarmupRuns(groupId: string): Promise<WarmupRun[]> {
     if (parsed.success) runs.push(parsed.data)
   }
   return runs.sort((a, b) => a.phase - b.phase || (a.deviceName ?? a.deviceId).localeCompare(b.deviceName ?? b.deviceId))
+}
+
+/** A response whose body this caller has no use for. */
+const Ignored = z.unknown()
+
+/**
+ * Write one entry into this plugin's own KV, as the operator.
+ *
+ * `PUT /api/plugins/smm/data/entry` needs `plugin.data` and forces the
+ * namespace to the path's — there is no request shape that reaches another
+ * plugin's rows. Remove has always written this way; stopping now does too.
+ */
+async function writeEntry(key: string, value: unknown): Promise<void> {
+  await api(`${CORE}/api/plugins/smm/data/entry`, Ignored, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ scope: 'global', key, value }),
+  })
+}
+
+/**
+ * Stop a session, or start it again — from the BROWSER, with no job at all.
+ *
+ * ## Why this is not a member
+ *
+ * It was one, for exactly as long as it took the owner to ask the obvious
+ * question: *"masa mau stop atau start harus jalanin jobs terpisah dulu, ini
+ * buat apa?"* A member runs on a device, so stopping a runaway session needed
+ * a phone to be online — the one condition you cannot count on at the moment
+ * you most want to stop everything, and the one thing stopping has no use for.
+ *
+ * Every door this needs is already open to the operator in the browser: the
+ * plugin's own KV (`PUT /api/plugins/smm/data/entry`, which Remove has always
+ * used) and the farm's own `POST /api/jobs/:id/cancel`. Nothing here needs the
+ * plugin's permissions, which is why `job.cancel` is NOT in them — cancelling
+ * happens as the operator, on jobs this session's own rows name.
+ *
+ * `add-warmup` stays a member, and the difference is worth stating because the
+ * question applies to it too: a SCHEDULE can only run a script. A warm-up that
+ * fires every night has to be one. Stopping is never scheduled.
+ *
+ * ## What it does, in order
+ *
+ * The flag first, so a half-done stop leaves a session that sends nothing
+ * rather than one that cancelled its work and carried on. Then the rows, each
+ * pulled back by `session-control.ts`, and each cancelled job named by those
+ * rows. Failures to cancel are counted, not thrown: a job that finished a
+ * second ago refuses, and the row is owed again either way.
+ */
+export async function setSessionStopped(group: Group, action: 'stop' | 'start'): Promise<{ cancelled: number; couldNotCancel: number; pulled: number }> {
+  const stop = action === 'stop'
+  const now = Math.floor(Date.now() / 1000)
+
+  await writeEntry(`group:${group.id}`, { ...group, stopped: stop })
+
+  let cancelled = 0
+  let couldNotCancel = 0
+  let pulled = 0
+
+  const cancelJobs = async (jobIds: readonly string[]): Promise<void> => {
+    for (const jobId of jobIds) {
+      try {
+        await api(`${CORE}/api/jobs/${encodeURIComponent(jobId)}/cancel`, Ignored, { method: 'POST' })
+        cancelled += 1
+      } catch {
+        couldNotCancel += 1
+      }
+    }
+  }
+
+  if (group.kind === 'warmup') {
+    for (const row of await readAll(`warmup:${group.id}:`)) {
+      const parsed = WarmupRunSchema.safeParse(row.value)
+      if (!parsed.success) continue
+      const next = stop ? stopWarmupRun(parsed.data, now) : { row: resumeWarmupRun(parsed.data, now), cancel: [] as string[], pulled: 0 }
+      if (next.row === parsed.data) continue
+      pulled += next.pulled
+      await cancelJobs(next.cancel)
+      await writeEntry(row.key, next.row)
+    }
+  } else if (stop) {
+    // Starting a post session pulls nothing back: its rows keep the turns
+    // `start-group` stamped, and the flag alone decides whether they go.
+    for (const row of await readAll('post:')) {
+      const parsed = PostSchema.safeParse(row.value)
+      if (!parsed.success || parsed.data.groupId !== group.id) continue
+      const next = stopPostRow(parsed.data, now)
+      if (next.row === parsed.data) continue
+      pulled += next.pulled
+      await cancelJobs(next.cancel)
+      await writeEntry(row.key, next.row)
+    }
+  }
+
+  return { cancelled, couldNotCancel, pulled }
 }
 
 /** Does this session carry any skip rule at all? What decides whether the page says anything about them. */

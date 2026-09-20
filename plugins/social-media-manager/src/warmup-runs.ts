@@ -318,9 +318,30 @@ export interface WarmupProgress {
 
 /** The session's counts, over its rows. */
 export function warmupProgress(runs: readonly WarmupRun[]): WarmupProgress {
-  const out: WarmupProgress = { devices: runs.length, waiting: 0, running: 0, done: 0, partial: 0, failed: 0, skipped: 0 }
+  /*
+    Counted PER PHONE, not per row.
+
+    A session stores a row per phone per phase, so a three-phase session over
+    fourteen phones has forty-two rows — and this used to report them as
+    "42 phones", on a farm with fourteen. The owner read it and asked whether
+    the states were real at all (2026-09-20: *"jangan sampai ghost state"*).
+    They were real; the NOUN was wrong, which is worse, because a number that
+    cannot be checked against the farm makes every number beside it suspect.
+
+    So the phases of one phone roll up first, by the same ladder
+    `warmup-report.ts` uses — one phone, one verdict, and the total is a number
+    the operator can count on the shelf.
+  */
+  const byDevice = new Map<string, WarmupRunState[]>()
   for (const run of runs) {
-    const state = warmupRunState(run.steps)
+    const list = byDevice.get(run.deviceId)
+    if (list) list.push(warmupRunState(run.steps))
+    else byDevice.set(run.deviceId, [warmupRunState(run.steps)])
+  }
+
+  const out: WarmupProgress = { devices: byDevice.size, waiting: 0, running: 0, done: 0, partial: 0, failed: 0, skipped: 0 }
+  for (const states of byDevice.values()) {
+    const state = rollUpPhases(states)
     if (state === 'pending') out.waiting += 1
     else if (state === 'running') out.running += 1
     else if (state === 'done') out.done += 1
@@ -329,6 +350,29 @@ export function warmupProgress(runs: readonly WarmupRun[]): WarmupProgress {
     else out.skipped += 1
   }
   return out
+}
+
+/**
+ * One phone's phases, as one state.
+ *
+ * Kept here rather than imported from `warmup-report.ts` so the two sides of
+ * this plugin cannot disagree about it — `warmup-report.ts`'s `rollUpState`
+ * delegates to this one, and `warmup-report.test.ts` holds them equal.
+ */
+export function rollUpPhases(states: readonly WarmupRunState[]): WarmupRunState {
+  const live = states.filter((state) => state !== 'skipped')
+  if (live.length === 0) return states.length === 0 ? 'pending' : 'skipped'
+  if (live.some((state) => state === 'running')) return 'running'
+  if (live.some((state) => state === 'partial')) return 'partial'
+  const done = live.filter((state) => state === 'done').length
+  const failed = live.filter((state) => state === 'failed').length
+  const pending = live.filter((state) => state === 'pending').length
+  // Something answered and something has not: still running. Calling it
+  // `partial` would claim the session is over.
+  if (pending > 0 && done + failed > 0) return 'running'
+  if (pending > 0) return 'pending'
+  if (done > 0 && failed > 0) return 'partial'
+  return failed > 0 ? 'failed' : 'done'
 }
 
 /** The session's own one-liner, in the words the Posts page already uses. */
@@ -341,7 +385,8 @@ export function warmupSummary(progress: WarmupProgress): string {
     progress.failed > 0 ? `${progress.failed} failed` : null,
     progress.skipped > 0 ? `${progress.skipped} skipped` : null,
   ].filter((part): part is string => part !== null)
-  return parts.length === 0 ? `${progress.devices} phones` : `${parts.join(', ')} of ${progress.devices} phones`
+  const phones = `${progress.devices} ${progress.devices === 1 ? 'phone' : 'phones'}`
+  return parts.length === 0 ? phones : `${parts.join(', ')} of ${phones}`
 }
 
 /**

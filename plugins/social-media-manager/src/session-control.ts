@@ -1,7 +1,13 @@
-import type { Attempt, Post } from './posts'
-import { rollUp, withRetired } from './posts'
-import type { WarmupRun } from './warmup-runs'
-import { withRunSummary } from './warmup-runs'
+/**
+ * Deliberately imports NOTHING from `posts.ts` or `warmup-runs.ts`.
+ *
+ * The same rows are read with two schemas — the service's and the browser
+ * mirror in `ui/shared.ts` — and since 0.57.1 the STOP button runs in the
+ * browser (see the header). One implementation has to satisfy both, so this
+ * module states the little it needs of a row and the two helpers it needs of
+ * `posts.ts`, rather than depending on either schema. `warmup-report.ts` is
+ * built the same way for the same reason.
+ */
 
 /**
  * Stopping and starting a session, for both kinds.
@@ -37,6 +43,56 @@ import { withRunSummary } from './warmup-runs'
  * `planDispatch` and `planWarmupTick` already have.
  */
 
+/** What this module needs of a post attempt. */
+export interface ControlAttempt {
+  jobId: string
+  state: string
+  error?: string | null
+  settledAt?: number | null
+}
+
+/** And of one platform's dispatch on a post row. */
+export interface ControlPlatformState {
+  attempts: ControlAttempt[]
+  history: ControlAttempt[]
+  state: string
+  deviceCount: number
+  note: string | null
+}
+
+export interface ControlPost {
+  platforms: readonly string[]
+  dispatch: Record<string, ControlPlatformState | undefined>
+}
+
+/** And of a warm-up step and row. */
+export interface ControlStep {
+  state: string
+  jobId: string | null
+  notBeforeAt: number
+  startedAt?: number | null
+  settledAt?: number | null
+  error?: string | null
+}
+
+export interface ControlRun {
+  steps: ControlStep[]
+}
+
+/** How many replaced attempts a platform keeps — `posts.ts`'s own `HISTORY_LIMIT`, restated so this module depends on nothing. */
+const HISTORY_LIMIT = 20
+
+/** `posts.ts`'s `rollUp`, restated for the same reason. A platform's state, from the attempts left on it. */
+function rollUp(attempts: readonly ControlAttempt[]): string {
+  if (attempts.length === 0) return 'pending'
+  if (attempts.some((a) => a.state === 'queued')) return 'dispatched'
+  const ok = attempts.filter((a) => a.state === 'success').length
+  const bad = attempts.filter((a) => a.state === 'failed').length
+  if (ok === attempts.length) return 'succeeded'
+  if (bad === attempts.length) return 'failed'
+  return 'partial'
+}
+
 /** A row rewritten by a stop, and the jobs the caller must now cancel. */
 export interface StopResult<R> {
   row: R
@@ -55,8 +111,8 @@ const WAS_STOPPED = 'The session was stopped, so this attempt was cancelled. Sta
  * `unverified` are all answers that already happened, and a stop must not
  * rewrite history — least of all a success, which would send a video twice.
  */
-export function stopPostRow(post: Post, now: number): StopResult<Post> {
-  const dispatch: Post['dispatch'] = { ...post.dispatch }
+export function stopPostRow<P extends ControlPost>(post: P, now: number): StopResult<P> {
+  const dispatch: Record<string, ControlPlatformState | undefined> = { ...post.dispatch }
   const cancel: string[] = []
   let pulled = 0
 
@@ -65,11 +121,11 @@ export function stopPostRow(post: Post, now: number): StopResult<Post> {
     if (!state) continue
     const inFlight = state.attempts.filter((attempt) => attempt.state === 'queued')
     if (inFlight.length === 0) continue
-    const kept: Attempt[] = state.attempts.filter((attempt) => attempt.state !== 'queued')
-    const retired: Attempt[] = inFlight.map((attempt) => ({ ...attempt, state: 'failed' as const, error: WAS_STOPPED, settledAt: now }))
+    const kept = state.attempts.filter((attempt) => attempt.state !== 'queued')
+    const retired = inFlight.map((attempt) => ({ ...attempt, state: 'failed', error: WAS_STOPPED, settledAt: now }))
     for (const attempt of inFlight) if (!cancel.includes(attempt.jobId)) cancel.push(attempt.jobId)
     pulled += inFlight.length
-    dispatch[platformId] = { ...state, attempts: kept, history: withRetired(state.history, retired), state: rollUp(kept), deviceCount: kept.length, note: WAS_STOPPED }
+    dispatch[platformId] = { ...state, attempts: kept, history: [...state.history, ...retired].slice(-HISTORY_LIMIT), state: rollUp(kept), deviceCount: kept.length, note: WAS_STOPPED }
   }
 
   return { row: pulled === 0 ? post : { ...post, dispatch }, cancel, pulled }
@@ -83,16 +139,23 @@ export function stopPostRow(post: Post, now: number): StopResult<Post> {
  * re-bases — so a stopped-and-started session runs the rest of the plan, not a
  * compressed version of it.
  */
-export function stopWarmupRun(run: WarmupRun, now: number): StopResult<WarmupRun> {
+export function stopWarmupRun<R extends ControlRun>(run: R, now: number): StopResult<R> {
   const cancel: string[] = []
   let pulled = 0
   const steps = run.steps.map((step) => {
     if (step.state !== 'queued') return step
     if (step.jobId !== null && !cancel.includes(step.jobId)) cancel.push(step.jobId)
     pulled += 1
-    return { ...step, state: 'pending' as const, jobId: null, startedAt: null, settledAt: null, error: null, notBeforeAt: Math.max(step.notBeforeAt, now) }
+    return { ...step, state: 'pending', jobId: null, startedAt: null, settledAt: null, error: null, notBeforeAt: Math.max(step.notBeforeAt, now) }
   })
-  return { row: pulled === 0 ? run : withRunSummary({ ...run, steps }), cancel, pulled }
+  /*
+    The row's own `state`/`summary` are NOT recomputed here — that belongs to
+    `withRunSummary`, which the service has and the browser mirror does not.
+    The caller applies it where it can, and the router's next tick fixes it
+    where it cannot; a stale summary for one tick is a smaller cost than this
+    module depending on a schema.
+  */
+  return { row: pulled === 0 ? run : { ...run, steps }, cancel, pulled }
 }
 
 /**
@@ -114,7 +177,7 @@ export function stopWarmupRun(run: WarmupRun, now: number): StopResult<WarmupRun
  * Returns the row unchanged when nothing is waiting or nothing is overdue,
  * so a session started again within its own pacing keeps the plan it had.
  */
-export function resumeWarmupRun(run: WarmupRun, now: number): WarmupRun {
+export function resumeWarmupRun<R extends ControlRun>(run: R, now: number): R {
   const waiting = run.steps.filter((step) => step.state === 'pending')
   if (waiting.length === 0) return run
   const earliest = Math.min(...waiting.map((step) => step.notBeforeAt))

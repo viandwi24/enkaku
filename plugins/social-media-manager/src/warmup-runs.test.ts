@@ -352,3 +352,47 @@ describe('sequenceOutcome — which activity in a sequence actually failed', () 
     expect(sequenceOutcome(steps(), 'step "s-1" failed: boom')).toBeNull()
   })
 })
+
+describe('warmupProgress counts PHONES, not stored rows', () => {
+  /*
+    A session stores a row per phone per phase. Reporting those as phones gave
+    a fourteen-phone farm "42 phones", and the owner rightly asked whether any
+    of the states beside it were real. They were; the noun was wrong, which is
+    worse — a number nobody can check against the shelf makes every number
+    beside it suspect.
+  */
+  const rowFor = (deviceId: string, phase: number, state: WarmupStepState): WarmupRun =>
+    WarmupRunSchema.parse({
+      version: 1,
+      groupId: 'g1',
+      deviceId,
+      phase,
+      platform: 'youtube',
+      steps: [{ activityId: `a${phase}`, title: 'Home feed', script: 'youtube/home-feed', atSec: 0, notBeforeAt: 0, state }],
+    })
+
+  test('three phases of one phone are one phone', () => {
+    const progress = warmupProgress([rowFor('d1', 0, 'success'), rowFor('d1', 1, 'success'), rowFor('d1', 2, 'success')])
+    expect(progress.devices).toBe(1)
+    expect(progress.done).toBe(1)
+  })
+
+  test('a phone part way through its phases reads running, not one done and one waiting', () => {
+    const progress = warmupProgress([rowFor('d1', 0, 'success'), rowFor('d1', 1, 'pending')])
+    expect(progress.devices).toBe(1)
+    expect(progress.running).toBe(1)
+    expect(progress.done).toBe(0)
+    expect(progress.waiting).toBe(0)
+  })
+
+  test('the buckets always add up to the phone count', () => {
+    const runs = [rowFor('a', 0, 'success'), rowFor('a', 1, 'failed'), rowFor('b', 0, 'pending'), rowFor('c', 0, 'queued')]
+    const p = warmupProgress(runs)
+    expect(p.waiting + p.running + p.done + p.partial + p.failed + p.skipped).toBe(p.devices)
+    expect(p.devices).toBe(3)
+  })
+
+  test('the summary says phones and means phones', () => {
+    expect(warmupSummary(warmupProgress([rowFor('a', 0, 'success'), rowFor('a', 1, 'success')]))).toBe('1 done of 1 phone')
+  })
+})

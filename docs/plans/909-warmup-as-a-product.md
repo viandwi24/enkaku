@@ -54,6 +54,28 @@ The same honesty bounds "estimated". The rows know when an activity is DUE; they
 do not know how long a script takes on a phone. So the stat is **Last due**, and
 is never worded as a finish time.
 
+### D3a — Stop runs in the BROWSER, and needs no phone (0.57.1)
+
+It shipped as a member, which meant halting a session needed a phone online.
+The owner asked the obvious question — *"masa mau stop atau start harus
+jalanin jobs terpisah dulu, ini buat apa?"* — and there is no good answer: a
+member runs on a device, and the moment you most want to stop everything is
+the moment you can least count on a device.
+
+Both doors were already open to the operator: this plugin's own KV
+(`PUT /api/plugins/smm/data/entry`, which Remove has always used) and the
+farm's `POST /api/jobs/:id/cancel`. So Stop is `ui/shared.ts`'s
+`setSessionStopped`, `smm/stop-session` is gone, and `job.cancel` left the
+permissions with it — the plugin is never granted the power to cancel work.
+
+`add-warmup` stays a member, and the contrast is the rule: **a member is for
+work a SCHEDULE has to be able to run.** A nightly warm-up is one. Stopping is
+never scheduled.
+
+`session-control.ts` is therefore generic over the little it needs of a row,
+like `warmup-report.ts`, so the service's schema and the browser mirror share
+one implementation.
+
 ### D3 — Stop is three promises, and Start is a fourth
 
 1. Nothing new goes out — `group.stopped`, read by the router each tick.
@@ -73,6 +95,18 @@ session that sends nothing, never one that cancelled and carried on.
 
 **Stop is not Remove.** Removing a session stopped it by deleting every row
 saying what the phones had done. That is why this exists.
+
+### D3b — The session list counts phones, not rows (0.57.1)
+
+*"kok ada yang waiting ... jangan sampai ghost state"*. The list reported a
+fourteen-phone farm as "42 phones": a three-phase session stores three rows per
+phone and the summary counted rows. The states were real; the NOUN was wrong,
+which is worse — a number nobody can check against the shelf makes every number
+beside it suspect.
+
+`warmupProgress` now rolls a phone's phases up first, with the ladder in
+`rollUpPhases`, which `warmup-report.ts` delegates to so the list and the
+detail page cannot drift.
 
 ### D4 — A phone covers each platform once, and a phase past that gives it nothing
 

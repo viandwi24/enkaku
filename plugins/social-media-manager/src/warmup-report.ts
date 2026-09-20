@@ -1,4 +1,4 @@
-import { WARMUP_STEP_STATES, type WarmupRunState, type WarmupStepState } from './warmup-runs'
+import { WARMUP_STEP_STATES, rollUpPhases, type WarmupRunState, type WarmupStepState } from './warmup-runs'
 
 /**
  * What a warm-up session looks like when you stand back from it.
@@ -86,25 +86,13 @@ export interface DeviceRollup<R extends ReportRun = ReportRun> {
 /**
  * The phase states of one phone, as one state.
  *
- * The same ladder `warmupRunState` walks over steps, for the same reason: a
- * phone that finished phase 1 and is mid-way through phase 2 is `running`, and
- * a phone whose phases went one good and one bad is `partial` — the word that
- * exists precisely so a mixed outcome is not reported as a total one.
+ * The ladder itself lives in `warmup-runs.ts`, because the session LIST needs
+ * it too — its one-line summary counts phones, and counting rows there is what
+ * made a fourteen-phone farm report "42 phones". One implementation, so the
+ * list and the detail page cannot disagree about what a phone is doing.
  */
 export function rollUpState(states: readonly WarmupRunState[]): WarmupRunState {
-  const live = states.filter((state) => state !== 'skipped')
-  if (live.length === 0) return states.length === 0 ? 'pending' : 'skipped'
-  if (live.some((state) => state === 'running')) return 'running'
-  if (live.some((state) => state === 'partial')) return 'partial'
-  const done = live.filter((state) => state === 'done').length
-  const failed = live.filter((state) => state === 'failed').length
-  const pending = live.filter((state) => state === 'pending').length
-  // Something answered and something has not: still running, from where a
-  // reader sits. Calling it `partial` here would claim the session is over.
-  if (pending > 0 && done + failed > 0) return 'running'
-  if (pending > 0) return 'pending'
-  if (done > 0 && failed > 0) return 'partial'
-  return failed > 0 ? 'failed' : 'done'
+  return rollUpPhases(states)
 }
 
 /** One entry per phone, phones in the order their rows first appear. */

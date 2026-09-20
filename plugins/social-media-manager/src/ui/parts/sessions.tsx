@@ -61,6 +61,7 @@ import {
   type Device,
   type Group,
   type Post,
+  setSessionStopped,
 } from '../shared'
 import { AutoStatus, BulkProgress, ReadinessNote, isWorking, stateOf, useAutoCaptionSetup, useBulkRun, type AutoState } from './autocaption-ui'
 
@@ -664,16 +665,20 @@ function useSessionActions(reload: () => void, onRemoved?: (group: Group) => voi
    * is reversible — the owner asked for exactly that, *"tapi bisa di start
    * lagi juga"*.
    *
-   * The member cancels what is running and puts it back in the queue; this
-   * only says which way to move and reports what came back.
+   * `setSessionStopped` (in `ui/shared.ts`) cancels what is running and puts it
+   * back in the queue, straight from the browser; this only says which way to
+   * move and reports what came back.
    */
   function stopSession(group: Group, action: 'stop' | 'start'): void {
     void run(
       `stop:${group.id}`,
-      async () => {
-        const host = await hostOrRefuse()
-        return runMember('smm/stop-session@latest', { groupId: group.id, action }, host.id)
-      },
+      /*
+        No `hostOrRefuse` here, and that is the point: stopping needs no phone.
+        It was a member until the owner asked why halting a session should
+        need a job, and the honest answer was that it should not — least of all
+        when the reason to stop is that the phones are misbehaving.
+      */
+      () => setSessionStopped(group, action),
       {
         success:
           action === 'stop'
@@ -3219,6 +3224,12 @@ function SessionRow({
         >
           {group.title}
         </button>
+        {/* Said on the row, not only by the absence of a Stop button: a stopped session that still shows "4 waiting" otherwise reads as one that is stuck. */}
+        {group.stopped ? (
+          <Badge variant="outline" className="ml-1.5 align-middle text-warn">
+            stopped
+          </Badge>
+        ) : null}
         <div className="mt-0.5 text-[11px] text-faint">{relativeTime(group.createdAt)}</div>
         <div className="text-[11px] text-faint @2xl:hidden">{platforms}</div>
         <div className="text-[11px] text-faint @5xl:hidden">{pacing}</div>
@@ -3444,10 +3455,12 @@ function SessionActions({
   return (
     <div className={cn('flex items-center justify-end gap-1.5', className)}>
       {/*
-        Stopped sessions offer Start-again first and nothing else: the two
-        Starts mean different things (give the waiting videos their turns,
-        versus let this session send at all) and showing both would make the
-        operator guess which one they need.
+        A stopped session offers Start again, and NOT Start or Retry failed.
+        The two Starts mean different things — give the waiting videos their
+        turns, versus let this session send at all — and side by side the
+        operator has to guess which one they need. Retry failed is worse than
+        useless while stopped: it re-queues rows the gate will not send, so it
+        looks like it did nothing.
       */}
       {group.stopped ? (
         <Button size="sm" disabled={busy} onClick={() => onStop('start')}>
@@ -3455,9 +3468,10 @@ function SessionActions({
           Start again
         </Button>
       ) : null}
+      {group.stopped ? null : (
       <ConfirmDialog
         trigger={
-          <Button size="sm" variant={group.stopped ? 'outline' : 'default'} disabled={busy}>
+          <Button size="sm" disabled={busy}>
             <PlayIcon aria-hidden />
             Start
           </Button>
@@ -3475,7 +3489,9 @@ function SessionActions({
         }
         onConfirm={onStart}
       />
+      )}
 
+      {group.stopped ? null : (
       <ConfirmDialog
         trigger={
           <Button variant="outline" size="sm" disabled={busy}>
@@ -3496,6 +3512,7 @@ function SessionActions({
         }
         onConfirm={onRetry}
       />
+      )}
 
       {group.stopped ? null : (
         <ConfirmDialog
