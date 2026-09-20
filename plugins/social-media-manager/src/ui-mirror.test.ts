@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import { WarmupRowSchema as BrowserRowSchema } from './ui/shared'
+import { GroupSchema as BrowserGroupSchema, PostSchema as BrowserPostSchema, WarmupRowSchema as BrowserRowSchema } from './ui/shared'
+import { GroupSchema } from './groups'
+import { PostSchema } from './posts'
 import { WarmupRowSchema, runsFromPlan, type WarmupRow } from './warmup-rows'
 
 /**
@@ -66,5 +68,59 @@ describe('the browser mirror of a warm-up row', () => {
     const withFuture = { ...row(), somethingAddedLater: { deep: ['value'] } }
     const back = BrowserRowSchema.parse(withFuture) as Record<string, unknown>
     expect(back.somethingAddedLater).toEqual({ deep: ['value'] })
+  })
+})
+
+/**
+ * The other two rows the browser writes back: a SESSION (Stop and Start again
+ * on both kinds) and a POST row (the Posts page's Stop).
+ *
+ * The session mirror was strict and already two fields behind — `target`,
+ * which is the phones the session covers, and `lastRunAt`, which is the stamp
+ * a scheduled run reads to avoid starting eighty times over. A Stop would have
+ * written both away. Unfired, and only because nobody had pressed Stop on a
+ * targeted session yet; the warm-up row's version of this bug had already
+ * stalled a phone.
+ */
+describe('the browser mirror of a session and a post row', () => {
+  const session = () =>
+    GroupSchema.parse({
+      version: 1,
+      id: 'g1',
+      title: 'Warm-up pagi',
+      createdAt: 1_800_000_000,
+      platforms: ['tiktok', 'youtube', 'instagram'],
+      assignment: 'one-per-phone',
+      pacing: { order: 'as-listed', concurrency: 4, gapSec: [8, 20] },
+      videoArtifactIds: [],
+      kind: 'warmup',
+      warmup: { keywords: ['trading'] },
+      target: { mode: 'labels', labels: ['tiktok'], exceptDeviceIds: ['d9'] },
+      lastRunAt: 1_800_000_500,
+    })
+
+  test('a session survives the browser round trip with every field intact', () => {
+    const original = session()
+    expect(GroupSchema.parse(BrowserGroupSchema.parse(original))).toEqual(original)
+  })
+
+  test('which phones a session covers is one of them, because a Stop used to write it away', () => {
+    const back = GroupSchema.parse(BrowserGroupSchema.parse(session()))
+    expect(back.target.labels).toEqual(['tiktok'])
+    expect(back.target.exceptDeviceIds).toEqual(['d9'])
+    expect(back.lastRunAt).toBe(1_800_000_500)
+  })
+
+  test('a post row survives it too', () => {
+    const original = PostSchema.parse({
+      version: 1,
+      videoArtifactId: 'v1',
+      caption: 'hi',
+      platforms: ['youtube'],
+      createdAt: 1,
+      dispatch: { youtube: { state: 'pending', at: 1, attempts: [], history: [], deviceCount: 0, note: null } },
+      lastNote: null,
+    })
+    expect(PostSchema.parse(BrowserPostSchema.parse(original))).toEqual(original)
   })
 })

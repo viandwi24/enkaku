@@ -83,6 +83,23 @@ import {
  *
  * ## Changelog
  *
+ * - **0.59.5 — the same mirror bug, found in the two places it had not fired
+ *   yet.** After 0.59.3 fixed the warm-up row, the obvious question was which
+ *   OTHER rows the browser writes back: a SESSION (Stop and Start again, both
+ *   kinds) and a POST row (the Posts page's Stop). Both mirrors were strict,
+ *   and the session one was already two fields behind — `target`, which is the
+ *   phones the session covers, and `lastRunAt`, the stamp a scheduled run
+ *   reads to avoid starting eighty times over.
+ *
+ *   So a Stop would have written both away: the next run would have reached a
+ *   fleet nobody chose, and a scheduled warm-up would have lost its only guard
+ *   against a fleet-sized stampede. Unfired, and only because nobody had
+ *   pressed Stop on a targeted session yet — the warm-up row's version of this
+ *   had already stalled a phone.
+ *
+ *   All of them are loose now and `ui-mirror.test.ts` covers all three; made
+ *   strict again, its three new cases fail.
+ *
  * - **0.59.4 — a refusal is judged by its CODE, not by its wording.**
  *   `isPermanentDispatchFailure` matched substrings, and missed the very case
  *   it was built for: the broker's refusal message names the capability and
@@ -2398,7 +2415,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.59.4',
+  version: '0.59.5',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

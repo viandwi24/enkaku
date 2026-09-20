@@ -344,6 +344,14 @@ the first time the service gains a field, and it fails the same silent way.
 `ui-mirror.test.ts` holds the round trip and asserts that a field added
 TOMORROW survives; made strict again, all four of its cases fail.
 
+The obvious follow-up question — which OTHER rows does the browser write
+back? — found the same bug twice more, unfired: a SESSION (Stop and Start
+again, both kinds) and a POST row (the Posts page's Stop). The session mirror
+was already two fields behind, `target` and `lastRunAt`, so a Stop would have
+written away which phones the session covers AND the stamp that stops a
+scheduled run starting eighty times over. All three mirrors are loose now and
+the test covers all three.
+
 **And the router has a heartbeat.** Its `setInterval` stopped twice during this
 work and nothing said so: every session read healthy, every phone sat idle, and
 diagnosing it meant reading storage timestamps by hand. A stamp written at the

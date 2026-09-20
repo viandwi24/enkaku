@@ -134,7 +134,19 @@ export const GroupProgressSchema = z.object({
   skipped: z.number().default(0),
 })
 
-export const GroupSchema = z.object({
+/**
+ * A session, as the browser sees it — LOOSE, and for the reason
+ * `WarmupStepSchema` spells out: this file mirrors schemas the service owns,
+ * and the browser WRITES these rows.
+ *
+ * It was strict and already two fields behind — `target` (which phones the
+ * session covers) and `lastRunAt` (the dedupe stamp a schedule reads). So a
+ * Stop would have written the session back without either: the next run would
+ * have reached a fleet nobody chose, and a scheduled warm-up would have lost
+ * its guard against starting eighty times over. Unfired, and only because
+ * nobody had pressed Stop on a targeted session yet.
+ */
+export const GroupSchema = z.looseObject({
   version: z.literal(1),
   id: z.string(),
   title: z.string(),
@@ -512,7 +524,8 @@ const AttemptMarkSchema = z.object({
   reason: z.string().nullable().default(null),
 })
 
-export const AttemptSchema = z.object({
+/** Loose: it rides inside `PostSchema`, which the browser writes. */
+export const AttemptSchema = z.looseObject({
   jobId: z.string(),
   deviceId: z.string(),
   deviceName: z.string().nullable().default(null),
@@ -543,7 +556,8 @@ export const AttemptSchema = z.object({
 /** The job id a manual attempt carries (`posts.ts` `MANUAL_JOB_PREFIX`): there is no run behind it to link to. */
 export const MANUAL_JOB_PREFIX = 'manual:'
 
-export const PostSchema = z.object({
+/** Loose, like the rest of the mirrors this file keeps — see `WarmupStepSchema`. The Posts Stop writes these rows back. */
+export const PostSchema = z.looseObject({
   version: z.literal(1),
   videoArtifactId: z.string(),
   /** May be empty: a video with no speech has no caption until someone writes one (the router holds a row with neither caption nor hashtags). */
