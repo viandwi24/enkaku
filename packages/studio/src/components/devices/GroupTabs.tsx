@@ -18,6 +18,27 @@ interface Tab {
 
 const ROW = 'flex w-full items-center gap-2.5 rounded-button px-[10px] py-[9px] text-row transition-colors text-text hover:bg-muted disabled:pointer-events-none disabled:opacity-40'
 
+const FORM_WIDTH_PX = 224
+const TAB_MENU_WIDTH_PX = 188
+/** The gap a menu keeps from either edge of the window. */
+const MENU_GUTTER_PX = 8
+
+/**
+ * A menu here is absolutely positioned inside the tab strip's container, so
+ * its `left` is container-relative — and that container is only as wide as
+ * the tabs happen to be. A farm with one or two groups makes it narrower
+ * than the 224px form, and right-aligning the form to it then put the form's
+ * left edge off the left of the screen (owner, 2026-09-20). Clamp the
+ * container-relative left so a menu of `width` stays inside the window with
+ * a gutter on both sides; the window is always wider than either menu, so
+ * the lower bound wins only when the upper one would push it off the left.
+ */
+function clampMenuLeft(container: DOMRect, desired: number, width: number): number {
+  const min = MENU_GUTTER_PX - container.left
+  const max = window.innerWidth - MENU_GUTTER_PX - width - container.left
+  return Math.max(min, Math.min(desired, max))
+}
+
 /** `groups` in `order`, with any group the order does not name (created elsewhere meanwhile) kept at the end. */
 function applyOrder(groups: GroupInfo[], order: readonly string[] | null): GroupInfo[] {
   if (!order) return groups
@@ -60,7 +81,7 @@ export function GroupTabs({
   onSelect: (id: string) => void
   onMutated: () => void
 }) {
-  const [form, setForm] = useState<{ mode: 'new' } | { mode: 'rename'; id: string } | null>(null)
+  const [form, setForm] = useState<({ mode: 'new' } | { mode: 'rename'; id: string }) & { left: number } | null>(null)
   const [draft, setDraft] = useState('')
   const [tabMenu, setTabMenu] = useState<{ id: string; name: string; left: number } | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -161,7 +182,10 @@ export function GroupTabs({
     } else {
       setDraft('')
     }
-    setForm(next)
+    const r = containerRef.current?.getBoundingClientRect()
+    // Right-aligned to the `+` button, then clamped into the window.
+    const left = r ? clampMenuLeft(r, r.width - FORM_WIDTH_PX, FORM_WIDTH_PX) : 0
+    setForm({ ...next, left })
     setTabMenu(null)
   }
 
@@ -179,8 +203,9 @@ export function GroupTabs({
 
   const openTabMenu = (e: React.MouseEvent, t: Tab) => {
     e.preventDefault()
-    const containerLeft = containerRef.current?.getBoundingClientRect().left ?? 0
-    const left = e.currentTarget instanceof HTMLElement ? e.currentTarget.getBoundingClientRect().left - containerLeft : 0
+    const r = containerRef.current?.getBoundingClientRect()
+    const tabLeft = e.currentTarget instanceof HTMLElement ? e.currentTarget.getBoundingClientRect().left : 0
+    const left = r ? clampMenuLeft(r, tabLeft - r.left, TAB_MENU_WIDTH_PX) : 0
     setTabMenu({ id: t.id, name: t.name, left })
   }
 
@@ -260,7 +285,8 @@ export function GroupTabs({
       {form && (
         <div
           data-menu-root="1"
-          className="absolute top-[40px] right-0 z-30 w-[224px] rounded-card border border-border bg-panel p-3 shadow-menu"
+          style={{ left: form.left }}
+          className="absolute top-[40px] z-30 w-[224px] rounded-card border border-border bg-panel p-3 shadow-menu"
         >
           <p className="text-body font-semibold text-text">{form.mode === 'new' ? 'New group' : 'Rename group'}</p>
           <Input
