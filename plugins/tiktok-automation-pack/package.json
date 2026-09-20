@@ -1,9 +1,9 @@
 {
   "name": "@enkaku/plugin-tiktok",
-  "version": "1.53.0",
+  "version": "1.54.0",
   "private": true,
   "type": "module",
-  "description": "TikTok automation pack — watch-and-scroll with human-shaped timing",
+  "description": "TikTok automation pack \u2014 watch-and-scroll with human-shaped timing",
   "enkaku": {
     "plugin": "tiktok",
     "entry": "src/index.ts"

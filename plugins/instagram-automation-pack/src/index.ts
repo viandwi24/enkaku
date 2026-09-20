@@ -3,6 +3,7 @@ import scrollReels from './scroll-reels'
 import checkInbox from './check-inbox'
 import checkActivity from './check-activity'
 import checkProfile from './check-profile'
+import myVideos from './my-videos'
 import searchKeyword from './search-keyword'
 import scrollFeed from './scroll-feed'
 import watchStories from './watch-stories'
@@ -52,12 +53,26 @@ import clearDrafts from './clear-drafts'
  */
 export default definePlugin({
   id: 'instagram',
-  version: '0.13.0',
+  /*
+    0.14.0 — READING AN ACCOUNT'S OWN NUMBERS, WITHOUT WATCHING ANYTHING.
+
+    The owner asked for a recap of how each posted video is doing across the three platforms
+    (2026-09-21), and the Social Media Manager can only recap what a phone can read. `my-videos`
+    is this pack's half: it opens the profile's REELS tab — the Grid-view tab carries no numbers
+    at all, only "at row 1, column 1" — reads the newest reels' play counts, and opens nothing.
+    Playing a reel would add a view to the number it came to read, so a daily recap would inflate
+    what it reports.
+
+    The count is read from `preview_clip_play_count`, an id, and only falls back to the English
+    "View Count" phrase in the cell's description: a reader keyed on that phrase would return zero
+    reels on a translated build while looking like an account with nothing posted.
+  */
+  version: '0.14.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',
   description: 'Browse Reels, the feed, stories and Explore, check inbox, notifications and profile, search, and post Reels — with keyword-tilted random behaviour.',
-  scripts: [scrollReels, checkInbox, checkActivity, checkProfile, searchKeyword, scrollFeed, watchStories, exploreReels, postVideo, clearDrafts],
+  scripts: [scrollReels, checkInbox, checkActivity, checkProfile, myVideos, searchKeyword, scrollFeed, watchStories, exploreReels, postVideo, clearDrafts],
 
   /**
    * ## Changelog

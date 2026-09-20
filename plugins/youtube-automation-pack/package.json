@@ -1,9 +1,9 @@
 {
   "name": "@enkaku/plugin-youtube",
-  "version": "0.48.1",
+  "version": "0.49.0",
   "private": true,
   "type": "module",
-  "description": "YouTube automation pack — search and browse the YouTube app on a farm device",
+  "description": "YouTube automation pack \u2014 search and browse the YouTube app on a farm device",
   "enkaku": {
     "plugin": "youtube",
     "entry": "src/index.ts"

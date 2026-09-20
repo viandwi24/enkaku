@@ -1,0 +1,3043 @@
+{
+ "resourceId": "",
+ "text": "",
+ "desc": "",
+ "className": "hierarchy",
+ "packageName": "",
+ "bounds": {
+  "left": 0,
+  "top": 0,
+  "right": 0,
+  "bottom": 0
+ },
+ "clickable": false,
+ "enabled": true,
+ "focused": false,
+ "index": 0,
+ "children": [
+  {
+   "resourceId": "",
+   "text": "",
+   "desc": "",
+   "className": "android.widget.FrameLayout",
+   "packageName": "com.ss.android.ugc.trill",
+   "bounds": {
+    "left": 0,
+    "top": 0,
+    "right": 720,
+    "bottom": 1640
+   },
+   "clickable": false,
+   "enabled": true,
+   "focused": false,
+   "index": 0,
+   "children": [
+    {
+     "resourceId": "",
+     "text": "",
+     "desc": "",
+     "className": "android.widget.LinearLayout",
+     "packageName": "com.ss.android.ugc.trill",
+     "bounds": {
+      "left": 0,
+      "top": 0,
+      "right": 720,
+      "bottom": 1640
+     },
+     "clickable": false,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": [
+      {
+       "resourceId": "android:id/content",
+       "text": "",
+       "desc": "",
+       "className": "android.widget.FrameLayout",
+       "packageName": "com.ss.android.ugc.trill",
+       "bounds": {
+        "left": 0,
+        "top": 0,
+        "right": 720,
+        "bottom": 1640
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": [
+        {
+         "resourceId": "",
+         "text": "",
+         "desc": "",
+         "className": "android.widget.FrameLayout",
+         "packageName": "com.ss.android.ugc.trill",
+         "bounds": {
+          "left": 0,
+          "top": 0,
+          "right": 720,
+          "bottom": 1640
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": [
+          {
+           "resourceId": "com.ss.android.ugc.trill:id/a37",
+           "text": "",
+           "desc": "",
+           "className": "android.widget.LinearLayout",
+           "packageName": "com.ss.android.ugc.trill",
+           "bounds": {
+            "left": 0,
+            "top": 0,
+            "right": 720,
+            "bottom": 1640
+           },
+           "clickable": false,
+           "enabled": true,
+           "focused": false,
+           "index": 0,
+           "children": [
+            {
+             "resourceId": "",
+             "text": "",
+             "desc": "",
+             "className": "android.widget.FrameLayout",
+             "packageName": "com.ss.android.ugc.trill",
+             "bounds": {
+              "left": 0,
+              "top": 0,
+              "right": 720,
+              "bottom": 1640
+             },
+             "clickable": false,
+             "enabled": true,
+             "focused": false,
+             "index": 0,
+             "children": []
+            }
+           ]
+          },
+          {
+           "resourceId": "com.ss.android.ugc.trill:id/uq6",
+           "text": "",
+           "desc": "",
+           "className": "android.widget.FrameLayout",
+           "packageName": "com.ss.android.ugc.trill",
+           "bounds": {
+            "left": 0,
+            "top": 0,
+            "right": 720,
+            "bottom": 1640
+           },
+           "clickable": false,
+           "enabled": true,
+           "focused": false,
+           "index": 1,
+           "children": [
+            {
+             "resourceId": "com.ss.android.ugc.trill:id/uq9",
+             "text": "",
+             "desc": "",
+             "className": "android.widget.FrameLayout",
+             "packageName": "com.ss.android.ugc.trill",
+             "bounds": {
+              "left": 0,
+              "top": 0,
+              "right": 720,
+              "bottom": 1640
+             },
+             "clickable": false,
+             "enabled": true,
+             "focused": false,
+             "index": 0,
+             "children": [
+              {
+               "resourceId": "com.ss.android.ugc.trill:id/jdh",
+               "text": "",
+               "desc": "",
+               "className": "android.widget.FrameLayout",
+               "packageName": "com.ss.android.ugc.trill",
+               "bounds": {
+                "left": 0,
+                "top": 0,
+                "right": 720,
+                "bottom": 1640
+               },
+               "clickable": false,
+               "enabled": true,
+               "focused": false,
+               "index": 0,
+               "children": [
+                {
+                 "resourceId": "com.ss.android.ugc.trill:id/viewpager",
+                 "text": "",
+                 "desc": "",
+                 "className": "X.05aX",
+                 "packageName": "com.ss.android.ugc.trill",
+                 "bounds": {
+                  "left": 0,
+                  "top": 0,
+                  "right": 720,
+                  "bottom": 1640
+                 },
+                 "clickable": false,
+                 "enabled": true,
+                 "focused": false,
+                 "index": 0,
+                 "children": [
+                  {
+                   "resourceId": "com.ss.android.ugc.trill:id/og6",
+                   "text": "",
+                   "desc": "",
+                   "className": "android.widget.TabHost",
+                   "packageName": "com.ss.android.ugc.trill",
+                   "bounds": {
+                    "left": 0,
+                    "top": 0,
+                    "right": 720,
+                    "bottom": 1640
+                   },
+                   "clickable": false,
+                   "enabled": true,
+                   "focused": false,
+                   "index": 1,
+                   "children": [
+                    {
+                     "resourceId": "",
+                     "text": "",
+                     "desc": "",
+                     "className": "android.widget.LinearLayout",
+                     "packageName": "com.ss.android.ugc.trill",
+                     "bounds": {
+                      "left": 0,
+                      "top": 0,
+                      "right": 720,
+                      "bottom": 1556
+                     },
+                     "clickable": false,
+                     "enabled": true,
+                     "focused": false,
+                     "index": 0,
+                     "children": [
+                      {
+                       "resourceId": "com.ss.android.ugc.trill:id/xqa",
+                       "text": "",
+                       "desc": "",
+                       "className": "android.widget.FrameLayout",
+                       "packageName": "com.ss.android.ugc.trill",
+                       "bounds": {
+                        "left": 0,
+                        "top": 0,
+                        "right": 720,
+                        "bottom": 1556
+                       },
+                       "clickable": false,
+                       "enabled": true,
+                       "focused": false,
+                       "index": 1,
+                       "children": []
+                      }
+                     ]
+                    },
+                    {
+                     "resourceId": "com.ss.android.ugc.trill:id/ofp",
+                     "text": "",
+                     "desc": "",
+                     "className": "android.widget.FrameLayout",
+                     "packageName": "com.ss.android.ugc.trill",
+                     "bounds": {
+                      "left": 0,
+                      "top": 0,
+                      "right": 720,
+                      "bottom": 1556
+                     },
+                     "clickable": false,
+                     "enabled": true,
+                     "focused": false,
+                     "index": 1,
+                     "children": [
+                      {
+                       "resourceId": "com.ss.android.ugc.trill:id/xqa",
+                       "text": "",
+                       "desc": "",
+                       "className": "android.widget.FrameLayout",
+                       "packageName": "com.ss.android.ugc.trill",
+                       "bounds": {
+                        "left": 0,
+                        "top": 0,
+                        "right": 720,
+                        "bottom": 1556
+                       },
+                       "clickable": false,
+                       "enabled": true,
+                       "focused": false,
+                       "index": 0,
+                       "children": [
+                        {
+                         "resourceId": "com.ss.android.ugc.trill:id/svj",
+                         "text": "",
+                         "desc": "",
+                         "className": "android.widget.RelativeLayout",
+                         "packageName": "com.ss.android.ugc.trill",
+                         "bounds": {
+                          "left": 0,
+                          "top": 0,
+                          "right": 720,
+                          "bottom": 1556
+                         },
+                         "clickable": false,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 0,
+                         "children": [
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.widget.LinearLayout",
+                           "packageName": "com.ss.android.ugc.trill",
+                           "bounds": {
+                            "left": 0,
+                            "top": 0,
+                            "right": 720,
+                            "bottom": 1556
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 0,
+                           "children": [
+                            {
+                             "resourceId": "com.ss.android.ugc.trill:id/wt8",
+                             "text": "",
+                             "desc": "",
+                             "className": "android.widget.LinearLayout",
+                             "packageName": "com.ss.android.ugc.trill",
+                             "bounds": {
+                              "left": 0,
+                              "top": 0,
+                              "right": 720,
+                              "bottom": 70
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 0,
+                             "children": []
+                            },
+                            {
+                             "resourceId": "com.ss.android.ugc.trill:id/pm2",
+                             "text": "",
+                             "desc": "",
+                             "className": "android.widget.FrameLayout",
+                             "packageName": "com.ss.android.ugc.trill",
+                             "bounds": {
+                              "left": 0,
+                              "top": 70,
+                              "right": 720,
+                              "bottom": 161
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 1,
+                             "children": [
+                              {
+                               "resourceId": "com.ss.android.ugc.trill:id/pmx",
+                               "text": "",
+                               "desc": "",
+                               "className": "android.view.ViewGroup",
+                               "packageName": "com.ss.android.ugc.trill",
+                               "bounds": {
+                                "left": 0,
+                                "top": 70,
+                                "right": 720,
+                                "bottom": 161
+                               },
+                               "clickable": false,
+                               "enabled": true,
+                               "focused": false,
+                               "index": 0,
+                               "children": [
+                                {
+                                 "resourceId": "com.ss.android.ugc.trill:id/pn3",
+                                 "text": "",
+                                 "desc": "",
+                                 "className": "android.widget.LinearLayout",
+                                 "packageName": "com.ss.android.ugc.trill",
+                                 "bounds": {
+                                  "left": 14,
+                                  "top": 70,
+                                  "right": 215,
+                                  "bottom": 161
+                                 },
+                                 "clickable": false,
+                                 "enabled": true,
+                                 "focused": false,
+                                 "index": 0,
+                                 "children": [
+                                  {
+                                   "resourceId": "",
+                                   "text": "",
+                                   "desc": "",
+                                   "className": "android.widget.ImageView",
+                                   "packageName": "com.ss.android.ugc.trill",
+                                   "bounds": {
+                                    "left": 14,
+                                    "top": 80,
+                                    "right": 88,
+                                    "bottom": 150
+                                   },
+                                   "clickable": false,
+                                   "enabled": true,
+                                   "focused": false,
+                                   "index": 0,
+                                   "children": []
+                                  },
+                                  {
+                                   "resourceId": "com.ss.android.ugc.trill:id/zaf",
+                                   "text": "",
+                                   "desc": "",
+                                   "className": "android.widget.Button",
+                                   "packageName": "com.ss.android.ugc.trill",
+                                   "bounds": {
+                                    "left": 88,
+                                    "top": 80,
+                                    "right": 162,
+                                    "bottom": 150
+                                   },
+                                   "clickable": true,
+                                   "enabled": true,
+                                   "focused": false,
+                                   "index": 1,
+                                   "children": []
+                                  }
+                                 ]
+                                },
+                                {
+                                 "resourceId": "com.ss.android.ugc.trill:id/pms",
+                                 "text": "",
+                                 "desc": "",
+                                 "className": "android.widget.LinearLayout",
+                                 "packageName": "com.ss.android.ugc.trill",
+                                 "bounds": {
+                                  "left": 488,
+                                  "top": 70,
+                                  "right": 706,
+                                  "bottom": 161
+                                 },
+                                 "clickable": false,
+                                 "enabled": true,
+                                 "focused": false,
+                                 "index": 1,
+                                 "children": [
+                                  {
+                                   "resourceId": "",
+                                   "text": "",
+                                   "desc": "",
+                                   "className": "android.widget.FrameLayout",
+                                   "packageName": "com.ss.android.ugc.trill",
+                                   "bounds": {
+                                    "left": 488,
+                                    "top": 80,
+                                    "right": 558,
+                                    "bottom": 150
+                                   },
+                                   "clickable": true,
+                                   "enabled": true,
+                                   "focused": false,
+                                   "index": 0,
+                                   "children": [
+                                    {
+                                     "resourceId": "com.ss.android.ugc.trill:id/eyc",
+                                     "text": "",
+                                     "desc": "",
+                                     "className": "android.widget.FrameLayout",
+                                     "packageName": "com.ss.android.ugc.trill",
+                                     "bounds": {
+                                      "left": 488,
+                                      "top": 80,
+                                      "right": 558,
+                                      "bottom": 150
+                                     },
+                                     "clickable": false,
+                                     "enabled": true,
+                                     "focused": false,
+                                     "index": 0,
+                                     "children": [
+                                      {
+                                       "resourceId": "com.ss.android.ugc.trill:id/e1v",
+                                       "text": "",
+                                       "desc": "",
+                                       "className": "android.widget.RelativeLayout",
+                                       "packageName": "com.ss.android.ugc.trill",
+                                       "bounds": {
+                                        "left": 488,
+                                        "top": 80,
+                                        "right": 558,
+                                        "bottom": 150
+                                       },
+                                       "clickable": false,
+                                       "enabled": true,
+                                       "focused": false,
+                                       "index": 0,
+                                       "children": [
+                                        {
+                                         "resourceId": "com.ss.android.ugc.trill:id/igi",
+                                         "text": "",
+                                         "desc": "Tayangan profil",
+                                         "className": "android.widget.Button",
+                                         "packageName": "com.ss.android.ugc.trill",
+                                         "bounds": {
+                                          "left": 502,
+                                          "top": 94,
+                                          "right": 544,
+                                          "bottom": 136
+                                         },
+                                         "clickable": false,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 0,
+                                         "children": [
+                                          {
+                                           "resourceId": "com.ss.android.ugc.trill:id/lq8",
+                                           "text": "",
+                                           "desc": "",
+                                           "className": "android.widget.ImageView",
+                                           "packageName": "com.ss.android.ugc.trill",
+                                           "bounds": {
+                                            "left": 502,
+                                            "top": 94,
+                                            "right": 544,
+                                            "bottom": 136
+                                           },
+                                           "clickable": false,
+                                           "enabled": true,
+                                           "focused": false,
+                                           "index": 0,
+                                           "children": []
+                                          }
+                                         ]
+                                        },
+                                        {
+                                         "resourceId": "com.ss.android.ugc.trill:id/tv_number",
+                                         "text": "99",
+                                         "desc": "",
+                                         "className": "android.widget.TextView",
+                                         "packageName": "com.ss.android.ugc.trill",
+                                         "bounds": {
+                                          "left": 524,
+                                          "top": 111,
+                                          "right": 558,
+                                          "bottom": 136
+                                         },
+                                         "clickable": false,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 1,
+                                         "children": []
+                                        }
+                                       ]
+                                      }
+                                     ]
+                                    }
+                                   ]
+                                  },
+                                  {
+                                   "resourceId": "",
+                                   "text": "",
+                                   "desc": "Tambah orang",
+                                   "className": "android.widget.ImageView",
+                                   "packageName": "com.ss.android.ugc.trill",
+                                   "bounds": {
+                                    "left": 558,
+                                    "top": 80,
+                                    "right": 632,
+                                    "bottom": 150
+                                   },
+                                   "clickable": false,
+                                   "enabled": true,
+                                   "focused": false,
+                                   "index": 1,
+                                   "children": []
+                                  },
+                                  {
+                                   "resourceId": "",
+                                   "text": "",
+                                   "desc": "Menu profil",
+                                   "className": "android.widget.Button",
+                                   "packageName": "com.ss.android.ugc.trill",
+                                   "bounds": {
+                                    "left": 632,
+                                    "top": 80,
+                                    "right": 706,
+                                    "bottom": 150
+                                   },
+                                   "clickable": true,
+                                   "enabled": true,
+                                   "focused": false,
+                                   "index": 2,
+                                   "children": []
+                                  }
+                                 ]
+                                }
+                               ]
+                              }
+                             ]
+                            },
+                            {
+                             "resourceId": "com.ss.android.ugc.trill:id/eyc",
+                             "text": "",
+                             "desc": "",
+                             "className": "android.widget.LinearLayout",
+                             "packageName": "com.ss.android.ugc.trill",
+                             "bounds": {
+                              "left": 0,
+                              "top": 161,
+                              "right": 720,
+                              "bottom": 1556
+                             },
+                             "clickable": false,
+                             "enabled": true,
+                             "focused": false,
+                             "index": 2,
+                             "children": [
+                              {
+                               "resourceId": "com.ss.android.ugc.trill:id/ttc",
+                               "text": "",
+                               "desc": "",
+                               "className": "android.widget.FrameLayout",
+                               "packageName": "com.ss.android.ugc.trill",
+                               "bounds": {
+                                "left": 0,
+                                "top": 161,
+                                "right": 720,
+                                "bottom": 1556
+                               },
+                               "clickable": false,
+                               "enabled": true,
+                               "focused": false,
+                               "index": 0,
+                               "children": [
+                                {
+                                 "resourceId": "com.ss.android.ugc.trill:id/uv0",
+                                 "text": "",
+                                 "desc": "",
+                                 "className": "android.widget.LinearLayout",
+                                 "packageName": "com.ss.android.ugc.trill",
+                                 "bounds": {
+                                  "left": 0,
+                                  "top": 161,
+                                  "right": 720,
+                                  "bottom": 1556
+                                 },
+                                 "clickable": false,
+                                 "enabled": true,
+                                 "focused": false,
+                                 "index": 1,
+                                 "children": [
+                                  {
+                                   "resourceId": "com.ss.android.ugc.trill:id/svm",
+                                   "text": "",
+                                   "desc": "",
+                                   "className": "android.widget.LinearLayout",
+                                   "packageName": "com.ss.android.ugc.trill",
+                                   "bounds": {
+                                    "left": 0,
+                                    "top": 161,
+                                    "right": 720,
+                                    "bottom": 457
+                                   },
+                                   "clickable": false,
+                                   "enabled": true,
+                                   "focused": false,
+                                   "index": 0,
+                                   "children": [
+                                    {
+                                     "resourceId": "",
+                                     "text": "",
+                                     "desc": "",
+                                     "className": "android.widget.LinearLayout",
+                                     "packageName": "com.ss.android.ugc.trill",
+                                     "bounds": {
+                                      "left": 0,
+                                      "top": 161,
+                                      "right": 720,
+                                      "bottom": 386
+                                     },
+                                     "clickable": false,
+                                     "enabled": true,
+                                     "focused": false,
+                                     "index": 0,
+                                     "children": [
+                                      {
+                                       "resourceId": "com.ss.android.ugc.trill:id/st_",
+                                       "text": "",
+                                       "desc": "",
+                                       "className": "android.widget.LinearLayout",
+                                       "packageName": "com.ss.android.ugc.trill",
+                                       "bounds": {
+                                        "left": 28,
+                                        "top": 161,
+                                        "right": 720,
+                                        "bottom": 386
+                                       },
+                                       "clickable": false,
+                                       "enabled": true,
+                                       "focused": false,
+                                       "index": 0,
+                                       "children": [
+                                        {
+                                         "resourceId": "com.ss.android.ugc.trill:id/stb",
+                                         "text": "",
+                                         "desc": "",
+                                         "className": "android.widget.LinearLayout",
+                                         "packageName": "com.ss.android.ugc.trill",
+                                         "bounds": {
+                                          "left": 28,
+                                          "top": 172,
+                                          "right": 503,
+                                          "bottom": 358
+                                         },
+                                         "clickable": false,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 0,
+                                         "children": [
+                                          {
+                                           "resourceId": "",
+                                           "text": "",
+                                           "desc": "",
+                                           "className": "android.widget.LinearLayout",
+                                           "packageName": "com.ss.android.ugc.trill",
+                                           "bounds": {
+                                            "left": 28,
+                                            "top": 172,
+                                            "right": 503,
+                                            "bottom": 239
+                                           },
+                                           "clickable": false,
+                                           "enabled": true,
+                                           "focused": false,
+                                           "index": 0,
+                                           "children": [
+                                            {
+                                             "resourceId": "",
+                                             "text": "",
+                                             "desc": "",
+                                             "className": "android.widget.FrameLayout",
+                                             "packageName": "com.ss.android.ugc.trill",
+                                             "bounds": {
+                                              "left": 28,
+                                              "top": 172,
+                                              "right": 503,
+                                              "bottom": 239
+                                             },
+                                             "clickable": true,
+                                             "enabled": true,
+                                             "focused": false,
+                                             "index": 0,
+                                             "children": [
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/sv6",
+                                               "text": "dewi_purnama280",
+                                               "desc": "",
+                                               "className": "android.widget.Button",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 28,
+                                                "top": 172,
+                                                "right": 503,
+                                                "bottom": 239
+                                               },
+                                               "clickable": true,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 0,
+                                               "children": []
+                                              }
+                                             ]
+                                            }
+                                           ]
+                                          },
+                                          {
+                                           "resourceId": "",
+                                           "text": "",
+                                           "desc": "",
+                                           "className": "android.widget.LinearLayout",
+                                           "packageName": "com.ss.android.ugc.trill",
+                                           "bounds": {
+                                            "left": 28,
+                                            "top": 243,
+                                            "right": 239,
+                                            "bottom": 269
+                                           },
+                                           "clickable": false,
+                                           "enabled": true,
+                                           "focused": false,
+                                           "index": 1,
+                                           "children": [
+                                            {
+                                             "resourceId": "com.ss.android.ugc.trill:id/ss2",
+                                             "text": "@dewi_purnama280",
+                                             "desc": "",
+                                             "className": "android.widget.Button",
+                                             "packageName": "com.ss.android.ugc.trill",
+                                             "bounds": {
+                                              "left": 28,
+                                              "top": 243,
+                                              "right": 239,
+                                              "bottom": 269
+                                             },
+                                             "clickable": true,
+                                             "enabled": true,
+                                             "focused": false,
+                                             "index": 0,
+                                             "children": []
+                                            }
+                                           ]
+                                          },
+                                          {
+                                           "resourceId": "",
+                                           "text": "",
+                                           "desc": "",
+                                           "className": "android.widget.LinearLayout",
+                                           "packageName": "com.ss.android.ugc.trill",
+                                           "bounds": {
+                                            "left": 28,
+                                            "top": 301,
+                                            "right": 503,
+                                            "bottom": 358
+                                           },
+                                           "clickable": false,
+                                           "enabled": true,
+                                           "focused": false,
+                                           "index": 2,
+                                           "children": [
+                                            {
+                                             "resourceId": "",
+                                             "text": "",
+                                             "desc": "",
+                                             "className": "android.widget.LinearLayout",
+                                             "packageName": "com.ss.android.ugc.trill",
+                                             "bounds": {
+                                              "left": 28,
+                                              "top": 301,
+                                              "right": 125,
+                                              "bottom": 358
+                                             },
+                                             "clickable": true,
+                                             "enabled": true,
+                                             "focused": false,
+                                             "index": 0,
+                                             "children": [
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/svu",
+                                               "text": "0",
+                                               "desc": "",
+                                               "className": "android.widget.TextView",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 28,
+                                                "top": 301,
+                                                "right": 125,
+                                                "bottom": 334
+                                               },
+                                               "clickable": false,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 0,
+                                               "children": []
+                                              },
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/svt",
+                                               "text": "Mengikuti",
+                                               "desc": "",
+                                               "className": "android.widget.TextView",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 28,
+                                                "top": 332,
+                                                "right": 125,
+                                                "bottom": 358
+                                               },
+                                               "clickable": false,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 1,
+                                               "children": []
+                                              }
+                                             ]
+                                            },
+                                            {
+                                             "resourceId": "",
+                                             "text": "",
+                                             "desc": "",
+                                             "className": "android.view.ViewGroup",
+                                             "packageName": "com.ss.android.ugc.trill",
+                                             "bounds": {
+                                              "left": 125,
+                                              "top": 301,
+                                              "right": 297,
+                                              "bottom": 358
+                                             },
+                                             "clickable": true,
+                                             "enabled": true,
+                                             "focused": false,
+                                             "index": 1,
+                                             "children": [
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/svu",
+                                               "text": "3.991",
+                                               "desc": "",
+                                               "className": "android.widget.TextView",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 167,
+                                                "top": 301,
+                                                "right": 234,
+                                                "bottom": 332
+                                               },
+                                               "clickable": false,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 0,
+                                               "children": []
+                                              },
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/svt",
+                                               "text": "Pengikut",
+                                               "desc": "",
+                                               "className": "android.widget.TextView",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 167,
+                                                "top": 332,
+                                                "right": 255,
+                                                "bottom": 358
+                                               },
+                                               "clickable": false,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 1,
+                                               "children": []
+                                              }
+                                             ]
+                                            },
+                                            {
+                                             "resourceId": "",
+                                             "text": "",
+                                             "desc": "",
+                                             "className": "android.widget.LinearLayout",
+                                             "packageName": "com.ss.android.ugc.trill",
+                                             "bounds": {
+                                              "left": 297,
+                                              "top": 301,
+                                              "right": 365,
+                                              "bottom": 358
+                                             },
+                                             "clickable": true,
+                                             "enabled": true,
+                                             "focused": false,
+                                             "index": 2,
+                                             "children": [
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/svu",
+                                               "text": "9.087",
+                                               "desc": "",
+                                               "className": "android.widget.TextView",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 297,
+                                                "top": 301,
+                                                "right": 365,
+                                                "bottom": 334
+                                               },
+                                               "clickable": false,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 0,
+                                               "children": []
+                                              },
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/svt",
+                                               "text": "Suka",
+                                               "desc": "",
+                                               "className": "android.widget.TextView",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 297,
+                                                "top": 332,
+                                                "right": 365,
+                                                "bottom": 358
+                                               },
+                                               "clickable": false,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 1,
+                                               "children": []
+                                              }
+                                             ]
+                                            }
+                                           ]
+                                          }
+                                         ]
+                                        },
+                                        {
+                                         "resourceId": "com.ss.android.ugc.trill:id/ss_",
+                                         "text": "",
+                                         "desc": "",
+                                         "className": "android.widget.FrameLayout",
+                                         "packageName": "com.ss.android.ugc.trill",
+                                         "bounds": {
+                                          "left": 496,
+                                          "top": 161,
+                                          "right": 720,
+                                          "bottom": 368
+                                         },
+                                         "clickable": false,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 1,
+                                         "children": [
+                                          {
+                                           "resourceId": "com.ss.android.ugc.trill:id/bl1",
+                                           "text": "",
+                                           "desc": "",
+                                           "className": "android.widget.FrameLayout",
+                                           "packageName": "com.ss.android.ugc.trill",
+                                           "bounds": {
+                                            "left": 496,
+                                            "top": 161,
+                                            "right": 720,
+                                            "bottom": 368
+                                           },
+                                           "clickable": true,
+                                           "enabled": true,
+                                           "focused": false,
+                                           "index": 0,
+                                           "children": [
+                                            {
+                                             "resourceId": "com.ss.android.ugc.trill:id/bm2",
+                                             "text": "",
+                                             "desc": "Foto profil",
+                                             "className": "android.widget.Button",
+                                             "packageName": "com.ss.android.ugc.trill",
+                                             "bounds": {
+                                              "left": 496,
+                                              "top": 172,
+                                              "right": 720,
+                                              "bottom": 368
+                                             },
+                                             "clickable": true,
+                                             "enabled": true,
+                                             "focused": false,
+                                             "index": 0,
+                                             "children": [
+                                              {
+                                               "resourceId": "",
+                                               "text": "",
+                                               "desc": "",
+                                               "className": "android.widget.ImageView",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 524,
+                                                "top": 186,
+                                                "right": 692,
+                                                "bottom": 354
+                                               },
+                                               "clickable": false,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 0,
+                                               "children": []
+                                              },
+                                              {
+                                               "resourceId": "",
+                                               "text": "",
+                                               "desc": "Buat Story",
+                                               "className": "android.widget.Button",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 626,
+                                                "top": 288,
+                                                "right": 715,
+                                                "bottom": 368
+                                               },
+                                               "clickable": true,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 1,
+                                               "children": [
+                                                {
+                                                 "resourceId": "",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.ImageView",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 649,
+                                                  "top": 311,
+                                                  "right": 691,
+                                                  "bottom": 353
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 0,
+                                                 "children": []
+                                                }
+                                               ]
+                                              }
+                                             ]
+                                            },
+                                            {
+                                             "resourceId": "com.ss.android.ugc.trill:id/pxu",
+                                             "text": "Bisik-bisik",
+                                             "desc": "",
+                                             "className": "android.widget.TextView",
+                                             "packageName": "com.ss.android.ugc.trill",
+                                             "bounds": {
+                                              "left": 549,
+                                              "top": 165,
+                                              "right": 666,
+                                              "bottom": 239
+                                             },
+                                             "clickable": true,
+                                             "enabled": true,
+                                             "focused": false,
+                                             "index": 1,
+                                             "children": []
+                                            }
+                                           ]
+                                          }
+                                         ]
+                                        }
+                                       ]
+                                      }
+                                     ]
+                                    },
+                                    {
+                                     "resourceId": "",
+                                     "text": "",
+                                     "desc": "",
+                                     "className": "android.widget.LinearLayout",
+                                     "packageName": "com.ss.android.ugc.trill",
+                                     "bounds": {
+                                      "left": 28,
+                                      "top": 393,
+                                      "right": 692,
+                                      "bottom": 457
+                                     },
+                                     "clickable": false,
+                                     "enabled": true,
+                                     "focused": false,
+                                     "index": 1,
+                                     "children": [
+                                      {
+                                       "resourceId": "",
+                                       "text": "",
+                                       "desc": "",
+                                       "className": "android.widget.LinearLayout",
+                                       "packageName": "com.ss.android.ugc.trill",
+                                       "bounds": {
+                                        "left": 28,
+                                        "top": 393,
+                                        "right": 567,
+                                        "bottom": 457
+                                       },
+                                       "clickable": false,
+                                       "enabled": true,
+                                       "focused": false,
+                                       "index": 0,
+                                       "children": [
+                                        {
+                                         "resourceId": "com.ss.android.ugc.trill:id/ss3",
+                                         "text": "Tambahkan bio",
+                                         "desc": "Tambahkan bio",
+                                         "className": "android.widget.Button",
+                                         "packageName": "com.ss.android.ugc.trill",
+                                         "bounds": {
+                                          "left": 28,
+                                          "top": 400,
+                                          "right": 553,
+                                          "bottom": 450
+                                         },
+                                         "clickable": true,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 0,
+                                         "children": []
+                                        }
+                                       ]
+                                      }
+                                     ]
+                                    }
+                                   ]
+                                  },
+                                  {
+                                   "resourceId": "com.ss.android.ugc.trill:id/yik",
+                                   "text": "",
+                                   "desc": "",
+                                   "className": "android.widget.HorizontalScrollView",
+                                   "packageName": "com.ss.android.ugc.trill",
+                                   "bounds": {
+                                    "left": 28,
+                                    "top": 475,
+                                    "right": 692,
+                                    "bottom": 545
+                                   },
+                                   "clickable": false,
+                                   "enabled": true,
+                                   "focused": false,
+                                   "index": 1,
+                                   "children": [
+                                    {
+                                     "resourceId": "",
+                                     "text": "",
+                                     "desc": "",
+                                     "className": "android.widget.LinearLayout",
+                                     "packageName": "com.ss.android.ugc.trill",
+                                     "bounds": {
+                                      "left": 28,
+                                      "top": 475,
+                                      "right": 692,
+                                      "bottom": 545
+                                     },
+                                     "clickable": false,
+                                     "enabled": true,
+                                     "focused": false,
+                                     "index": 0,
+                                     "children": [
+                                      {
+                                       "resourceId": "",
+                                       "text": "",
+                                       "desc": "",
+                                       "className": "android.widget.LinearLayout",
+                                       "packageName": "com.ss.android.ugc.trill",
+                                       "bounds": {
+                                        "left": 28,
+                                        "top": 475,
+                                        "right": 194,
+                                        "bottom": 545
+                                       },
+                                       "clickable": false,
+                                       "enabled": true,
+                                       "focused": false,
+                                       "index": 0,
+                                       "children": [
+                                        {
+                                         "resourceId": "",
+                                         "text": "",
+                                         "desc": "Video",
+                                         "className": "android.widget.RelativeLayout",
+                                         "packageName": "com.ss.android.ugc.trill",
+                                         "bounds": {
+                                          "left": 28,
+                                          "top": 475,
+                                          "right": 194,
+                                          "bottom": 545
+                                         },
+                                         "clickable": true,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 0,
+                                         "children": [
+                                          {
+                                           "resourceId": "com.ss.android.ugc.trill:id/owm",
+                                           "text": "",
+                                           "desc": "",
+                                           "className": "android.widget.LinearLayout",
+                                           "packageName": "com.ss.android.ugc.trill",
+                                           "bounds": {
+                                            "left": 56,
+                                            "top": 475,
+                                            "right": 165,
+                                            "bottom": 545
+                                           },
+                                           "clickable": false,
+                                           "enabled": true,
+                                           "focused": false,
+                                           "index": 0,
+                                           "children": [
+                                            {
+                                             "resourceId": "com.ss.android.ugc.trill:id/khc",
+                                             "text": "",
+                                             "desc": "",
+                                             "className": "android.widget.FrameLayout",
+                                             "packageName": "com.ss.android.ugc.trill",
+                                             "bounds": {
+                                              "left": 56,
+                                              "top": 475,
+                                              "right": 126,
+                                              "bottom": 545
+                                             },
+                                             "clickable": false,
+                                             "enabled": true,
+                                             "focused": false,
+                                             "index": 0,
+                                             "children": [
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/k_r",
+                                               "text": "",
+                                               "desc": "Postingan",
+                                               "className": "android.widget.ImageView",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 87,
+                                                "top": 490,
+                                                "right": 126,
+                                                "bottom": 529
+                                               },
+                                               "clickable": false,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 0,
+                                               "children": []
+                                              }
+                                             ]
+                                            },
+                                            {
+                                             "resourceId": "com.ss.android.ugc.trill:id/xik",
+                                             "text": "",
+                                             "desc": "",
+                                             "className": "android.widget.FrameLayout",
+                                             "packageName": "com.ss.android.ugc.trill",
+                                             "bounds": {
+                                              "left": 126,
+                                              "top": 475,
+                                              "right": 165,
+                                              "bottom": 545
+                                             },
+                                             "clickable": false,
+                                             "enabled": true,
+                                             "focused": false,
+                                             "index": 1,
+                                             "children": [
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/aho",
+                                               "text": "",
+                                               "desc": "",
+                                               "className": "android.widget.ImageView",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 126,
+                                                "top": 501,
+                                                "right": 144,
+                                                "bottom": 519
+                                               },
+                                               "clickable": false,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 0,
+                                               "children": []
+                                              }
+                                             ]
+                                            }
+                                           ]
+                                          }
+                                         ]
+                                        }
+                                       ]
+                                      },
+                                      {
+                                       "resourceId": "",
+                                       "text": "",
+                                       "desc": "",
+                                       "className": "android.widget.LinearLayout",
+                                       "packageName": "com.ss.android.ugc.trill",
+                                       "bounds": {
+                                        "left": 194,
+                                        "top": 475,
+                                        "right": 360,
+                                        "bottom": 545
+                                       },
+                                       "clickable": true,
+                                       "enabled": true,
+                                       "focused": false,
+                                       "index": 1,
+                                       "children": [
+                                        {
+                                         "resourceId": "",
+                                         "text": "",
+                                         "desc": "Video privat",
+                                         "className": "android.widget.RelativeLayout",
+                                         "packageName": "com.ss.android.ugc.trill",
+                                         "bounds": {
+                                          "left": 194,
+                                          "top": 475,
+                                          "right": 360,
+                                          "bottom": 545
+                                         },
+                                         "clickable": true,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 0,
+                                         "children": [
+                                          {
+                                           "resourceId": "com.ss.android.ugc.trill:id/k_r",
+                                           "text": "",
+                                           "desc": "Kunci",
+                                           "className": "android.widget.ImageView",
+                                           "packageName": "com.ss.android.ugc.trill",
+                                           "bounds": {
+                                            "left": 257,
+                                            "top": 490,
+                                            "right": 296,
+                                            "bottom": 529
+                                           },
+                                           "clickable": false,
+                                           "enabled": true,
+                                           "focused": false,
+                                           "index": 0,
+                                           "children": []
+                                          }
+                                         ]
+                                        }
+                                       ]
+                                      },
+                                      {
+                                       "resourceId": "",
+                                       "text": "",
+                                       "desc": "",
+                                       "className": "android.widget.LinearLayout",
+                                       "packageName": "com.ss.android.ugc.trill",
+                                       "bounds": {
+                                        "left": 360,
+                                        "top": 475,
+                                        "right": 526,
+                                        "bottom": 545
+                                       },
+                                       "clickable": true,
+                                       "enabled": true,
+                                       "focused": false,
+                                       "index": 2,
+                                       "children": [
+                                        {
+                                         "resourceId": "",
+                                         "text": "",
+                                         "desc": "Favorit",
+                                         "className": "android.widget.RelativeLayout",
+                                         "packageName": "com.ss.android.ugc.trill",
+                                         "bounds": {
+                                          "left": 360,
+                                          "top": 475,
+                                          "right": 526,
+                                          "bottom": 545
+                                         },
+                                         "clickable": true,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 0,
+                                         "children": [
+                                          {
+                                           "resourceId": "com.ss.android.ugc.trill:id/k_r",
+                                           "text": "",
+                                           "desc": "Tambahkan ke Favorit",
+                                           "className": "android.widget.ImageView",
+                                           "packageName": "com.ss.android.ugc.trill",
+                                           "bounds": {
+                                            "left": 423,
+                                            "top": 490,
+                                            "right": 462,
+                                            "bottom": 529
+                                           },
+                                           "clickable": false,
+                                           "enabled": true,
+                                           "focused": false,
+                                           "index": 0,
+                                           "children": []
+                                          }
+                                         ]
+                                        }
+                                       ]
+                                      },
+                                      {
+                                       "resourceId": "",
+                                       "text": "",
+                                       "desc": "",
+                                       "className": "android.widget.LinearLayout",
+                                       "packageName": "com.ss.android.ugc.trill",
+                                       "bounds": {
+                                        "left": 526,
+                                        "top": 475,
+                                        "right": 692,
+                                        "bottom": 545
+                                       },
+                                       "clickable": true,
+                                       "enabled": true,
+                                       "focused": false,
+                                       "index": 3,
+                                       "children": [
+                                        {
+                                         "resourceId": "",
+                                         "text": "",
+                                         "desc": "Video yang disukai",
+                                         "className": "android.widget.RelativeLayout",
+                                         "packageName": "com.ss.android.ugc.trill",
+                                         "bounds": {
+                                          "left": 526,
+                                          "top": 475,
+                                          "right": 692,
+                                          "bottom": 545
+                                         },
+                                         "clickable": true,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 0,
+                                         "children": [
+                                          {
+                                           "resourceId": "com.ss.android.ugc.trill:id/k_r",
+                                           "text": "",
+                                           "desc": "Suka",
+                                           "className": "android.widget.ImageView",
+                                           "packageName": "com.ss.android.ugc.trill",
+                                           "bounds": {
+                                            "left": 589,
+                                            "top": 490,
+                                            "right": 628,
+                                            "bottom": 529
+                                           },
+                                           "clickable": false,
+                                           "enabled": true,
+                                           "focused": false,
+                                           "index": 0,
+                                           "children": []
+                                          }
+                                         ]
+                                        }
+                                       ]
+                                      }
+                                     ]
+                                    }
+                                   ]
+                                  },
+                                  {
+                                   "resourceId": "",
+                                   "text": "",
+                                   "desc": "",
+                                   "className": "android.view.View",
+                                   "packageName": "com.ss.android.ugc.trill",
+                                   "bounds": {
+                                    "left": 0,
+                                    "top": 545,
+                                    "right": 720,
+                                    "bottom": 546
+                                   },
+                                   "clickable": false,
+                                   "enabled": true,
+                                   "focused": false,
+                                   "index": 2,
+                                   "children": []
+                                  },
+                                  {
+                                   "resourceId": "",
+                                   "text": "",
+                                   "desc": "",
+                                   "className": "android.widget.FrameLayout",
+                                   "packageName": "com.ss.android.ugc.trill",
+                                   "bounds": {
+                                    "left": 0,
+                                    "top": 546,
+                                    "right": 720,
+                                    "bottom": 1556
+                                   },
+                                   "clickable": false,
+                                   "enabled": true,
+                                   "focused": false,
+                                   "index": 3,
+                                   "children": [
+                                    {
+                                     "resourceId": "com.ss.android.ugc.trill:id/uvm",
+                                     "text": "",
+                                     "desc": "",
+                                     "className": "androidx.viewpager.widget.ViewPager",
+                                     "packageName": "com.ss.android.ugc.trill",
+                                     "bounds": {
+                                      "left": 0,
+                                      "top": 546,
+                                      "right": 720,
+                                      "bottom": 1556
+                                     },
+                                     "clickable": false,
+                                     "enabled": true,
+                                     "focused": false,
+                                     "index": 0,
+                                     "children": [
+                                      {
+                                       "resourceId": "com.ss.android.ugc.trill:id/ssd",
+                                       "text": "",
+                                       "desc": "",
+                                       "className": "android.widget.FrameLayout",
+                                       "packageName": "com.ss.android.ugc.trill",
+                                       "bounds": {
+                                        "left": 0,
+                                        "top": 546,
+                                        "right": 720,
+                                        "bottom": 1556
+                                       },
+                                       "clickable": false,
+                                       "enabled": true,
+                                       "focused": false,
+                                       "index": 0,
+                                       "children": [
+                                        {
+                                         "resourceId": "com.ss.android.ugc.trill:id/l6h",
+                                         "text": "",
+                                         "desc": "",
+                                         "className": "android.widget.FrameLayout",
+                                         "packageName": "com.ss.android.ugc.trill",
+                                         "bounds": {
+                                          "left": 0,
+                                          "top": 546,
+                                          "right": 720,
+                                          "bottom": 1556
+                                         },
+                                         "clickable": false,
+                                         "enabled": true,
+                                         "focused": false,
+                                         "index": 0,
+                                         "children": [
+                                          {
+                                           "resourceId": "com.ss.android.ugc.trill:id/f2f",
+                                           "text": "",
+                                           "desc": "",
+                                           "className": "android.widget.FrameLayout",
+                                           "packageName": "com.ss.android.ugc.trill",
+                                           "bounds": {
+                                            "left": 0,
+                                            "top": 546,
+                                            "right": 720,
+                                            "bottom": 1556
+                                           },
+                                           "clickable": false,
+                                           "enabled": true,
+                                           "focused": false,
+                                           "index": 0,
+                                           "children": [
+                                            {
+                                             "resourceId": "com.ss.android.ugc.trill:id/i4a",
+                                             "text": "",
+                                             "desc": "",
+                                             "className": "android.widget.GridView",
+                                             "packageName": "com.ss.android.ugc.trill",
+                                             "bounds": {
+                                              "left": 0,
+                                              "top": 546,
+                                              "right": 720,
+                                              "bottom": 1556
+                                             },
+                                             "clickable": false,
+                                             "enabled": true,
+                                             "focused": false,
+                                             "index": 0,
+                                             "children": [
+                                              {
+                                               "resourceId": "",
+                                               "text": "",
+                                               "desc": "",
+                                               "className": "android.widget.FrameLayout",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 0,
+                                                "top": 546,
+                                                "right": 238,
+                                                "bottom": 865
+                                               },
+                                               "clickable": false,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 0,
+                                               "children": [
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/cover",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.ImageView",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 0,
+                                                  "top": 546,
+                                                  "right": 238,
+                                                  "bottom": 863
+                                                 },
+                                                 "clickable": true,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 0,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.LinearLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 0,
+                                                  "top": 546,
+                                                  "right": 238,
+                                                  "bottom": 620
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 1,
+                                                 "children": [
+                                                  {
+                                                   "resourceId": "com.ss.android.ugc.trill:id/tv_draft",
+                                                   "text": "Draf: 11",
+                                                   "desc": "",
+                                                   "className": "android.widget.TextView",
+                                                   "packageName": "com.ss.android.ugc.trill",
+                                                   "bounds": {
+                                                    "left": 11,
+                                                    "top": 557,
+                                                    "right": 227,
+                                                    "bottom": 585
+                                                   },
+                                                   "clickable": false,
+                                                   "enabled": true,
+                                                   "focused": false,
+                                                   "index": 0,
+                                                   "children": []
+                                                  }
+                                                 ]
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/chc",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.LinearLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 0,
+                                                  "top": 795,
+                                                  "right": 238,
+                                                  "bottom": 865
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 2,
+                                                 "children": [
+                                                  {
+                                                   "resourceId": "",
+                                                   "text": "",
+                                                   "desc": "",
+                                                   "className": "android.widget.ImageView",
+                                                   "packageName": "com.ss.android.ugc.trill",
+                                                   "bounds": {
+                                                    "left": 7,
+                                                    "top": 830,
+                                                    "right": 35,
+                                                    "bottom": 858
+                                                   },
+                                                   "clickable": false,
+                                                   "enabled": true,
+                                                   "focused": false,
+                                                   "index": 0,
+                                                   "children": []
+                                                  },
+                                                  {
+                                                   "resourceId": "com.ss.android.ugc.trill:id/chd",
+                                                   "text": "20,1 MB",
+                                                   "desc": "",
+                                                   "className": "android.widget.TextView",
+                                                   "packageName": "com.ss.android.ugc.trill",
+                                                   "bounds": {
+                                                    "left": 39,
+                                                    "top": 832,
+                                                    "right": 118,
+                                                    "bottom": 858
+                                                   },
+                                                   "clickable": false,
+                                                   "enabled": true,
+                                                   "focused": false,
+                                                   "index": 1,
+                                                   "children": []
+                                                  }
+                                                 ]
+                                                }
+                                               ]
+                                              },
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/eyc",
+                                               "text": "",
+                                               "desc": "",
+                                               "className": "android.widget.FrameLayout",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 240,
+                                                "top": 546,
+                                                "right": 479,
+                                                "bottom": 865
+                                               },
+                                               "clickable": true,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 1,
+                                               "children": [
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/cover",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.ImageView",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 240,
+                                                  "top": 546,
+                                                  "right": 479,
+                                                  "bottom": 865
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 0,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/ijk",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.FrameLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 240,
+                                                  "top": 767,
+                                                  "right": 296,
+                                                  "bottom": 823
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 1,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/video_info_container",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.LinearLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 240,
+                                                  "top": 777,
+                                                  "right": 479,
+                                                  "bottom": 865
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 2,
+                                                 "children": [
+                                                  {
+                                                   "resourceId": "com.ss.android.ugc.trill:id/tv_play_count",
+                                                   "text": "420",
+                                                   "desc": "",
+                                                   "className": "android.widget.TextView",
+                                                   "packageName": "com.ss.android.ugc.trill",
+                                                   "bounds": {
+                                                    "left": 247,
+                                                    "top": 830,
+                                                    "right": 479,
+                                                    "bottom": 858
+                                                   },
+                                                   "clickable": false,
+                                                   "enabled": true,
+                                                   "focused": false,
+                                                   "index": 0,
+                                                   "children": []
+                                                  }
+                                                 ]
+                                                }
+                                               ]
+                                              },
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/eyc",
+                                               "text": "",
+                                               "desc": "",
+                                               "className": "android.widget.FrameLayout",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 481,
+                                                "top": 546,
+                                                "right": 720,
+                                                "bottom": 865
+                                               },
+                                               "clickable": true,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 2,
+                                               "children": [
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/cover",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.ImageView",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 481,
+                                                  "top": 546,
+                                                  "right": 720,
+                                                  "bottom": 865
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 0,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/ijk",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.FrameLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 481,
+                                                  "top": 767,
+                                                  "right": 537,
+                                                  "bottom": 823
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 1,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/video_info_container",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.LinearLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 481,
+                                                  "top": 777,
+                                                  "right": 720,
+                                                  "bottom": 865
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 2,
+                                                 "children": [
+                                                  {
+                                                   "resourceId": "com.ss.android.ugc.trill:id/tv_play_count",
+                                                   "text": "73",
+                                                   "desc": "",
+                                                   "className": "android.widget.TextView",
+                                                   "packageName": "com.ss.android.ugc.trill",
+                                                   "bounds": {
+                                                    "left": 488,
+                                                    "top": 830,
+                                                    "right": 720,
+                                                    "bottom": 858
+                                                   },
+                                                   "clickable": false,
+                                                   "enabled": true,
+                                                   "focused": false,
+                                                   "index": 0,
+                                                   "children": []
+                                                  }
+                                                 ]
+                                                }
+                                               ]
+                                              },
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/eyc",
+                                               "text": "",
+                                               "desc": "",
+                                               "className": "android.widget.FrameLayout",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 0,
+                                                "top": 867,
+                                                "right": 238,
+                                                "bottom": 1186
+                                               },
+                                               "clickable": true,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 3,
+                                               "children": [
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/cover",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.ImageView",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 0,
+                                                  "top": 867,
+                                                  "right": 238,
+                                                  "bottom": 1184
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 0,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/ijk",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.FrameLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 0,
+                                                  "top": 1088,
+                                                  "right": 56,
+                                                  "bottom": 1144
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 1,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/video_info_container",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.LinearLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 0,
+                                                  "top": 1098,
+                                                  "right": 238,
+                                                  "bottom": 1186
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 2,
+                                                 "children": [
+                                                  {
+                                                   "resourceId": "com.ss.android.ugc.trill:id/tv_play_count",
+                                                   "text": "8",
+                                                   "desc": "",
+                                                   "className": "android.widget.TextView",
+                                                   "packageName": "com.ss.android.ugc.trill",
+                                                   "bounds": {
+                                                    "left": 7,
+                                                    "top": 1151,
+                                                    "right": 238,
+                                                    "bottom": 1179
+                                                   },
+                                                   "clickable": false,
+                                                   "enabled": true,
+                                                   "focused": false,
+                                                   "index": 0,
+                                                   "children": []
+                                                  }
+                                                 ]
+                                                }
+                                               ]
+                                              },
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/eyc",
+                                               "text": "",
+                                               "desc": "",
+                                               "className": "android.widget.FrameLayout",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 240,
+                                                "top": 867,
+                                                "right": 479,
+                                                "bottom": 1186
+                                               },
+                                               "clickable": true,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 4,
+                                               "children": [
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/cover",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.ImageView",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 240,
+                                                  "top": 867,
+                                                  "right": 479,
+                                                  "bottom": 1186
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 0,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/ijk",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.FrameLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 240,
+                                                  "top": 1088,
+                                                  "right": 296,
+                                                  "bottom": 1144
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 1,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/video_info_container",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.LinearLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 240,
+                                                  "top": 1098,
+                                                  "right": 479,
+                                                  "bottom": 1186
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 2,
+                                                 "children": [
+                                                  {
+                                                   "resourceId": "com.ss.android.ugc.trill:id/tv_play_count",
+                                                   "text": "11",
+                                                   "desc": "",
+                                                   "className": "android.widget.TextView",
+                                                   "packageName": "com.ss.android.ugc.trill",
+                                                   "bounds": {
+                                                    "left": 247,
+                                                    "top": 1151,
+                                                    "right": 479,
+                                                    "bottom": 1179
+                                                   },
+                                                   "clickable": false,
+                                                   "enabled": true,
+                                                   "focused": false,
+                                                   "index": 0,
+                                                   "children": []
+                                                  }
+                                                 ]
+                                                }
+                                               ]
+                                              },
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/eyc",
+                                               "text": "",
+                                               "desc": "",
+                                               "className": "android.widget.FrameLayout",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 481,
+                                                "top": 867,
+                                                "right": 720,
+                                                "bottom": 1186
+                                               },
+                                               "clickable": true,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 5,
+                                               "children": [
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/cover",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.ImageView",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 481,
+                                                  "top": 867,
+                                                  "right": 720,
+                                                  "bottom": 1186
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 0,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/ijk",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.FrameLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 481,
+                                                  "top": 1088,
+                                                  "right": 537,
+                                                  "bottom": 1144
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 1,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/video_info_container",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.LinearLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 481,
+                                                  "top": 1098,
+                                                  "right": 720,
+                                                  "bottom": 1186
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 2,
+                                                 "children": [
+                                                  {
+                                                   "resourceId": "com.ss.android.ugc.trill:id/tv_play_count",
+                                                   "text": "71",
+                                                   "desc": "",
+                                                   "className": "android.widget.TextView",
+                                                   "packageName": "com.ss.android.ugc.trill",
+                                                   "bounds": {
+                                                    "left": 488,
+                                                    "top": 1151,
+                                                    "right": 720,
+                                                    "bottom": 1179
+                                                   },
+                                                   "clickable": false,
+                                                   "enabled": true,
+                                                   "focused": false,
+                                                   "index": 0,
+                                                   "children": []
+                                                  }
+                                                 ]
+                                                }
+                                               ]
+                                              },
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/eyc",
+                                               "text": "",
+                                               "desc": "",
+                                               "className": "android.widget.FrameLayout",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 0,
+                                                "top": 1188,
+                                                "right": 238,
+                                                "bottom": 1507
+                                               },
+                                               "clickable": true,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 6,
+                                               "children": [
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/cover",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.ImageView",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 0,
+                                                  "top": 1188,
+                                                  "right": 238,
+                                                  "bottom": 1505
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 0,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/ijk",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.FrameLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 0,
+                                                  "top": 1409,
+                                                  "right": 56,
+                                                  "bottom": 1465
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 1,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/video_info_container",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.LinearLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 0,
+                                                  "top": 1419,
+                                                  "right": 238,
+                                                  "bottom": 1507
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 2,
+                                                 "children": [
+                                                  {
+                                                   "resourceId": "com.ss.android.ugc.trill:id/tv_play_count",
+                                                   "text": "1.655",
+                                                   "desc": "",
+                                                   "className": "android.widget.TextView",
+                                                   "packageName": "com.ss.android.ugc.trill",
+                                                   "bounds": {
+                                                    "left": 7,
+                                                    "top": 1472,
+                                                    "right": 238,
+                                                    "bottom": 1500
+                                                   },
+                                                   "clickable": false,
+                                                   "enabled": true,
+                                                   "focused": false,
+                                                   "index": 0,
+                                                   "children": []
+                                                  }
+                                                 ]
+                                                }
+                                               ]
+                                              },
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/eyc",
+                                               "text": "",
+                                               "desc": "",
+                                               "className": "android.widget.FrameLayout",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 240,
+                                                "top": 1188,
+                                                "right": 479,
+                                                "bottom": 1507
+                                               },
+                                               "clickable": true,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 7,
+                                               "children": [
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/cover",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.ImageView",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 240,
+                                                  "top": 1188,
+                                                  "right": 479,
+                                                  "bottom": 1507
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 0,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/ijk",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.FrameLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 240,
+                                                  "top": 1409,
+                                                  "right": 296,
+                                                  "bottom": 1465
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 1,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/video_info_container",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.LinearLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 240,
+                                                  "top": 1419,
+                                                  "right": 479,
+                                                  "bottom": 1507
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 2,
+                                                 "children": [
+                                                  {
+                                                   "resourceId": "com.ss.android.ugc.trill:id/tv_play_count",
+                                                   "text": "140,1\u00a0rb",
+                                                   "desc": "",
+                                                   "className": "android.widget.TextView",
+                                                   "packageName": "com.ss.android.ugc.trill",
+                                                   "bounds": {
+                                                    "left": 247,
+                                                    "top": 1472,
+                                                    "right": 479,
+                                                    "bottom": 1500
+                                                   },
+                                                   "clickable": false,
+                                                   "enabled": true,
+                                                   "focused": false,
+                                                   "index": 0,
+                                                   "children": []
+                                                  }
+                                                 ]
+                                                }
+                                               ]
+                                              },
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/eyc",
+                                               "text": "",
+                                               "desc": "",
+                                               "className": "android.widget.FrameLayout",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 481,
+                                                "top": 1188,
+                                                "right": 720,
+                                                "bottom": 1507
+                                               },
+                                               "clickable": true,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 8,
+                                               "children": [
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/cover",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.ImageView",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 481,
+                                                  "top": 1188,
+                                                  "right": 720,
+                                                  "bottom": 1507
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 0,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/ijk",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.FrameLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 481,
+                                                  "top": 1409,
+                                                  "right": 537,
+                                                  "bottom": 1465
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 1,
+                                                 "children": []
+                                                },
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/video_info_container",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.LinearLayout",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 481,
+                                                  "top": 1419,
+                                                  "right": 720,
+                                                  "bottom": 1507
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 2,
+                                                 "children": [
+                                                  {
+                                                   "resourceId": "com.ss.android.ugc.trill:id/tv_play_count",
+                                                   "text": "1.188",
+                                                   "desc": "",
+                                                   "className": "android.widget.TextView",
+                                                   "packageName": "com.ss.android.ugc.trill",
+                                                   "bounds": {
+                                                    "left": 488,
+                                                    "top": 1472,
+                                                    "right": 720,
+                                                    "bottom": 1500
+                                                   },
+                                                   "clickable": false,
+                                                   "enabled": true,
+                                                   "focused": false,
+                                                   "index": 0,
+                                                   "children": []
+                                                  }
+                                                 ]
+                                                }
+                                               ]
+                                              },
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/eyc",
+                                               "text": "",
+                                               "desc": "",
+                                               "className": "android.widget.FrameLayout",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 0,
+                                                "top": 1509,
+                                                "right": 238,
+                                                "bottom": 1556
+                                               },
+                                               "clickable": true,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 9,
+                                               "children": [
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/cover",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.ImageView",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 0,
+                                                  "top": 1509,
+                                                  "right": 238,
+                                                  "bottom": 1556
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 0,
+                                                 "children": []
+                                                }
+                                               ]
+                                              },
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/eyc",
+                                               "text": "",
+                                               "desc": "",
+                                               "className": "android.widget.FrameLayout",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 240,
+                                                "top": 1509,
+                                                "right": 479,
+                                                "bottom": 1556
+                                               },
+                                               "clickable": true,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 10,
+                                               "children": [
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/cover",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.ImageView",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 240,
+                                                  "top": 1509,
+                                                  "right": 479,
+                                                  "bottom": 1556
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 0,
+                                                 "children": []
+                                                }
+                                               ]
+                                              },
+                                              {
+                                               "resourceId": "com.ss.android.ugc.trill:id/eyc",
+                                               "text": "",
+                                               "desc": "",
+                                               "className": "android.widget.FrameLayout",
+                                               "packageName": "com.ss.android.ugc.trill",
+                                               "bounds": {
+                                                "left": 481,
+                                                "top": 1509,
+                                                "right": 720,
+                                                "bottom": 1556
+                                               },
+                                               "clickable": true,
+                                               "enabled": true,
+                                               "focused": false,
+                                               "index": 11,
+                                               "children": [
+                                                {
+                                                 "resourceId": "com.ss.android.ugc.trill:id/cover",
+                                                 "text": "",
+                                                 "desc": "",
+                                                 "className": "android.widget.ImageView",
+                                                 "packageName": "com.ss.android.ugc.trill",
+                                                 "bounds": {
+                                                  "left": 481,
+                                                  "top": 1509,
+                                                  "right": 720,
+                                                  "bottom": 1556
+                                                 },
+                                                 "clickable": false,
+                                                 "enabled": true,
+                                                 "focused": false,
+                                                 "index": 0,
+                                                 "children": []
+                                                }
+                                               ]
+                                              }
+                                             ]
+                                            }
+                                           ]
+                                          }
+                                         ]
+                                        }
+                                       ]
+                                      }
+                                     ]
+                                    }
+                                   ]
+                                  }
+                                 ]
+                                }
+                               ]
+                              }
+                             ]
+                            }
+                           ]
+                          },
+                          {
+                           "resourceId": "com.ss.android.ugc.trill:id/brp",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.widget.FrameLayout",
+                           "packageName": "com.ss.android.ugc.trill",
+                           "bounds": {
+                            "left": 0,
+                            "top": 0,
+                            "right": 720,
+                            "bottom": 417
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 1,
+                           "children": []
+                          }
+                         ]
+                        }
+                       ]
+                      },
+                      {
+                       "resourceId": "com.ss.android.ugc.trill:id/ofk",
+                       "text": "",
+                       "desc": "",
+                       "className": "android.widget.LinearLayout",
+                       "packageName": "com.ss.android.ugc.trill",
+                       "bounds": {
+                        "left": 0,
+                        "top": 1470,
+                        "right": 720,
+                        "bottom": 1556
+                       },
+                       "clickable": false,
+                       "enabled": true,
+                       "focused": false,
+                       "index": 3,
+                       "children": [
+                        {
+                         "resourceId": "com.ss.android.ugc.trill:id/ofc",
+                         "text": "",
+                         "desc": "Beranda",
+                         "className": "android.widget.FrameLayout",
+                         "packageName": "com.ss.android.ugc.trill",
+                         "bounds": {
+                          "left": 0,
+                          "top": 1470,
+                          "right": 144,
+                          "bottom": 1556
+                         },
+                         "clickable": true,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 0,
+                         "children": [
+                          {
+                           "resourceId": "",
+                           "text": "Beranda",
+                           "desc": "",
+                           "className": "android.widget.TextView",
+                           "packageName": "com.ss.android.ugc.trill",
+                           "bounds": {
+                            "left": 0,
+                            "top": 1523,
+                            "right": 144,
+                            "bottom": 1546
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 0,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.widget.ImageView",
+                           "packageName": "com.ss.android.ugc.trill",
+                           "bounds": {
+                            "left": 44,
+                            "top": 1474,
+                            "right": 100,
+                            "bottom": 1530
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 1,
+                           "children": []
+                          }
+                         ]
+                        },
+                        {
+                         "resourceId": "com.ss.android.ugc.trill:id/enz",
+                         "text": "",
+                         "desc": "Toko",
+                         "className": "android.widget.FrameLayout",
+                         "packageName": "com.ss.android.ugc.trill",
+                         "bounds": {
+                          "left": 144,
+                          "top": 1470,
+                          "right": 288,
+                          "bottom": 1556
+                         },
+                         "clickable": true,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 1,
+                         "children": [
+                          {
+                           "resourceId": "",
+                           "text": "Toko",
+                           "desc": "",
+                           "className": "android.widget.TextView",
+                           "packageName": "com.ss.android.ugc.trill",
+                           "bounds": {
+                            "left": 144,
+                            "top": 1523,
+                            "right": 288,
+                            "bottom": 1546
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 0,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.widget.ImageView",
+                           "packageName": "com.ss.android.ugc.trill",
+                           "bounds": {
+                            "left": 188,
+                            "top": 1474,
+                            "right": 244,
+                            "bottom": 1530
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 1,
+                           "children": []
+                          }
+                         ]
+                        },
+                        {
+                         "resourceId": "com.ss.android.ugc.trill:id/of9",
+                         "text": "",
+                         "desc": "Buat",
+                         "className": "android.widget.Button",
+                         "packageName": "com.ss.android.ugc.trill",
+                         "bounds": {
+                          "left": 288,
+                          "top": 1470,
+                          "right": 432,
+                          "bottom": 1556
+                         },
+                         "clickable": true,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 2,
+                         "children": [
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.widget.ImageView",
+                           "packageName": "com.ss.android.ugc.trill",
+                           "bounds": {
+                            "left": 294,
+                            "top": 1483,
+                            "right": 425,
+                            "bottom": 1556
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 0,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.widget.ImageView",
+                           "packageName": "com.ss.android.ugc.trill",
+                           "bounds": {
+                            "left": 294,
+                            "top": 1483,
+                            "right": 425,
+                            "bottom": 1556
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 1,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.widget.ImageView",
+                           "packageName": "com.ss.android.ugc.trill",
+                           "bounds": {
+                            "left": 360,
+                            "top": 1513,
+                            "right": 360,
+                            "bottom": 1513
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 2,
+                           "children": []
+                          }
+                         ]
+                        },
+                        {
+                         "resourceId": "com.ss.android.ugc.trill:id/ofd",
+                         "text": "",
+                         "desc": "Kotak Masuk",
+                         "className": "android.widget.FrameLayout",
+                         "packageName": "com.ss.android.ugc.trill",
+                         "bounds": {
+                          "left": 432,
+                          "top": 1470,
+                          "right": 576,
+                          "bottom": 1556
+                         },
+                         "clickable": true,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 3,
+                         "children": [
+                          {
+                           "resourceId": "",
+                           "text": "99+",
+                           "desc": "",
+                           "className": "android.widget.TextView",
+                           "packageName": "com.ss.android.ugc.trill",
+                           "bounds": {
+                            "left": 497,
+                            "top": 1474,
+                            "right": 557,
+                            "bottom": 1502
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 0,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "",
+                           "text": "Kotak Masuk",
+                           "desc": "",
+                           "className": "android.widget.TextView",
+                           "packageName": "com.ss.android.ugc.trill",
+                           "bounds": {
+                            "left": 432,
+                            "top": 1523,
+                            "right": 576,
+                            "bottom": 1546
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 1,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.widget.ImageView",
+                           "packageName": "com.ss.android.ugc.trill",
+                           "bounds": {
+                            "left": 476,
+                            "top": 1474,
+                            "right": 532,
+                            "bottom": 1530
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 2,
+                           "children": []
+                          }
+                         ]
+                        },
+                        {
+                         "resourceId": "com.ss.android.ugc.trill:id/ofe",
+                         "text": "",
+                         "desc": "Profil",
+                         "className": "android.widget.FrameLayout",
+                         "packageName": "com.ss.android.ugc.trill",
+                         "bounds": {
+                          "left": 576,
+                          "top": 1470,
+                          "right": 720,
+                          "bottom": 1556
+                         },
+                         "clickable": true,
+                         "enabled": true,
+                         "focused": false,
+                         "index": 4,
+                         "children": [
+                          {
+                           "resourceId": "",
+                           "text": "Profil",
+                           "desc": "",
+                           "className": "android.widget.TextView",
+                           "packageName": "com.ss.android.ugc.trill",
+                           "bounds": {
+                            "left": 576,
+                            "top": 1523,
+                            "right": 720,
+                            "bottom": 1546
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 0,
+                           "children": []
+                          },
+                          {
+                           "resourceId": "",
+                           "text": "",
+                           "desc": "",
+                           "className": "android.widget.ImageView",
+                           "packageName": "com.ss.android.ugc.trill",
+                           "bounds": {
+                            "left": 620,
+                            "top": 1474,
+                            "right": 676,
+                            "bottom": 1530
+                           },
+                           "clickable": false,
+                           "enabled": true,
+                           "focused": false,
+                           "index": 1,
+                           "children": []
+                          }
+                         ]
+                        }
+                       ]
+                      }
+                     ]
+                    }
+                   ]
+                  }
+                 ]
+                },
+                {
+                 "resourceId": "com.ss.android.ugc.trill:id/t7q",
+                 "text": "",
+                 "desc": "",
+                 "className": "android.widget.FrameLayout",
+                 "packageName": "com.ss.android.ugc.trill",
+                 "bounds": {
+                  "left": 0,
+                  "top": 0,
+                  "right": 130,
+                  "bottom": 204
+                 },
+                 "clickable": false,
+                 "enabled": true,
+                 "focused": false,
+                 "index": 1,
+                 "children": []
+                },
+                {
+                 "resourceId": "com.ss.android.ugc.trill:id/gmn",
+                 "text": "",
+                 "desc": "",
+                 "className": "android.view.View",
+                 "packageName": "com.ss.android.ugc.trill",
+                 "bounds": {
+                  "left": 0,
+                  "top": 1556,
+                  "right": 720,
+                  "bottom": 1640
+                 },
+                 "clickable": false,
+                 "enabled": true,
+                 "focused": false,
+                 "index": 2,
+                 "children": []
+                }
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -19,6 +19,8 @@ import { GROUP_PREFIX, GroupSchema, groupKeyFor, isRowDue, roomInFlight, withPro
 import retryFailed from './retry-failed'
 import addWarmup from './add-warmup'
 import runWarmup from './run-warmup'
+import recapVideos from './recap-videos'
+import { RECAP_PREFIX, RecapRowSchema, mergeRecap, recapSummary, type RecapRow } from './recap'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
 import { WARMUP_PREFIX, WarmupRowSchema, isPermanentDispatchFailure, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRow } from './warmup-rows'
 import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
@@ -1688,7 +1690,14 @@ function warmupGapsFor(run: WarmupRow): [number, number] {
 async function runWarmupPass(
   ctx: PluginServiceContext,
   input: { fleet: z.infer<typeof DeviceListOutput>; names: Map<string, string>; claimed: ReadonlySet<string>; now: number; stopped: ReadonlySet<string> },
-): Promise<void> {
+): Promise<Set<string>> {
+  /*
+    The phones this pass actually sent work to. Returned so the recap pass that
+    runs after it does not send a read to a phone that is, as of this same
+    tick, already warming up — `device.list`'s `activities` was read before
+    either job existed and cannot see them.
+  */
+  const sent = new Set<string>()
   const entries: { key: string; version: number; run: WarmupRow }[] = []
   try {
     let cursor: string | null = null
@@ -1706,9 +1715,9 @@ async function runWarmupPass(
     } while (cursor !== null)
   } catch (err) {
     ctx.log.warn('router tick could not read the warm-up rows — skipping the warm-up half of this tick', { error: messageOf(err) })
-    return
+    return sent
   }
-  if (entries.length === 0) return
+  if (entries.length === 0) return sent
 
   // --- settle what came back -------------------------------------------------
   for (const entry of entries) {
@@ -1862,6 +1871,7 @@ async function runWarmupPass(
       later reads: one answer for the lot, because this plugin holds `job.get`
       and deliberately not `job.list`.
     */
+    sent.add(dispatch.deviceId)
     let next = entry.run
     for (const step of dispatch.steps) next = withStepState(next, step.activityId, { state: 'queued', jobId, startedAt: input.now })
     entry.run = withRunSummary(next)
@@ -1900,6 +1910,7 @@ async function runWarmupPass(
   }
   const over = runs.filter(isRunOver).length
   ctx.log.debug('warm-up pass done', { rows: runs.length, sent: plan.length, finished: over })
+  return sent
 }
 
 function messageOf(err: unknown): string {
@@ -1970,6 +1981,192 @@ async function readGroups(ctx: PluginServiceContext): Promise<Map<string, Group>
 type PostRowEntries = Awaited<ReturnType<PluginServiceContext['storage']['global']['list']>>['items']
 
 /**
+ * What a `<platform>/my-videos` member hands back.
+ *
+ * Validated here rather than trusted because the three packs are versioned and
+ * activated independently of this one: a farm can be running a `my-videos` a
+ * release older or newer than this router, and a reading that does not parse
+ * must fail the row by name rather than be merged as an empty account.
+ */
+const MyVideosOutput = z.object({
+  account: z.string().default(''),
+  videos: z
+    .array(
+      z.object({
+        rank: z.number().int().nonnegative(),
+        title: z.string().default(''),
+        views: z.number().int().nonnegative(),
+        viewsText: z.string().default(''),
+        approx: z.boolean().default(false),
+      }),
+    )
+    .default([]),
+  truncated: z.boolean().default(false),
+})
+
+/**
+ * How long a queued recap read waits for its phone before it gives up.
+ *
+ * Six hours: a farm phone offline longer than that has a problem a recap is
+ * not going to report, and the next scheduled recap queues the read again.
+ */
+const RECAP_WAIT_MAX_SEC = 6 * 60 * 60
+
+/** Every recap row on this farm, with the version each was read at. */
+async function readRecapRows(ctx: PluginServiceContext): Promise<{ key: string; version: number; row: RecapRow }[]> {
+  const out: { key: string; version: number; row: RecapRow }[] = []
+  let cursor: string | null = null
+  do {
+    const opts: { prefix: string; limit: number; cursor?: string } = { prefix: RECAP_PREFIX, limit: 500 }
+    if (cursor !== null) opts.cursor = cursor
+    const page = await ctx.storage.global.list(opts)
+    for (const entry of page.items) {
+      const parsed = RecapRowSchema.safeParse(entry.value)
+      if (parsed.success) out.push({ key: entry.key, version: entry.version, row: parsed.data })
+    }
+    cursor = page.nextCursor
+  } while (cursor !== null)
+  return out
+}
+
+/**
+ * The recap half of a router tick (2026-09-21).
+ *
+ * Reads what came back, then sends what is still wanted — the same two halves
+ * as the warm-up pass, and run AFTER it with its claims, for the same reason
+ * the warm-up runs after posting: a recap is the least urgent thing a phone
+ * can be doing and must never take one away from an upload.
+ *
+ * A row is only ever sent when its phone is free and it has no job out. A row
+ * whose read failed keeps its previous videos and says why beside them.
+ */
+async function runRecapPass(ctx: PluginServiceContext, input: { fleet: z.infer<typeof DeviceListOutput>; names: Map<string, string>; claimed: ReadonlySet<string>; now: number }): Promise<void> {
+  let entries: { key: string; version: number; row: RecapRow }[]
+  try {
+    entries = await readRecapRows(ctx)
+  } catch (err) {
+    ctx.log.warn('router tick could not read the recap rows — skipping the recap half of this tick', { error: messageOf(err) })
+    return
+  }
+  if (entries.length === 0) return
+
+  // --- settle what came back -------------------------------------------------
+  for (const entry of entries) {
+    const row = entry.row
+    if (row.state !== 'reading' || row.jobId === '') continue
+    let job: { status: string; error?: string | null; result?: unknown }
+    try {
+      job = (await ctx.farm.call('job.get', { jobId: row.jobId }, JobGetOutput)) as { status: string; error?: string | null; result?: unknown }
+    } catch (err) {
+      if (!isJobGone(err)) continue
+      await writeRecap(ctx, entry, { ...row, state: 'failed', jobId: '', readAt: input.now, note: 'The farm no longer has this read, so what the phone found cannot be recovered. Refresh to ask again.' })
+      continue
+    }
+    const settled = settleWarmupStep(job)
+    if (settled === null) continue
+    if (settled.state === 'failed') {
+      await writeRecap(ctx, entry, { ...row, state: 'failed', jobId: '', readAt: input.now, note: settled.error ?? 'The read failed without an error message.' })
+      continue
+    }
+    const parsed = MyVideosOutput.safeParse(job.result)
+    if (!parsed.success) {
+      /*
+        The job succeeded and the answer is unreadable. That is a version skew
+        between this plugin and the platform pack, not a phone problem, and
+        saying so is the difference between an operator updating a pack and an
+        operator power-cycling a phone.
+      */
+      await writeRecap(ctx, entry, {
+        ...row,
+        state: 'failed',
+        jobId: '',
+        readAt: input.now,
+        note: `The phone answered in a shape this version cannot read — the ${row.platform} pack may be a different release. (${parsed.error.issues[0]?.message ?? 'no detail'})`,
+      })
+      continue
+    }
+    const reading = parsed.data
+    const merged = mergeRecap(row.videos, { account: reading.account, videos: reading.videos, truncated: reading.truncated, asked: row.asked }, input.now)
+    await writeRecap(ctx, entry, {
+      ...row,
+      state: 'ok',
+      jobId: '',
+      readAt: input.now,
+      syncedAt: input.now,
+      account: reading.account || row.account,
+      videos: merged.videos,
+      truncated: reading.truncated,
+      window: reading.videos.length,
+      note: merged.note,
+    })
+    if (merged.note !== '') ctx.log.warn('a recap reading could not be lined up with certainty', { key: entry.key, note: merged.note })
+  }
+
+  // --- send what is still wanted ---------------------------------------------
+  const online = new Set(input.fleet.items.filter((item) => item.status === 'online').map((item) => item.id))
+  const busy = new Set<string>(input.claimed)
+  for (const entry of entries) if (entry.row.state === 'reading' && entry.row.jobId !== '') busy.add(entry.row.deviceId)
+
+  for (const entry of entries) {
+    const row = entry.row
+    if (row.state !== 'reading' || row.jobId !== '') continue
+    if (!online.has(row.deviceId)) {
+      /*
+        A read waits for its phone rather than being refused on the spot — a
+        fleet is never all online at once, and a phone that appears in an hour
+        should be read then. But it cannot wait for ever: a recap aimed at
+        every phone would otherwise leave a row saying "waiting" for each
+        phone that has gone for good, and nothing on the page could tell those
+        from the ones still to come.
+      */
+      if (input.now - row.readAt > RECAP_WAIT_MAX_SEC) {
+        await writeRecap(ctx, entry, { ...row, state: 'failed', readAt: input.now, note: `This phone did not come online in the ${Math.round(RECAP_WAIT_MAX_SEC / 3_600)} hours after the read was asked for.` })
+      }
+      continue
+    }
+    // One read per phone per tick: the three platforms queue behind each other
+    // rather than three apps fighting over one screen.
+    if (busy.has(row.deviceId)) continue
+    busy.add(row.deviceId)
+    let jobId: string
+    try {
+      const job = await ctx.farm.call('job.run', { scriptRef: `${row.platform}/my-videos@latest`, deviceId: row.deviceId, params: { maxVideos: row.asked } }, JobRunOutput)
+      jobId = job.jobId
+    } catch (err) {
+      const why = messageOf(err)
+      /*
+        A refusal the farm would repeat — an unknown script, bad params — fails
+        the row by name instead of being retried every fifteen seconds for ever
+        behind a recap that still reads as "reading…".
+      */
+      if (isPermanentDispatchFailure(err)) {
+        await writeRecap(ctx, entry, { ...row, state: 'failed', jobId: '', readAt: input.now, note: `The farm refused this read and would refuse it again: ${why}` })
+      } else {
+        ctx.log.warn('could not send a recap read', { key: entry.key, error: why })
+      }
+      busy.delete(row.deviceId)
+      continue
+    }
+    await writeRecap(ctx, entry, { ...row, jobId, readAt: input.now })
+  }
+}
+
+/** Write a recap row back, carrying its version. A row that moved under us is left for the next tick. */
+async function writeRecap(ctx: PluginServiceContext, entry: { key: string; version: number; row: RecapRow }, next: RecapRow): Promise<void> {
+  try {
+    const written = await ctx.storage.global.setIfVersion(entry.key, next, entry.version)
+    if (written === null) {
+      ctx.log.info('a recap row changed while this tick was writing it — leaving it for the next tick', { key: entry.key })
+      return
+    }
+    entry.version = written.version
+    entry.row = next
+  } catch (err) {
+    ctx.log.warn('could not write back a recap row', { key: entry.key, error: messageOf(err) })
+  }
+}
+
+/**
  * Every `post:` row, across every page the store has — the same `do/while`
  * cursor walk `start-group`, `retry-group`, `update-group` and `resolve-attempt`
  * already use. See `POST_PAGE_SIZE` for what reading one page only did to a
@@ -2013,7 +2210,8 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
   }
   if (listed.items.length === 0) {
     // No posts is not no work: a warm-up session runs on its own rows.
-    await runWarmupPass(ctx, { fleet, names, claimed: new Set(), now: Math.floor(Date.now() / 1000), stopped: await stoppedGroupIds(ctx) })
+    const warmed = await runWarmupPass(ctx, { fleet, names, claimed: new Set(), now: Math.floor(Date.now() / 1000), stopped: await stoppedGroupIds(ctx) })
+    await runRecapPass(ctx, { fleet, names, claimed: warmed, now: Math.floor(Date.now() / 1000) })
     return
   }
 
@@ -2352,7 +2550,13 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
   }
 
   // Last, and with the post pass's claims: posting is the higher-value work.
-  await runWarmupPass(ctx, { fleet, names, claimed, now: Math.floor(Date.now() / 1000), stopped })
+  const warmed = await runWarmupPass(ctx, { fleet, names, claimed, now: Math.floor(Date.now() / 1000), stopped })
+  /*
+    And the recap after THAT, with both sets of claims. A recap read is the
+    least urgent thing a phone can be asked to do — the numbers it collects are
+    hours old by design — so it takes whatever phones the other two passes left.
+  */
+  await runRecapPass(ctx, { fleet, names, claimed: new Set([...claimed, ...warmed]), now: Math.floor(Date.now() / 1000) })
 }
 
 /**
@@ -2415,11 +2619,33 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.59.5',
+  /*
+    0.60.0 — THE RECAP TAB: how every posted video is actually doing.
+
+    The owner asked for it on 2026-09-21 and named the hard part in the same breath:
+    *"ga mungkin dong melakukan scroll kebawah dan rekap satu per satu ... dikasih max aja misal 6
+    ... terus nextnya 6 lagi berarti ada sistem smart merge jadi biar datanya itu tetap sync"*. An
+    account with eighty videos cannot be scrolled to the bottom every day, so a read takes a WINDOW
+    of the newest few and `recap.ts` is what makes two windows taken a day apart describe the same
+    videos.
+
+    Three things had to be true for that to work, and each cost a decision:
+
+      1. **Nothing is opened.** Playing a post adds a view to the number being recapped — six
+         videos on seventy-three phones every day is over a thousand fake views — so each pack's
+         `my-videos` reads the profile grid and taps nothing inside it.
+      2. **Only YouTube gives a title.** TikTok's and Instagram's grids give a count and a position
+         and nothing else, measured on hardware that day. So the merge has two modes: by name where
+         there is one, and otherwise by finding how many new posts are in front, using the two facts
+         that a view count never falls and a video grows a little between runs rather than a lot.
+      3. **A recap is the least urgent work a phone can do.** `runRecapPass` runs after posting AND
+         after warm-up, with both their claims, so a read can never take a phone from an upload.
+  */
+  version: '0.60.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
-  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts, addWarmup, runWarmup],
+  scripts: [addPost, retryFailed, addPosts, addGroup, recapVideos, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts, addWarmup, runWarmup],
   /*
     Plan 315 — workflows this plugin ships. Registered on the farm as
     `smm/<name>` when this version is activated, read-only there; an operator

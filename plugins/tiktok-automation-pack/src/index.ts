@@ -8,6 +8,7 @@ import { dismissInterruptions, keyboardWindowShowing } from './interruptions'
 import switchAccount from './switch-account'
 import searchFollow from './search-follow'
 import listAccounts from './list-accounts'
+import myVideos from './my-videos'
 import postVideo from './post-video'
 import enqueueVideo from './enqueue-video'
 import searchKeyword from './search-keyword'
@@ -1661,12 +1662,24 @@ export default definePlugin({
   //      30-minute stale window now logs a warning instead of overwriting.
   //   3. The Posts table reads `id` / `payload.caption` / `settledAt`, and
   //      Retry writes the new shape.
-  version: '1.53.0',
+  // 1.54.0 — READING A CHANNEL'S OWN NUMBERS, WITHOUT WATCHING ANYTHING.
+  //   The owner asked for a recap of how each posted video is doing across the
+  //   three platforms (2026-09-21), and the Social Media Manager can only
+  //   recap what a phone can read. `my-videos` is this pack's half: it opens
+  //   the Profil tab, reads the newest posts' play counts, and taps NOTHING
+  //   inside the grid — opening a video would add a view to the number it came
+  //   to read, so a daily recap would inflate what it reports.
+  //
+  //   The grid gives a play count and a position and nothing else: no caption,
+  //   no id, no date. That is reported as it is. Matching those readings to
+  //   videos across days is the Social Media Manager's job, not something this
+  //   member can fake by opening every video at a view apiece.
+  version: '1.54.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',
   description: 'Watch, scroll, search, browse shop and live, and read notifications on the TikTok feed, with human-shaped timing.',
-  scripts: [switchAccount, searchFollow, listAccounts, postVideo, enqueueVideo, autoScrollScript, searchKeyword, keywordVideos, liveBrowse, shopBrowse, notificationActivity, clearDraftsScript],
+  scripts: [switchAccount, searchFollow, listAccounts, myVideos, postVideo, enqueueVideo, autoScrollScript, searchKeyword, keywordVideos, liveBrowse, shopBrowse, notificationActivity, clearDraftsScript],
 
   /**
    * Plan 113 §3.7, §4.6, §5 steps 113.5/113.10. `permissions` grew from `['fs.read']` to exactly

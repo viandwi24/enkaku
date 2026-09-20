@@ -12,6 +12,7 @@ import { ACCOUNTS_KEY } from './accounts'
 import switchAccount from './switch-account'
 import searchFollow from './search-follow'
 import listAccounts from './list-accounts'
+import myVideos from './my-videos'
 import postVideo from './post-video'
 import enqueueVideo from './enqueue-video'
 import searchKeyword from './search-keyword'
@@ -25,7 +26,7 @@ import notificationActivity from './notification-activity'
 describe('tiktok-automation-pack manifest', () => {
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('1.53.0')
+    expect(plugin.version).toBe('1.54.0')
     expect(plugin.version).toBe(pkg.version)
   })
 })
@@ -286,6 +287,7 @@ describe('every member is presentable (plan 108 P8)', () => {
     switchAccount,
     searchFollow,
     listAccounts,
+    myVideos,
     postVideo,
     enqueueVideo,
     autoScrollScript,

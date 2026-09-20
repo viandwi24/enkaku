@@ -939,3 +939,107 @@ export function postedText(caption: string, tags: readonly string[]): string {
   }
   return text
 }
+
+/* ── The recap (0.60.0) ────────────────────────────────────────────────── */
+
+export const RECAP_PREFIX = 'recap:'
+
+/**
+ * The browser's mirror of a recap row.
+ *
+ * `looseObject`, like every other mirror on this page, and here the reason is
+ * not hypothetical: a recap row carries a `history` array per video that this
+ * screen only reads. The Retry button on the warm-up tab once destroyed
+ * `params` and `sequence` on every row it touched because its mirror was
+ * strict, and `Forget` below writes nothing — but the next control that does
+ * would inherit the same trap.
+ */
+export const RecapVideoSchema = z.looseObject({
+  key: z.string(),
+  title: z.string().default(''),
+  views: z.number().default(0),
+  viewsText: z.string().default(''),
+  approx: z.boolean().default(false),
+  rank: z.number().nullable().default(null),
+  firstSeenAt: z.number().default(0),
+  lastSeenAt: z.number().default(0),
+  history: z.array(z.looseObject({ at: z.number(), views: z.number() })).default([]),
+})
+export type RecapVideo = z.infer<typeof RecapVideoSchema>
+
+export const RecapRowSchema = z.looseObject({
+  platform: z.enum(['tiktok', 'youtube', 'instagram']),
+  deviceId: z.string(),
+  deviceName: z.string().default(''),
+  account: z.string().default(''),
+  readAt: z.number().default(0),
+  syncedAt: z.number().default(0),
+  state: z.enum(['never', 'reading', 'ok', 'failed']).default('never'),
+  note: z.string().default(''),
+  jobId: z.string().default(''),
+  videos: z.array(RecapVideoSchema).default([]),
+  truncated: z.boolean().default(false),
+  window: z.number().default(0),
+  asked: z.number().default(6),
+})
+export type RecapRow = z.infer<typeof RecapRowSchema>
+
+/** The key a recap row is stored under, and this screen's React key for it. */
+export function recapRowKeyOf(row: Pick<RecapRow, 'platform' | 'deviceId'>): string {
+  return `${RECAP_PREFIX}${row.platform}:${row.deviceId}`
+}
+
+/** Every stored recap row. A row this build cannot parse is skipped, never shown half-read. */
+export async function listRecapRows(): Promise<RecapRow[]> {
+  const out: RecapRow[] = []
+  for (const entry of await readAll(RECAP_PREFIX)) {
+    const parsed = RecapRowSchema.safeParse(entry.value)
+    if (parsed.success) out.push(parsed.data)
+  }
+  return out
+}
+
+/**
+ * Forget one account's recap — from the BROWSER, with no job.
+ *
+ * The escape hatch for the one thing the merge cannot fix by itself. If an
+ * account is signed out and a different one signed in on the same phone, every
+ * stored video belongs to somebody else and no amount of re-reading will say
+ * so; the merge will only keep reporting that it cannot line the readings up.
+ * Forgetting starts that account's history again from the next read.
+ *
+ * In the browser for the reason `setSessionStopped` is: it needs no phone, and
+ * making the operator find an online phone to delete a row they are looking at
+ * is the thing the owner objected to by name.
+ */
+export async function forgetRecap(row: Pick<RecapRow, 'platform' | 'deviceId'>): Promise<void> {
+  const key = recapRowKeyOf(row)
+  await api(`${CORE}/api/plugins/smm/data/entry?scope=global&key=${encodeURIComponent(key)}`, Ignored, { method: 'DELETE' })
+}
+
+/** Views added by one video since the reading before the last. `null` when there is no earlier reading. */
+export function videoDelta(video: RecapVideo): number | null {
+  if (video.history.length < 2) return null
+  const last = video.history[video.history.length - 1]
+  const before = video.history[video.history.length - 2]
+  if (!last || !before) return null
+  return last.views - before.views
+}
+
+/** The same, for a whole row. `null` when not one video has two readings yet. */
+export function rowDelta(row: RecapRow): number | null {
+  let total = 0
+  let any = false
+  for (const video of row.videos) {
+    const delta = videoDelta(video)
+    if (delta === null) continue
+    total += delta
+    any = true
+  }
+  return any ? total : null
+}
+
+/** A row's views, added up — including videos that have left the window. */
+export function rowViews(row: RecapRow): number {
+  return row.videos.reduce((sum, video) => sum + video.views, 0)
+}

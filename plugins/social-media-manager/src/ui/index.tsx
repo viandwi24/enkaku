@@ -6,6 +6,7 @@ import { SessionDetail, SessionsPanel } from './parts/sessions'
 import { OpenSpeechContext, SpeechPanel } from './parts/speech'
 import { DraftsPanel } from './parts/drafts'
 import { NewWarmupForm, WarmupDetail, WarmupPanel } from './parts/warmup'
+import { RecapPanel } from './parts/recap'
 
 /**
  * One screen for the whole job: upload the videos, say where they go, name the
@@ -29,6 +30,11 @@ import { NewWarmupForm, WarmupDetail, WarmupPanel } from './parts/warmup'
  *
  * - **Sessions** — every batch, newest first, one table row each, with how far
  *   each has got. **New session** is a BUTTON here, not a fifth tab (0.37.0).
+ * - **Recap** (0.60.0) — how each posted video is actually doing: one row per
+ *   phone, the three platforms' view counts side by side, expandable to the
+ *   videos themselves. It belongs here rather than beside the Jobs page for
+ *   the same reason warm-up does — posting a video and asking how it did are
+ *   one job to the person doing them.
  * - **Auto-Caption** — Whisper: the model, the doctor, the caption style. Named
  *   "Speech" until 0.37.0, which said what it ran rather than what it is for.
  * - **Cleanup** — each platform's drafts, and the videos the post scripts left
@@ -78,8 +84,8 @@ import { NewWarmupForm, WarmupDetail, WarmupPanel } from './parts/warmup'
  * farm's social work is one thing to the person doing it, whether this hour's
  * job is posting or warming up.
  */
-type Tab = 'sessions' | 'warmup' | 'speech' | 'drafts' | 'accounts'
-const TABS: readonly string[] = ['sessions', 'warmup', 'speech', 'drafts', 'accounts']
+type Tab = 'sessions' | 'warmup' | 'recap' | 'speech' | 'drafts' | 'accounts'
+const TABS: readonly string[] = ['sessions', 'warmup', 'recap', 'speech', 'drafts', 'accounts']
 const isTab = (value: unknown): value is Tab => typeof value === 'string' && TABS.includes(value)
 
 function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactElement {
@@ -195,6 +201,8 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
           <TabsList variant="compact">
             <TabsTrigger value="sessions">Posts</TabsTrigger>
             <TabsTrigger value="warmup">Warm-up</TabsTrigger>
+            {/* Recap (0.60.0): how each posted video is actually doing, on all three platforms at once. */}
+            <TabsTrigger value="recap">Recap</TabsTrigger>
             <TabsTrigger value="speech">Auto-Caption</TabsTrigger>
             <TabsTrigger value="drafts">Cleanup</TabsTrigger>
             <TabsTrigger value="accounts">Accounts</TabsTrigger>
@@ -228,6 +236,16 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
         </TabsContent>
         <TabsContent value="warmup">
           <WarmupPanel refreshKey={refreshKey} onOpen={openWarmup} onNew={openNewWarmup} />
+        </TabsContent>
+        {/*
+          Recap has no Refresh button on the tab row and wants none: its own
+          "Refresh recap" queues reads on the phones, and the table under it
+          re-reads itself while any are out. A second button meaning "look
+          again" beside one meaning "go and ask the phones" is two words for
+          two different things, one letter apart.
+        */}
+        <TabsContent value="recap">
+          <RecapPanel />
         </TabsContent>
         <TabsContent value="speech">
           <SpeechPanel refreshKey={refreshKey} onRefreshingChange={setRefreshing} />

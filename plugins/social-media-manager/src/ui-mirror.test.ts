@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { GroupSchema as BrowserGroupSchema, PostSchema as BrowserPostSchema, WarmupRowSchema as BrowserRowSchema } from './ui/shared'
+import { GroupSchema as BrowserGroupSchema, PostSchema as BrowserPostSchema, RecapRowSchema as BrowserRecapSchema, WarmupRowSchema as BrowserRowSchema } from './ui/shared'
+import { RecapRowSchema, mergeRecap } from './recap'
 import { GroupSchema } from './groups'
 import { PostSchema } from './posts'
 import { WarmupRowSchema, runsFromPlan, type WarmupRow } from './warmup-rows'
@@ -122,5 +123,50 @@ describe('the browser mirror of a session and a post row', () => {
       lastNote: null,
     })
     expect(PostSchema.parse(BrowserPostSchema.parse(original))).toEqual(original)
+  })
+})
+
+describe('the browser mirror of a recap row', () => {
+  /** A row with two readings behind it, so the per-video `history` the browser only READS is present. */
+  const recapRow = () => {
+    const first = mergeRecap([], { account: '@a', truncated: false, asked: 6, videos: [{ rank: 0, views: 5 }, { rank: 1, views: 40 }] }, 1_800_000_000)
+    const second = mergeRecap(first.videos, { account: '@a', truncated: false, asked: 6, videos: [{ rank: 0, views: 9 }, { rank: 1, views: 44 }] }, 1_800_086_400)
+    return RecapRowSchema.parse({
+      version: 1,
+      platform: 'tiktok',
+      deviceId: 'd1',
+      deviceName: 'Phone 1',
+      account: '@a',
+      readAt: 1_800_086_400,
+      syncedAt: 1_800_086_400,
+      state: 'ok',
+      note: '',
+      jobId: '',
+      videos: second.videos,
+      truncated: false,
+      window: 2,
+      asked: 6,
+    })
+  }
+
+  test('a row survives the browser round trip with every field intact', () => {
+    const original = recapRow()
+    const mirrored = BrowserRecapSchema.parse(JSON.parse(JSON.stringify(original)))
+    expect(RecapRowSchema.parse(mirrored)).toEqual(original)
+  })
+
+  test("each video's history survives it — the growth an operator reads is only in there", () => {
+    const original = recapRow()
+    const mirrored = BrowserRecapSchema.parse(JSON.parse(JSON.stringify(original)))
+    expect(mirrored.videos.map((v) => v.history.length)).toEqual([2, 2])
+    expect(mirrored.videos[0]?.history[1]).toEqual({ at: 1_800_086_400, views: 9 })
+  })
+
+  test('a field this build has never heard of is carried through, not dropped', () => {
+    // The trap this whole file exists for: a strict mirror would silently
+    // delete a field a newer service added, and the next browser write would
+    // persist the deletion.
+    const withExtra = { ...JSON.parse(JSON.stringify(recapRow())), somethingNewer: { kept: true } }
+    expect((BrowserRecapSchema.parse(withExtra) as Record<string, unknown>).somethingNewer).toEqual({ kept: true })
   })
 })

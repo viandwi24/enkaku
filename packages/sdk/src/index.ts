@@ -48,6 +48,17 @@ export {
 } from './human'
 export type { AimBox, DwellBucket, RevisitMove, RevisitStep, RevisitPlan } from './human'
 export { foreignAppOnTop, touchBlockerOnTop } from './screen'
+/*
+  Reading a count a phone drew — views, plays, likes. Here rather than in each
+  pack for the reason `foreignAppOnTop` is here: the rule is the same on all
+  three platforms and getting it wrong is a factor-of-a-thousand error, so one
+  copy with one test beats three copies that drift.
+*/
+export { parseCount, countOf, countBefore } from './counts'
+export type { CountReading } from './counts'
+/* Stitching the pages of a scrolling list that has no per-item id — same argument, same three callers. */
+export { mergePages } from './grid'
+export type { MergedPages } from './grid'
 /**
  * The recovery half of `foreignAppOnTop` (2026-09-18). Detecting that something else is holding
  * the screen was never the hard part; every pack could already do it at launch and none of them

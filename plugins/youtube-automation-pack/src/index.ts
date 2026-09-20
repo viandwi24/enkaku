@@ -9,6 +9,7 @@ import postVideo from './post-video'
 import clearDrafts from './clear-drafts'
 import checkNotifications from './check-notifications'
 import checkProfile from './check-profile'
+import myVideos from './my-videos'
 
 /**
  * YouTube automation pack.
@@ -86,12 +87,26 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.48.1',
+  /*
+    0.49.0 — READING A CHANNEL'S OWN NUMBERS, WITHOUT WATCHING ANYTHING.
+
+    The owner asked for a recap of how each posted video is doing across the three platforms
+    (2026-09-21), and the Social Media Manager can only recap what a phone can read. `my-videos`
+    is this pack's half: You tab -> View channel -> the channel's own Shorts (or Videos) tab, read,
+    and nothing played. Playing a video would add a view to the number it came to read.
+
+    YouTube is the easy one of the three: a cell describes itself as
+    `<title>, 246 thousand views - play Short`, so the title and the count arrive together and a
+    recap can match a video to yesterday's reading BY NAME rather than by position. The catch is
+    that the title carries numbers of its own -- `2026 Solar Eclipse @ 50,000 Feet` -- so the count
+    is read backwards from the word it belongs to (`countBefore`, SDK), never from the sentence.
+  */
+  version: '0.49.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
   description: 'Search, browse, watch, like, read comments, download, and post Shorts in the YouTube app on a farm device.',
-  scripts: [searchChannel, scrollShorts, scrollLive, downloadHome, searchPlay, watchVideo, postVideo, clearDrafts, checkNotifications, checkProfile],
+  scripts: [searchChannel, myVideos, scrollShorts, scrollLive, downloadHome, searchPlay, watchVideo, postVideo, clearDrafts, checkNotifications, checkProfile],
 
   /**
    * ## Changelog

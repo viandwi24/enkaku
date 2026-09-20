@@ -4,6 +4,7 @@ import scrollReels from './scroll-reels'
 import checkInbox from './check-inbox'
 import checkActivity from './check-activity'
 import checkProfile from './check-profile'
+import myVideos from './my-videos'
 import searchKeyword from './search-keyword'
 import scrollFeed from './scroll-feed'
 import watchStories from './watch-stories'
@@ -21,13 +22,13 @@ describe('instagram-automation-pack manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.13.0')
+    expect(plugin.version).toBe('0.14.0')
     expect(plugin.version).toBe(pkg.version)
   })
 
   test('every script has a unique id and declares params and result schemas', () => {
     const ids = plugin.scripts.map((s) => s.id)
-    expect(ids).toEqual(['scroll-reels', 'check-inbox', 'check-activity', 'check-profile', 'search-keyword', 'scroll-feed', 'watch-stories', 'explore-reels', 'post-video', 'clear-drafts'])
+    expect(ids).toEqual(['scroll-reels', 'check-inbox', 'check-activity', 'check-profile', 'my-videos', 'search-keyword', 'scroll-feed', 'watch-stories', 'explore-reels', 'post-video', 'clear-drafts'])
     expect(new Set(ids).size).toBe(ids.length)
     for (const script of plugin.scripts) {
       expect(script.params).toBeDefined()
@@ -36,7 +37,7 @@ describe('instagram-automation-pack manifest', () => {
   })
 
   test('every member is presentable in Studio', () => {
-    const members = [scrollReels, checkInbox, checkActivity, checkProfile, searchKeyword, scrollFeed, watchStories, exploreReels, postVideo, clearDrafts]
+    const members = [scrollReels, checkInbox, checkActivity, checkProfile, myVideos, searchKeyword, scrollFeed, watchStories, exploreReels, postVideo, clearDrafts]
     expect(members.map((m) => m.id).sort()).toEqual(plugin.scripts.map((s) => s.id).sort())
     for (const member of members) {
       expect((member.title ?? '').length).toBeGreaterThan(0)
