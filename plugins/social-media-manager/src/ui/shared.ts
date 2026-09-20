@@ -1,6 +1,7 @@
 import { api } from '@enkaku/ui'
 import { z } from 'zod'
 import { resumeWarmupRow, stopPostRow, stopWarmupRow } from '../session-control'
+import { retryFailedSteps } from '../warmup-rows'
 
 /**
  * The one screen's shared vocabulary: what it reads from the farm, and how.
@@ -218,6 +219,8 @@ export const WarmupRowSchema = z.object({
   groupId: z.string(),
   /** Which run of the session this row belongs to; a row written before runs existed reads as the first. */
   runId: z.string().default('r-first'),
+  /** This run is stopped — the router sends nothing for it. Per run, because stopping a definition is meaningless. */
+  stopped: z.boolean().default(false),
   deviceId: z.string(),
   deviceName: z.string().nullable().default(null),
   phase: z.number().default(0),
@@ -305,11 +308,9 @@ async function writeEntry(key: string, value: unknown): Promise<void> {
  * rows. Failures to cancel are counted, not thrown: a job that finished a
  * second ago refuses, and the row is owed again either way.
  */
-export async function setSessionStopped(group: Group, action: 'stop' | 'start'): Promise<{ cancelled: number; couldNotCancel: number; pulled: number }> {
+export async function setSessionStopped(group: Group, action: 'stop' | 'start', runId?: string): Promise<{ cancelled: number; couldNotCancel: number; pulled: number }> {
   const stop = action === 'stop'
   const now = Math.floor(Date.now() / 1000)
-
-  await writeEntry(`group:${group.id}`, { ...group, stopped: stop })
 
   let cancelled = 0
   let couldNotCancel = 0
@@ -327,16 +328,38 @@ export async function setSessionStopped(group: Group, action: 'stop' | 'start'):
   }
 
   if (group.kind === 'warmup') {
-    for (const row of await readAll(`warmup:${group.id}:`)) {
-      const parsed = WarmupRowSchema.safeParse(row.value)
-      if (!parsed.success) continue
-      const next = stop ? stopWarmupRow(parsed.data, now) : { row: resumeWarmupRow(parsed.data, now), cancel: [] as string[], pulled: 0 }
-      if (next.row === parsed.data) continue
+    /*
+      Stopping is a thing you do to a RUN (0.59.0). A session is a definition,
+      and stopping a definition is meaningless — what an operator wants stopped
+      is tonight's pass, while last night's history stays exactly as it was.
+      `runId` names which; the session list passes the newest, which is what
+      somebody pressing Stop there means.
+    */
+    const rows = await readAll(`warmup:${group.id}:`)
+    const parsed = rows.map((row) => ({ key: row.key, parsed: WarmupRowSchema.safeParse(row.value) })).filter((entry) => entry.parsed.success)
+    const target = runId ?? newestRunId(parsed.map((entry) => entry.parsed.data as WarmupRow))
+    for (const entry of parsed) {
+      const row = entry.parsed.data as WarmupRow
+      if (row.runId !== target) continue
+      const next = stop ? stopWarmupRow(row, now) : { row: resumeWarmupRow(row, now), cancel: [] as string[], pulled: 0 }
       pulled += next.pulled
       await cancelJobs(next.cancel)
-      await writeEntry(row.key, next.row)
+      /* The flag is written even when nothing was pulled back: it is what stops the NEXT activity going out. */
+      await writeEntry(entry.key, { ...next.row, stopped: stop })
     }
-  } else if (stop) {
+    /*
+      The session's own legacy flag is cleared on a start, never set on a stop.
+      It is the older whole-session switch, and leaving it on after somebody
+      started a run would make the run sit there sending nothing with no
+      control on screen that explains why.
+    */
+    if (!stop && group.stopped) await writeEntry(`group:${group.id}`, { ...group, stopped: false })
+    return { cancelled, couldNotCancel, pulled }
+  }
+
+  /* A post session has no runs: the session IS the execution, so the flag stays on it. */
+  await writeEntry(`group:${group.id}`, { ...group, stopped: stop })
+  if (stop) {
     // Starting a post session pulls nothing back: its rows keep the turns
     // `start-group` stamped, and the flag alone decides whether they go.
     for (const row of await readAll('post:')) {
@@ -351,6 +374,81 @@ export async function setSessionStopped(group: Group, action: 'stop' | 'start'):
   }
 
   return { cancelled, couldNotCancel, pulled }
+}
+
+/**
+ * Which warm-up sessions have a STOPPED newest run, for the list's Stop
+ * button.
+ *
+ * One read of every warm-up row, rather than one per session: a farm with
+ * forty sessions would otherwise make forty prefix scans to draw one list.
+ */
+export async function stoppedNewestRuns(): Promise<Set<string>> {
+  const byGroup = new Map<string, WarmupRow[]>()
+  for (const row of await readAll('warmup:')) {
+    const parsed = WarmupRowSchema.safeParse(row.value)
+    if (!parsed.success) continue
+    const list = byGroup.get(parsed.data.groupId)
+    if (list) list.push(parsed.data)
+    else byGroup.set(parsed.data.groupId, [parsed.data])
+  }
+
+  const out = new Set<string>()
+  for (const [groupId, rows] of byGroup) {
+    const newest = newestRunId(rows)
+    if (newest !== null && rows.some((row) => row.runId === newest && row.stopped)) out.add(groupId)
+  }
+  return out
+}
+
+/** The run an operator means when they press a control that names no run: the one that started last. */
+export function newestRunId(rows: readonly WarmupRow[]): string | null {
+  let best: { runId: string; at: number } | null = null
+  for (const row of rows) {
+    const at = Math.min(...row.steps.map((step) => step.notBeforeAt), Number.POSITIVE_INFINITY)
+    const seen = Number.isFinite(at) ? at : 0
+    if (best === null || seen > best.at || (seen === best.at && row.runId > best.runId)) best = { runId: row.runId, at: seen }
+  }
+  return best?.runId ?? null
+}
+
+/**
+ * Re-queue everything in one run that failed or never ran.
+ *
+ * Per RUN and not per session, for the reason the stop flag moved: last
+ * night's failures are history, and a Retry that swept them up with tonight's
+ * would re-run a phone's whole week.
+ */
+export async function retryWarmupRun(groupId: string, runId: string): Promise<number> {
+  const now = Math.floor(Date.now() / 1000)
+  let requeued = 0
+  for (const row of await readAll(`warmup:${groupId}:`)) {
+    const parsed = WarmupRowSchema.safeParse(row.value)
+    if (!parsed.success || parsed.data.runId !== runId) continue
+    const again = retryFailedSteps(parsed.data, now)
+    if (again === null) continue
+    requeued += again.steps.filter((step) => step.state === 'pending').length - parsed.data.steps.filter((step) => step.state === 'pending').length
+    await writeEntry(row.key, { ...again, stopped: false })
+  }
+  return requeued
+}
+
+/**
+ * Delete one run of a session — its rows and nothing else.
+ *
+ * The session survives, and so do its other runs. Deleting the SESSION is a
+ * different button with a different warning, and conflating them would make
+ * "remove this night" able to throw away a month.
+ */
+export async function deleteWarmupRun(groupId: string, runId: string): Promise<number> {
+  let removed = 0
+  for (const row of await readAll(`warmup:${groupId}:`)) {
+    const parsed = WarmupRowSchema.safeParse(row.value)
+    if (!parsed.success || parsed.data.runId !== runId) continue
+    await api(`${CORE}/api/plugins/smm/data/entry?scope=global&key=${encodeURIComponent(row.key)}`, Ignored, { method: 'DELETE' })
+    removed += 1
+  }
+  return removed
 }
 
 /** Does this session carry any skip rule at all? What decides whether the page says anything about them. */

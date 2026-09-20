@@ -161,6 +161,24 @@ export const WarmupRowSchema = z.object({
   sequence: z.enum(['jobs', 'workflow']).default('jobs'),
   state: z.enum(WARMUP_ROW_STATES).default('pending'),
   summary: z.string().max(200).nullable().default(null),
+  /**
+   * This RUN is stopped: the router sends nothing for it until it is started
+   * again (0.59.0).
+   *
+   * On the row and not on the session, because stopping is a thing you do to a
+   * RUN. A session is a definition — "warm the fleet up like this" — and
+   * stopping a definition is meaningless; what an operator wants stopped is
+   * tonight's pass, while last night's history stays exactly as it was. The
+   * session list's Stop therefore aims at the newest run, which is what
+   * somebody pressing it means.
+   *
+   * Every row of a run carries the same value. That is not duplication for its
+   * own sake: stopping already rewrites every row to pull its work back, so
+   * the flag rides along for free, and the rows stay the single source of
+   * truth about what a run is doing — the same reason `runsOf` derives a run's
+   * report from them rather than from a record beside them.
+   */
+  stopped: z.boolean().default(false),
 })
 export type WarmupRow = z.infer<typeof WarmupRowSchema>
 
@@ -212,6 +230,7 @@ export function runsFromPlan(input: {
       sequence: input.sequence ?? 'jobs',
       state: steps.length === 0 ? 'skipped' : 'pending',
       summary: null,
+      stopped: false,
     }
     return withRunSummary(run)
   })
@@ -481,7 +500,7 @@ export function isPermanentDispatchFailure(message: string): boolean {
  * button look broken for a minute. `null` when there is nothing to retry, so a
  * caller does not write a row it did not change.
  */
-export function retryFailedSteps(run: WarmupRow, now: number): WarmupRow | null {
+export function retryFailedSteps<S extends { state: WarmupStepState }, R extends { steps: readonly S[] }>(run: R, now: number): R | null {
   /*
     `skipped` goes again too, and that is not a generalisation — it is what a
     stopped sequence leaves behind.
@@ -498,9 +517,17 @@ export function retryFailedSteps(run: WarmupRow, now: number): WarmupRow | null 
   const again = (state: WarmupStepState): boolean => state === 'failed' || state === 'skipped'
   if (!run.steps.some((step) => again(step.state))) return null
   const steps = run.steps.map((step) =>
-    again(step.state) ? { ...step, state: 'pending' as const, jobId: null, error: null, startedAt: null, settledAt: null, notBeforeAt: now } : step,
+    again(step.state) ? ({ ...step, state: 'pending', jobId: null, error: null, startedAt: null, settledAt: null, notBeforeAt: now } as S) : step,
   )
-  return withRunSummary({ ...run, steps })
+  /*
+    The row's own `state`/`summary` are NOT recomputed here — that belongs to
+    `withRunSummary`, which the service has and the browser mirror does not.
+    Since 0.59.0 the RETRY button runs in the browser (a retry needs no phone,
+    the same argument Stop settled), so this had to stop depending on the
+    schema. The router's next tick fixes the summary; a stale one for one tick
+    is a smaller cost than two copies of this rule.
+  */
+  return { ...run, steps }
 }
 
 /** Which platforms a session's rows actually covered, for the page's header. */

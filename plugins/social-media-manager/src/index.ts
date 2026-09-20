@@ -83,6 +83,35 @@ import {
  *
  * ## Changelog
  *
+ * - **0.59.0 — stopping is a thing you do to a RUN, and a run can be retried
+ *   or removed on its own.**
+ *
+ *   0.58.0 gave a session runs but left Stop on the session, which made the
+ *   button ambiguous the moment there were two. The owner drew the line:
+ *   *"setiap snapshot ada tombol retrynya atau start stop, tapi start stop
+ *   yang di list sesi itu selalu mengarah ke sesi paling baru"*.
+ *
+ *   So `stopped` moved onto the row, which is where a run's truth already
+ *   lives — the same reason `runsOf` derives a run's report from the rows
+ *   rather than from a record beside them. A session is a DEFINITION, and
+ *   stopping a definition is meaningless; what an operator wants stopped is
+ *   tonight's pass, while last night's history stays exactly as it was.
+ *
+ *   Each run on the session page now carries Stop / Start again, Retry failed
+ *   and Remove. All three run in the BROWSER: none needs a phone, and the
+ *   moment you most want to stop something is the moment you can least count
+ *   on one being connected. Only STARTING a new run stays a member, because a
+ *   schedule has to be able to do that and a schedule can only run a script.
+ *
+ *   The session list's Stop aims at the NEWEST run, which is the only reading
+ *   that makes sense from a list, and its chip says so rather than claiming
+ *   the whole session is stopped. `Group.stopped` survives as the older
+ *   whole-session switch so that a farm which stopped a session before runs
+ *   existed does not find its phones quietly working again on upgrade.
+ *
+ *   Retry is per run too: last night's failures are history, and a Retry that
+ *   swept them up with tonight's would re-run a phone's whole week.
+ *
  * - **0.58.0 — a warm-up session is a thing you start AGAIN, and every start
  *   keeps its own history.**
  *
@@ -1639,11 +1668,18 @@ async function runWarmupPass(
   // --- send what is due ------------------------------------------------------
   const devices = new Map(input.fleet.items.map((item) => [item.id, item as unknown as RouterDevice]))
   /*
-    A stopped session still SETTLES above — an answer to a job that was already
-    out is owed whatever the operator has since decided — but sends nothing.
+    A stopped RUN still SETTLES above — an answer to a job that was already out
+    is owed whatever the operator has since decided — but sends nothing.
     Filtering here rather than at the top is what makes those two true at once.
+
+    Two flags, and both are read (0.59.0). `row.stopped` is the one that means
+    something now: stopping is a thing you do to a run, because a session is a
+    definition and stopping a definition is meaningless. `group.stopped` is the
+    older whole-session flag, still honoured so that a farm which stopped a
+    session under the previous model does not find its phones quietly working
+    again the moment it upgrades.
   */
-  const runs = entries.map((entry) => entry.run).filter((run) => !input.stopped.has(run.groupId))
+  const runs = entries.map((entry) => entry.run).filter((run) => !run.stopped && !input.stopped.has(run.groupId))
   const busy = new Set<string>([...input.claimed, ...phonesInFlight(runs)])
   const plan = planWarmupTick({ runs, devices, claimed: busy, now: input.now })
 
@@ -2254,7 +2290,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.58.0',
+  version: '0.59.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

@@ -276,10 +276,39 @@ The word **run** had to be taken back first: it meant one phone's work, which
 is now a **row**. Two things called a run in one plugin is how a reader ends up
 fixing the wrong one.
 
+### D11 — Stopping is a thing you do to a RUN (0.59.0)
+
+D10 gave a session runs but left Stop on the session, which made the button
+ambiguous the moment there were two. The owner drew the line: *"setiap snapshot
+ada tombol retrynya atau start stop, tapi start stop yang di list sesi itu
+selalu mengarah ke sesi paling baru"*.
+
+So `stopped` moved onto the row, where a run's truth already lives. Each run
+carries Stop / Start again, Retry failed and Remove on the session page; the
+session LIST's Stop aims at the newest run, which is the only reading that
+makes sense from a list, and its chip says "newest run stopped" rather than
+claiming the whole session is.
+
+All three per-run actions run in the BROWSER. None needs a phone, and the
+moment you most want to stop something is the moment you can least count on one
+being connected. Only STARTING a new run stays a member — D3a's rule, unchanged.
+
+Retry is per run for the same reason Stop is: last night's failures are
+history, and a Retry that swept them up with tonight's would re-run a phone's
+whole week.
+
+`Group.stopped` survives as the older whole-session switch, still honoured by
+the router, so a farm that stopped a session before runs existed does not find
+its phones quietly working again on upgrade.
+
 **Verified on the owner's farm** (2026-09-21): a session started a second time
 from its own page, and the detail screen offered both runs. The older one kept
 its progress — 5 activities answered, 100%, elapsed 21m 55s — while the newer
 one read 0 answered and not started. Neither number moved the other's.
+
+Stopping the newest run from that page then left **42 of 42 rows stopped in it
+and 0 in the older one**, whose history stayed exactly as it was — eleven
+activities answered and one failed.
 
 ## 5. Still open
 

@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, type ReactElement } from 'react'
 import {
+  ArrowsClockwiseIcon,
   Badge,
   Button,
   CaretDownIcon,
@@ -21,6 +22,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  TrashIcon,
   cn,
   relativeTime,
   useAction,
@@ -29,7 +31,7 @@ import {
 import { PLATFORM_IDS, type PlatformId } from '../../platforms'
 import { DevicePicker, newPick, pickRefusal, resolvePick, type DevicePick } from './device-picker'
 import { readDuration, rollUpByDevice, runsOf, sessionReport, type DeviceRollup } from '../../warmup-report'
-import { listDevices, listGroups, listWarmupRows, pickHost, platformLabel, runMember, runWarmupAgain, setSessionStopped, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
+import { listDevices, listGroups, listWarmupRows, pickHost, platformLabel, deleteWarmupRun, retryWarmupRun, runMember, runWarmupAgain, setSessionStopped, stoppedNewestRuns, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
 
 /**
  * The Warm-up screen (plan 900 D5, wave 4).
@@ -64,15 +66,22 @@ const AddWarmupResultSchema = z.object({
 })
 
 /**
- * Stop and Start again, for a warm-up session (0.57.0).
+ * Stop and Start again, on the session LIST — and always aimed at the NEWEST
+ * run (0.59.0).
  *
- * The same member the Posts table's Stop calls, because it is the same
- * sentence: `smm/stop-session` reads the session's `kind` and pulls back
- * whichever rows that kind has. Only the wording differs — a warm-up's work is
- * activities on a phone, not uploads that could post twice.
+ * A session has runs now, so "stop this session" needs a referent. The owner
+ * named it: *"start stop yang di list sesi itu selalu mengarah ke sesi paling
+ * baru"*, which is also the only reading that makes sense from a list — the
+ * run somebody wants stopped from there is tonight's, never one from last
+ * week. Each run has its own Stop on the session page, where which run you
+ * mean is on screen.
+ *
+ * `stopped` here is read from the ROWS of that newest run, not from the
+ * session. The session-level flag survives only for sessions stopped before
+ * runs existed.
  */
-function WarmupControls({ group, busy, onStop }: { group: Group; busy: boolean; onStop: (action: 'stop' | 'start') => void }): ReactElement {
-  if (group.stopped)
+function WarmupControls({ group, newestStopped, busy, onStop }: { group: Group; newestStopped: boolean; busy: boolean; onStop: (action: 'stop' | 'start') => void }): ReactElement {
+  if (newestStopped || group.stopped)
     return (
       <Button size="sm" disabled={busy} onClick={() => onStop('start')}>
         <PlayIcon aria-hidden />
@@ -87,16 +96,15 @@ function WarmupControls({ group, busy, onStop }: { group: Group; busy: boolean; 
           Stop
         </Button>
       }
-      title={`Stop “${group.title}”?`}
+      title={`Stop the newest run of “${group.title}”?`}
       destructive
       confirmLabel="Stop"
       description={
         <>
-          Every activity this session has <strong>running right now</strong> is cancelled on its phone and goes back into the queue. Nothing more is
-          sent until you start it again.
+          Every activity that run has <strong>running right now</strong> is cancelled on its phone and goes back into the queue. Nothing more is sent
+          for it until you start it again.
           <br />
-          Starting it again carries on from where it stopped, keeping the gaps you chose — so a session stopped for an hour does not fire the rest
-          back to back.
+          Its earlier runs are untouched, and so is their history. Starting it again carries on from where it stopped, keeping the gaps you chose.
         </>
       }
       onConfirm={() => onStop('stop')}
@@ -172,12 +180,17 @@ export function WarmupPanel({ refreshKey, onOpen, onNew }: { refreshKey: number;
   )
   const busy = useCallback((group: Group) => isPending(`stop:${group.id}`), [isPending])
 
+  /* Which sessions have a stopped NEWEST run — what the list's Stop button is about. */
+  const [stoppedNewest, setStoppedNewest] = useState<ReadonlySet<string>>(new Set())
+
   useEffect(() => {
     let live = true
     setError(null)
-    listGroups()
-      .then((all) => {
-        if (live) setGroups(all.filter((group) => group.kind === 'warmup'))
+    Promise.all([listGroups(), stoppedNewestRuns()])
+      .then(([all, stopped]) => {
+        if (!live) return
+        setGroups(all.filter((group) => group.kind === 'warmup'))
+        setStoppedNewest(stopped)
       })
       .catch((err: unknown) => {
         if (live) setError(err instanceof Error ? err.message : String(err))
@@ -222,7 +235,11 @@ export function WarmupPanel({ refreshKey, onOpen, onNew }: { refreshKey: number;
               <TableCell>
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="font-medium">{group.title}</span>
-                  {group.stopped ? <Badge variant="outline" className="text-warn">stopped</Badge> : null}
+                  {stoppedNewest.has(group.id) || group.stopped ? (
+                    <Badge variant="outline" className="text-warn">
+                      newest run stopped
+                    </Badge>
+                  ) : null}
                 </div>
                 {group.warmup ? <div className="text-[12px] text-faint">{group.warmup.keywords.slice(0, 4).join(', ')}</div> : null}
               </TableCell>
@@ -239,7 +256,7 @@ export function WarmupPanel({ refreshKey, onOpen, onNew }: { refreshKey: number;
               <TableCell className="text-[12px] text-faint">{relativeTime(group.createdAt * 1000)}</TableCell>
               {/* The row opens the session, so the buttons must not — every one of them stops the click here. */}
               <TableCell className="text-right" onClick={(event) => event.stopPropagation()}>
-                <WarmupControls group={group} busy={busy(group)} onStop={(action) => stopSession(group, action)} />
+                <WarmupControls group={group} newestStopped={stoppedNewest.has(group.id)} busy={busy(group)} onStop={(action) => stopSession(group, action)} />
               </TableCell>
             </TableRow>
           ))}
@@ -590,13 +607,13 @@ function RunAgainButton({ group, onDone }: { group: Group; onDone: () => void })
     <ConfirmDialog
       trigger={
         <Button size="sm" variant="outline" disabled={isPending(`again:${group.id}`)}>
-          <PlayIcon aria-hidden />
-          Run again
+          <PlusIcon aria-hidden />
+          New run
         </Button>
       }
-      title={`Run “${group.title}” again?`}
+      title={`Start a new run of “${group.title}”?`}
       destructive={false}
-      confirmLabel="Run again"
+      confirmLabel="Start it"
       description={
         <>
           A new run starts now, with this session’s own phones and settings. Everything random is drawn again — which platform each phone gets,
@@ -633,26 +650,125 @@ function RunAgainButton({ group, onDone }: { group: Group; onDone: () => void })
 function RunPicker({
   history,
   shownId,
+  newestId,
   onPick,
 }: {
-  history: { runId: string; plannedAt: number; report: { phones: number; successRate: number | null; finished: boolean } }[]
+  history: { runId: string; plannedAt: number; rows: WarmupRow[]; report: { phones: number; successRate: number | null; finished: boolean } }[]
   shownId: string | null
+  newestId: string | null
   onPick: (runId: string) => void
 }): ReactElement | null {
-  if (history.length < 2) return null
+  if (history.length === 0) return null
   return (
-    <div className="flex flex-wrap gap-1.5">
+    <div className="flex flex-wrap items-center gap-1.5">
       {history.map((entry) => {
         const on = entry.runId === shownId
+        const stopped = entry.rows.some((row) => row.stopped)
         return (
           <Button key={entry.runId} size="sm" variant={on ? 'default' : 'outline'} onClick={() => onPick(entry.runId)}>
             {entry.plannedAt === 0 ? 'earlier run' : relativeTime(entry.plannedAt * 1000)}
+            {entry.runId === newestId && history.length > 1 ? <span className="ml-1 text-[11px] text-faint">newest</span> : null}
             <span className={cn('ml-1.5 text-[11px]', on ? '' : 'text-faint')}>
-              {entry.report.successRate === null ? (entry.report.finished ? 'nothing ran' : 'running') : `${Math.round(entry.report.successRate * 100)}%`}
+              {stopped ? 'stopped' : entry.report.successRate === null ? (entry.report.finished ? 'nothing ran' : 'running') : `${Math.round(entry.report.successRate * 100)}%`}
             </span>
           </Button>
         )
       })}
+    </div>
+  )
+}
+
+/**
+ * What one run can have done to it: stopped or started, retried, removed.
+ *
+ * All three run in the BROWSER — none of them needs a phone, and the moment
+ * you most want to stop something is the moment you can least count on one
+ * being connected. Only STARTING a new run is a member, because a schedule has
+ * to be able to do that and a schedule can only run a script.
+ */
+function RunControls({ group, runId, rows, onDone }: { group: Group; runId: string; rows: WarmupRow[]; onDone: () => void }): ReactElement {
+  const { run, isPending } = useAction()
+  const stopped = rows.some((row) => row.stopped)
+  const busy = isPending(`run:${runId}`)
+  const retryable = rows.some((row) => row.steps.some((step) => step.state === 'failed' || step.state === 'skipped'))
+
+  const act = (what: string, doing: () => Promise<unknown>, success: string, failure: string): void => {
+    void run(`run:${runId}`, doing, { success, failure, onSuccess: onDone })
+    void what
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {stopped ? (
+        <Button size="sm" disabled={busy} onClick={() => act('start', () => setSessionStopped(group, 'start', runId), 'This run was started again — the router sends the rest on its next pass', 'Could not start this run again')}>
+          <PlayIcon aria-hidden />
+          Start again
+        </Button>
+      ) : (
+        <ConfirmDialog
+          trigger={
+            <Button size="sm" variant="outline" disabled={busy}>
+              <PauseIcon aria-hidden />
+              Stop
+            </Button>
+          }
+          title="Stop this run?"
+          destructive
+          confirmLabel="Stop"
+          description={
+            <>
+              Every activity this run has <strong>running right now</strong> is cancelled on its phone and goes back into the queue. Nothing more is
+              sent for it until you start it again.
+              <br />
+              The other runs of this session are untouched.
+            </>
+          }
+          onConfirm={() => act('stop', () => setSessionStopped(group, 'stop', runId), 'This run was stopped — anything running was cancelled and put back in the queue', 'Could not stop this run')}
+        />
+      )}
+
+      {retryable ? (
+        <ConfirmDialog
+          trigger={
+            <Button size="sm" variant="outline" disabled={busy}>
+              <ArrowsClockwiseIcon aria-hidden />
+              Retry failed
+            </Button>
+          }
+          title="Retry what failed in this run?"
+          destructive={false}
+          confirmLabel="Retry failed"
+          description={
+            <>
+              Only the activities that <strong>failed</strong>, and the ones a stopped sequence never reached, go again — their turn is now.
+              Anything that already ran is left alone.
+              <br />
+              This run only; the others keep their own history.
+            </>
+          }
+          onConfirm={() => act('retry', () => retryWarmupRun(group.id, runId), 'Re-queued what failed in this run', 'Could not retry this run')}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        trigger={
+          <Button size="sm" variant="ghost" disabled={busy} aria-label="Remove this run">
+            <TrashIcon aria-hidden />
+            Remove
+          </Button>
+        }
+        title="Remove this run?"
+        destructive
+        confirmLabel="Remove"
+        description={
+          <>
+            This run’s rows are deleted and its history goes with them. The session stays, and so does every other run of it.
+            <br />
+            Anything still running on a phone is <strong>not</strong> cancelled by this — stop the run first if that is what you want.
+          </>
+        }
+        onConfirm={() => act('remove', () => deleteWarmupRun(group.id, runId), 'That run was removed — the session and its other runs are untouched', 'Could not remove this run')}
+      />
     </div>
   )
 }
@@ -849,7 +965,16 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
     <div className="flex flex-col gap-3">
       {header}
 
-      <RunPicker history={history} shownId={shown?.runId ?? null} onPick={setOpenRun} />
+      {/*
+        The runs of this session, and what can be done to the one on screen.
+        Together rather than apart, because "which night" and "stop that night"
+        are one thought — and putting the controls on the session header instead
+        would leave the operator guessing which run they aimed at.
+      */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <RunPicker history={history} shownId={shown?.runId ?? null} newestId={history[0]?.runId ?? null} onPick={setOpenRun} />
+        {group !== null && shown !== null ? <RunControls group={group} runId={shown.runId} rows={shown.rows} onDone={() => setRefresh((n) => n + 1)} /> : null}
+      </div>
 
       <Card className="grid grid-cols-2 gap-4 px-4 py-3 sm:grid-cols-3 lg:grid-cols-5">
         <Stat label="Phones" value={String(report.working)} hint={report.idle === 0 ? null : `${report.idle} given nothing`} />
