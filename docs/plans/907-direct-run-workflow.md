@@ -1,6 +1,6 @@
 # Plan 907 — Direct-run workflow: a composition its author hands over, not saves
 
-> Status: implemented — the core half. No plugin uses it yet.
+> Status: implemented — the core half, verified on hardware (§4.1). No plugin uses it yet.
 > Ships: packages/protocol/src/actions.ts
 > Depends on: plan 900 (which declined this, D2), plan 207 (`actions.run`), plan 314 (workflow batches)
 > Spec references: §4.8, §12
@@ -68,6 +68,30 @@ something an operator should identify by its node ids.
 The witness for #1 and #2 is the harness's own stubs: `workflows` and
 `batchesFor` both throw when touched, so WHICH one throws says whether the store
 was consulted.
+
+## 4.1 Verified on hardware
+
+Run 2026-09-20 against a local core with a moto g06 power attached. An inline
+document — two script nodes with a `delay` node between them — posted to
+`POST /api/actions/run-workflow`:
+
+```
+dispatched            job 993e55a5 (kind: workflow), batch 85724bd1
+  step 0              youtube/check-profile        success
+  step 1              delay 6s — no job, inside the workflow
+  step 2              youtube/check-notifications  success
+warmup-sequence       success
+```
+
+And the point of the whole plan, checked directly: `GET /api/workflows` lists
+nine saved workflows and **`warmup-sequence` is not among them**. The document
+ran without ever becoming a project.
+
+One thing worth knowing for anyone writing such a document by hand: a script
+node's params take the same wrappers every workflow value does — `{ const: 5 }`,
+not `5`. The first attempt was refused with
+`workflowDoc.nodes.1.params.maxRows: Invalid input`, which is the inline path
+being held to the same schema as a saved one, exactly as §3 says.
 
 ## 5. Non-goals
 
