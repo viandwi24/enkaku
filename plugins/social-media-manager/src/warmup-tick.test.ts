@@ -23,7 +23,7 @@ const assignment = (deviceId: string): WarmupAssignment => ({
   ],
 })
 
-const runsFor = (...ids: string[]): WarmupRow[] => runsFromPlan({ groupId: 'g1', assignments: ids.map(assignment), phase: 0, startedAt: STARTED })
+const runsFor = (...ids: string[]): WarmupRow[] => runsFromPlan({ groupId: 'g1', runId: 'r1', assignments: ids.map(assignment), phase: 0, startedAt: STARTED })
 const devicesFor = (...devices: RouterDevice[]): Map<string, RouterDevice> => new Map(devices.map((d) => [d.id, d]))
 
 describe('planWarmupTick — what goes out this tick', () => {

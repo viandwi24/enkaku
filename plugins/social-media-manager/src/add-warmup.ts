@@ -2,10 +2,9 @@ import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
 import { GROUP_PREFIX, GroupSchema, WarmupSettingsSchema, DEFAULT_WARMUP_KEYWORDS, groupKeyFor, newGroupId, reusableWarmup, slotFor, type Group } from './groups'
-import { PLATFORMS, PLATFORM_IDS, PlatformIdSchema, deviceCarriesPlatform, type PlatformId } from './platforms'
-import { phaseCount, planWarmup, type WarmupDevice } from './warmup'
-import { WarmupTargetSchema, describeTarget, reachesNothing, resolveWarmupTarget } from './warmup-target'
-import { runsFromPlan, warmupProgress, warmupRowKey, warmupSummary } from './warmup-rows'
+import { PLATFORM_IDS, PlatformIdSchema, type PlatformId } from './platforms'
+import { WarmupTargetSchema } from './warmup-target'
+import { launchWarmupRun } from './warmup-launch'
 
 /**
  * Start a warm-up session: draw the plan once, write a row per phone.
@@ -172,20 +171,6 @@ const result = z.object({
   reused: z.boolean().describe('True when an existing session of this title was used instead of making another.').meta(ui({ title: 'Reused' })),
 })
 
-const DeviceListOutput = z.object({
-  items: z.array(
-    z.object({
-      id: z.string(),
-      status: z.string(),
-      labels: z.array(z.object({ name: z.string() })).default([]),
-      label: z.string().default(''),
-      number: z.number().int().nullable().default(null),
-      /** For `mode: 'groups'` and `exceptGroups`. Absent on an older core, which simply matches no group. */
-      group: z.object({ id: z.string(), name: z.string() }).nullable().default(null),
-    }),
-  ),
-})
-
 const script: PluginMemberScript<typeof params, typeof result> = {
   id: 'add-warmup',
   title: 'New warm-up session',
@@ -257,71 +242,17 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       exceptGroups: ctx.params.exceptGroups,
       exceptDeviceIds: ctx.params.exceptDeviceIds,
     })
-    /*
-      Refused BEFORE the fleet is read: "only these labels" with no label ticked
-      reaches nothing, and the dangerous reading of it is the whole fleet. An
-      operator who meant the fleet says so.
-    */
-    if (reachesNothing(target)) {
-      throw Object.assign(new Error(`${describeTarget(target)} — this session would reach no phone at all. Choose "Every phone", or name what it should cover.`), { code: 'E_PARAMS_INVALID' })
-    }
-
-    const fleet = await ctx.farm.call('device.list', {}, DeviceListOutput)
-    const resolved = resolveWarmupTarget(fleet.items, target)
-    const chosen = resolved.chosen
-    if (chosen.length === 0) {
-      const why = fleet.items.length === 0 ? 'This farm has no phones to warm up.' : `${describeTarget(target)} — no phone on this farm matches. ${resolved.left[0]?.reason ?? ''}`.trim()
-      throw Object.assign(new Error(why), { code: 'E_NO_DEVICES' })
-    }
-
-    /*
-      What each phone can actually do. The rotation runs inside this, never
-      across it — a phone labelled only `tiktok` has no YouTube account, and
-      sending it there one day in three is a routing mistake that reads as a
-      script one.
-    */
-    const devices: WarmupDevice[] = chosen.map((item) => ({
-      deviceId: item.id,
-      number: item.number,
-      platforms: PLATFORMS.filter((platform) => deviceCarriesPlatform(item.labels, platform)).map((platform) => platform.id),
-    }))
-    const names = new Map(chosen.map((item) => [item.id, item.label.trim() || item.id]))
-
     const groupId = newGroupId(now)
     const platforms = ctx.params.platforms as PlatformId[]
-    const phases = phaseCount(settings, platforms)
 
     /*
-      One row per phone PER PHASE. Phase 0's activities are due from now; a
-      later phase starts after the one before it could have finished, computed
-      from the longest plan rather than a guess — a phase that overlapped the
-      one before would put two activities on one phone at once, which `nextStep`
-      would refuse and the operator would read as a stall.
+      The definition is written FIRST, and then run — so a run that refuses
+      (no phone matches the target) leaves a session the operator can fix and
+      start again, rather than nothing at all and an error they have to
+      re-type the whole form to retry.
     */
-    let written = 0
-    let activities = 0
-    let skipped = 0
-    let phaseStart = now
-    const allRuns = []
-    for (let phase = 0; phase < phases; phase++) {
-      const assignments = planWarmup({ devices, settings, platforms, phase, nowMs: Date.now(), random: Math.random })
-      const runs = runsFromPlan({ groupId, assignments, phase, startedAt: phaseStart, names, sequence: settings.sequenceMode })
-      let longest = 0
-      for (const run of runs) {
-        await ctx.storage.global.set(warmupRowKey(groupId, phase, run.deviceId), run)
-        written += 1
-        activities += run.steps.length
-        if (run.steps.length === 0) skipped += 1
-        const last = run.steps[run.steps.length - 1]
-        if (last) longest = Math.max(longest, last.atSec)
-        allRuns.push(run)
-      }
-      // The next phase begins a gap after the slowest phone of this one.
-      phaseStart += longest + settings.gapSec[1] + settings.startJitterSec
-    }
+    const launched = await launchWarmupRun(ctx, { groupId, settings, platforms, target, now })
 
-    const progress = warmupProgress(allRuns)
-    const summary = warmupSummary(progress)
     const group = GroupSchema.parse({
       version: 1,
       id: groupId,
@@ -330,17 +261,18 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       platforms,
       assignment: 'one-per-phone',
       // Pacing belongs to a post session; a warm-up's spread is its jitter and its gaps.
-      pacing: { order: 'as-listed', concurrency: Math.max(1, devices.length), gapSec: settings.gapSec },
+      pacing: { order: 'as-listed', concurrency: Math.max(1, launched.devices), gapSec: settings.gapSec },
       videoArtifactIds: [],
       kind: 'warmup',
       warmup: settings,
       target,
-      summary,
+      summary: launched.summary,
+      lastRunAt: now,
     })
     await ctx.storage.global.set(groupKeyFor(groupId), group)
 
-    ctx.log.info('warm-up session planned', { groupId, title: group.title, devices: written, activities, phases, skipped, outOfScope: resolved.left.length, target: describeTarget(target) })
-    return { groupId, title: group.title, devices: written, activities, phases, skipped, outOfScope: resolved.left.length, summary, reused: false }
+    ctx.log.info('warm-up session made and started', { groupId, runId: launched.runId, title: group.title })
+    return { groupId, title: group.title, devices: launched.devices, activities: launched.activities, phases: launched.phases, skipped: launched.skipped, outOfScope: launched.outOfScope, summary: launched.summary, reused: false }
   },
 }
 

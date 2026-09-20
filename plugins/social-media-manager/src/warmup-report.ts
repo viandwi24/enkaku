@@ -41,6 +41,8 @@ export interface ReportStep {
 }
 
 export interface ReportRun {
+  /** Which run of the session this row belongs to. */
+  runId: string
   deviceId: string
   deviceName: string | null
   phase: number
@@ -93,6 +95,48 @@ export interface DeviceRollup<R extends ReportRun = ReportRun> {
  */
 export function rollUpState(states: readonly WarmupRowState[]): WarmupRowState {
   return rollUpPhases(states)
+}
+
+/**
+ * One RUN of a session, as the history list shows it (0.58.0).
+ *
+ * A session is started again and again; each start is a run with its own rows,
+ * and the operator wants yesterday's beside today's — *"tanggal 20 masih ada,
+ * tapi tanggal 21 juga ada juga"*.
+ *
+ * Derived from the rows rather than stored beside them, deliberately. A run
+ * record would be a second place for the same truth to live, and the rows are
+ * what the phones actually did — the answer the report has to agree with.
+ */
+export interface RunSummary<R extends ReportRun = ReportRun> {
+  runId: string
+  rows: R[]
+  /** When the run's own schedule begins — its earliest `notBeforeAt`, not when a phone first answered. */
+  plannedAt: number
+  report: SessionReport
+}
+
+/**
+ * Every run of a session, newest first.
+ *
+ * Newest first because that is the one an operator is looking for nine times
+ * out of ten, and because a session on its fortieth night should not make them
+ * scroll to see tonight.
+ */
+export function runsOf<R extends ReportRun>(rows: readonly R[], now: number): RunSummary<R>[] {
+  const byRun = new Map<string, R[]>()
+  for (const row of rows) {
+    const list = byRun.get(row.runId)
+    if (list) list.push(row)
+    else byRun.set(row.runId, [row])
+  }
+
+  const out: RunSummary<R>[] = []
+  for (const [runId, own] of byRun) {
+    const stamps = own.flatMap((row) => row.steps.map((step) => step.notBeforeAt)).filter((at) => at > 0)
+    out.push({ runId, rows: own, plannedAt: stamps.length === 0 ? 0 : Math.min(...stamps), report: sessionReport(own, now) })
+  }
+  return out.sort((a, b) => b.plannedAt - a.plannedAt || (a.runId < b.runId ? 1 : -1))
 }
 
 /** One entry per phone, phones in the order their rows first appear. */

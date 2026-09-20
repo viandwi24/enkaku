@@ -245,6 +245,37 @@ Plus the two guards that came out of it: a round that cannot open a video no
 longer throws away the ones that did (`reachedMinimum` says so), and a phone
 that ends up outside YouTube is brought back rather than failing the run.
 
+### D10 — A session is a DEFINITION; each start is a run with its own history (0.58.0)
+
+*"saya jalanin 20 sep 2026 10:00 ... terus misalnya saya bisa jalanin lagi di
+tanggal 21 sep 2026 11:00 ... jadi kaya ada history kemarin tanggal 20 masih
+ada, tapi tanggal 21 juga ada juga"*.
+
+Until this, a session WAS its execution. Now the run id is part of the row key
+(`warmup:<group>:<run>:<phase>:<device>`) — without it the second start writes
+over the first phone for phone, and a session is a thing with no memory.
+
+**What a run inherits** is the decision: which phones, which platforms, how
+many activities, how long to watch. **What it draws again** is everything
+random, the rotation slot included, because two runs of one session are two
+different evenings rather than one replayed.
+
+`smm/run-warmup` starts another, and it is a MEMBER for the reason D3a settled:
+a schedule can only run a script, and two dates is precisely what was asked
+for. Stop stays in the browser for the same rule read the other way.
+
+The detail page reports ONE run at a time. Adding yesterday's failures to
+today's success rate is the single most misleading number that screen could
+print.
+
+Rows written before runs existed read as `LEGACY_RUN_ID` rather than being
+skipped — a farm that upgrades keeps its history instead of appearing to lose
+it, which is the whole point of the feature that introduced the field.
+
+The word **run** had to be taken back first: it meant one phone's work, which
+is now a **row**. Two things called a run in one plugin is how a reader ends up
+fixing the wrong one.
+
 ## 5. Still open
 
 - **Cadence** (*"sehari bisa sekali, atau sehari bisa 2 kali"*) is the farm's

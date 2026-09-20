@@ -26,13 +26,14 @@ describe('the stored shape', () => {
       progress: null,
       summary: null,
     }
-    // `kind`, `warmup`, `stopped` and `target` are filled in by their defaults — see the migration test below.
+    // `kind`, `warmup`, `stopped`, `target` and `lastRunAt` are filled in by their defaults — see the migration test below.
     expect(GroupSchema.parse(group)).toEqual({
       ...group,
       kind: 'post',
       warmup: null,
       stopped: false,
       target: { mode: 'all', labels: [], groups: [], deviceIds: [], exceptLabels: [], exceptGroups: [], exceptDeviceIds: [] },
+      lastRunAt: null,
     })
   })
 

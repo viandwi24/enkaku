@@ -18,6 +18,7 @@ import { platformPostTexts } from './platform-captions'
 import { GROUP_PREFIX, GroupSchema, groupKeyFor, isRowDue, roomInFlight, withProgress, type Group, type RowState } from './groups'
 import retryFailed from './retry-failed'
 import addWarmup from './add-warmup'
+import runWarmup from './run-warmup'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
 import { WARMUP_PREFIX, WarmupRowSchema, isPermanentDispatchFailure, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRow } from './warmup-rows'
 import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
@@ -81,6 +82,33 @@ import {
  * memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.58.0 — a warm-up session is a thing you start AGAIN, and every start
+ *   keeps its own history.**
+ *
+ *   Until now a session WAS its execution: `add-warmup` planned the fleet,
+ *   wrote the rows, and that was it for ever. The owner asked for the obvious
+ *   next thing — *"saya jalanin 20 sep 2026 10:00 ... terus misalnya saya bisa
+ *   jalanin lagi di tanggal 21 sep 2026 11:00 ... jadi kaya ada history kemarin
+ *   tanggal 20 masih ada, tapi tanggal 21 juga ada juga"*.
+ *
+ *   So a session is now a DEFINITION and each start is a RUN. The run id is in
+ *   the row key (`warmup:<group>:<run>:<phase>:<device>`), because without it
+ *   the second start would write over the first phone for phone and a session
+ *   would be a thing with no memory. `smm/run-warmup` starts another one — a
+ *   member, not a browser write, for the reason 0.57.1 settled: a SCHEDULE can
+ *   only run a script, and two dates is exactly what was asked for.
+ *
+ *   What a run inherits is the DECISION — which phones, which platforms, how
+ *   many activities, how long to watch. What it draws again is everything
+ *   random, including the rotation slot, because two runs of one session are
+ *   two different evenings rather than one replayed.
+ *
+ *   The detail page picks a run and reports only that run: adding yesterday's
+ *   failures to today's success rate is the single most misleading number that
+ *   screen could print. Rows written before runs existed read as the session's
+ *   first run rather than being skipped, so a farm that upgrades keeps its
+ *   history instead of appearing to lose it.
  *
  * - **0.57.4 — a phone stops doing the same activity twice.**
  *
@@ -2226,11 +2254,11 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.57.4',
+  version: '0.58.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
-  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts, addWarmup],
+  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts, addWarmup, runWarmup],
   /*
     Plan 315 — workflows this plugin ships. Registered on the farm as
     `smm/<name>` when this version is activated, read-only there; an operator

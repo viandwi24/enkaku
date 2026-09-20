@@ -1,7 +1,7 @@
 # Plan 903 — Warm-up in SMM, wave 3 : rows, dispatch and the tick
 
 > Status: implemented — verified end to end on hardware (see §7.1).
-> Ships: plugins/social-media-manager/src/warmup-runs.ts
+> Ships: plugins/social-media-manager/src/warmup-rows.ts
 > Depends on: plan 900 (D1, D4, D6), plans 901, 902
 > Spec references: §4.7, §12
 

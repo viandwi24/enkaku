@@ -35,17 +35,54 @@ import type { WarmupAssignment } from './warmup'
 export const WARMUP_PREFIX = 'warmup:'
 
 /**
- * `warmup:<groupId>:<phase>:<deviceId>` — one row per phone PER PHASE.
+ * `warmup:<groupId>:<runId>:<phase>:<deviceId>` — one row per phone PER PHASE,
+ * inside one RUN of the session.
  *
- * The phase is in the key and not only in the row because a session with three
- * phases gives a phone three separate pieces of work, each with its own
- * platform and its own schedule. One row per phone would make the second phase
- * overwrite the first, and the operator would watch a session that kept losing
- * its own history.
+ * Two things are in this key that a reader might expect to be only in the row.
+ *
+ * **The phase**, because a session with three phases gives a phone three
+ * separate pieces of work, each with its own platform and its own schedule.
+ * One row per phone would make the second phase overwrite the first.
+ *
+ * **The run** (0.58.0), because a session is a thing you start AGAIN. The
+ * owner put it plainly: start it on the 20th, start it again on the 21st, and
+ * *"tanggal 20 masih ada, tapi tanggal 21 juga ada juga"*. Without the runId
+ * the second start would write over the first phone-for-phone, and the
+ * session would be a thing with no memory — which is the opposite of what
+ * somebody looks at a warm-up for.
+ *
+ * The prefix read is still `warmup:<groupId>:`, so the router sees every run
+ * of every session in one scan and the rows say which run they belong to.
  */
-export function warmupRowKey(groupId: string, phase: number, deviceId: string): string {
-  return `${WARMUP_PREFIX}${groupId}:${phase}:${deviceId}`
+export function warmupRowKey(groupId: string, runId: string, phase: number, deviceId: string): string {
+  return `${WARMUP_PREFIX}${groupId}:${runId}:${phase}:${deviceId}`
 }
+
+/** Just one run's rows. */
+export function warmupRunPrefix(groupId: string, runId: string): string {
+  return `${WARMUP_PREFIX}${groupId}:${runId}:`
+}
+
+/**
+ * A run id from the moment it started: `r-<unix seconds>-<4 hex>`.
+ *
+ * Sortable by name, which is what makes "the newest run" a string comparison
+ * rather than a scan — and readable, so a key in a storage dump says when its
+ * run began without anything having to decode it.
+ */
+export function newRunId(nowSec: number): string {
+  return `r-${nowSec}-${Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0')}`
+}
+
+/**
+ * The id a row written before runs existed belongs to.
+ *
+ * Every session made before 0.58.0 had exactly one run, and its rows have no
+ * runId in their key or their value. They are read as this run rather than
+ * skipped: a farm that upgrades keeps its history, which is the whole point of
+ * the feature that introduced the field.
+ */
+export const LEGACY_RUN_ID = 'r-first'
 
 /**
  * Everything under one session, for a prefix read.
@@ -94,6 +131,15 @@ export type WarmupRowState = (typeof WARMUP_ROW_STATES)[number]
 export const WarmupRowSchema = z.object({
   version: z.literal(1),
   groupId: z.string().min(1),
+  /**
+   * Which RUN of the session this row belongs to (0.58.0).
+   *
+   * Defaulted, and the default is the whole migration: a row written before
+   * runs existed is read as the session's first run rather than skipped, so a
+   * farm that upgrades keeps every session's history instead of appearing to
+   * lose it.
+   */
+  runId: z.string().min(1).default(LEGACY_RUN_ID),
   deviceId: z.string().min(1),
   deviceName: z.string().max(120).nullable().default(null),
   /** 0-based; a session with several phases writes one row per phase. */
@@ -128,13 +174,15 @@ export type WarmupRow = z.infer<typeof WarmupRowSchema>
  */
 export function runsFromPlan(input: {
   groupId: string
+  /** Which run of the session these rows belong to. */
+  runId: string
   assignments: readonly WarmupAssignment[]
   phase: number
   startedAt: number
   names?: ReadonlyMap<string, string>
   sequence?: 'jobs' | 'workflow'
 }): WarmupRow[] {
-  const { groupId, assignments, phase, startedAt, names } = input
+  const { groupId, runId, assignments, phase, startedAt, names } = input
   return assignments.map((assignment) => {
     const steps: WarmupStepRow[] = assignment.steps.map((step) => ({
       activityId: step.activityId,
@@ -152,6 +200,7 @@ export function runsFromPlan(input: {
     const run: WarmupRow = {
       version: 1,
       groupId,
+      runId,
       deviceId: assignment.deviceId,
       deviceName: names?.get(assignment.deviceId) ?? null,
       phase,

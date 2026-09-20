@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { readDuration, rollUpByDevice, rollUpState, sessionReport } from './warmup-report'
-import { WarmupRowSchema, type WarmupRow, type WarmupStepRow } from './warmup-rows'
+import { readDuration, rollUpByDevice, rollUpState, runsOf, sessionReport } from './warmup-report'
+import { WarmupRowSchema, type WarmupRow, type WarmupStepRow, type WarmupStepState } from './warmup-rows'
 
 const step = (over: Partial<WarmupStepRow> = {}): WarmupStepRow => ({
   activityId: over.activityId ?? 'a1',
@@ -20,6 +20,7 @@ const run = (over: Partial<WarmupRow> = {}): WarmupRow =>
   WarmupRowSchema.parse({
     version: 1,
     groupId: 'g1',
+    runId: over.runId ?? 'r1',
     deviceId: over.deviceId ?? 'd1',
     deviceName: over.deviceName ?? 'moto g06 power',
     phase: over.phase ?? 0,
@@ -150,5 +151,33 @@ describe('covered — the phases that actually got a platform', () => {
     ])
     expect(device?.phases).toHaveLength(3)
     expect(device?.covered.map((p) => p.platform)).toEqual(['youtube', 'tiktok'])
+  })
+})
+
+describe('runsOf — a session is a thing you start again', () => {
+  const stepAt = (notBeforeAt: number, state: WarmupStepState = 'pending') => ({ ...step({ state }), notBeforeAt })
+  const rowIn = (runId: string, deviceId: string, at: number, state: WarmupStepState = 'pending') =>
+    run({ runId, deviceId, steps: [stepAt(at, state)] } as never)
+
+  test('rows split by run, newest first', () => {
+    // The owner's own words: start it on the 20th, start it again on the 21st,
+    // and both histories are there. Newest first because that is the one they
+    // are looking for nine times out of ten.
+    const runs = runsOf([rowIn('r-mon', 'a', 1_000), rowIn('r-tue', 'a', 90_000), rowIn('r-mon', 'b', 1_100)], 200_000)
+    expect(runs.map((r) => r.runId)).toEqual(['r-tue', 'r-mon'])
+    expect(runs[1]?.rows).toHaveLength(2)
+  })
+
+  test('each run reports only its own work', () => {
+    const runs = runsOf([rowIn('r-mon', 'a', 1_000, 'success'), rowIn('r-tue', 'a', 90_000, 'failed')], 200_000)
+    expect(runs[0]?.report.successRate).toBe(0)
+    expect(runs[1]?.report.successRate).toBe(1)
+  })
+
+  test("a run's moment is when its schedule begins, not when a phone first answered", () => {
+    // A run planned at 10:00 whose first phone answers at 10:07 still belongs
+    // to 10:00 — that is the time the operator pressed the button.
+    const runs = runsOf([rowIn('r-one', 'a', 5_000)], 200_000)
+    expect(runs[0]?.plannedAt).toBe(5_000)
   })
 })

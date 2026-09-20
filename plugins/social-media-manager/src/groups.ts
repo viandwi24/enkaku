@@ -252,6 +252,22 @@ export const GroupSchema = z.object({
    */
   target: WarmupTargetSchema,
   /**
+   * When this session was last STARTED, as opposed to when it was made
+   * (0.58.0).
+   *
+   * A warm-up is a definition you run again — on the 20th, and again on the
+   * 21st — so "made" and "last started" stopped being the same fact. Two
+   * things read this: the dedupe guard on `run-warmup`, which is what stops a
+   * schedule aimed at eighty phones starting eighty runs; and the session
+   * list, where "created 3 days ago" is the wrong thing to show about
+   * something that ran an hour ago.
+   *
+   * `null` on a session made before runs existed. It is not back-filled from
+   * `createdAt`: those two were the same moment for such a session, and
+   * guessing would state a fact nothing recorded.
+   */
+  lastRunAt: z.number().int().nullable().default(null),
+  /**
    * How far the batch has got, as of the router's last look.
    *
    * DERIVED from the group's post rows and rewritten by the router, never

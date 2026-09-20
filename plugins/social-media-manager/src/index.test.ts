@@ -14,6 +14,7 @@ import updateGroup from './update-group'
 import cleanPhoneVideos from './clean-phone-videos'
 import syncAccounts from './sync-accounts'
 import addWarmup from './add-warmup'
+import runWarmup from './run-warmup'
 import { PLATFORMS } from './platforms'
 import { POST_PREFIX, RESULT_UNREADABLE } from './posts'
 
@@ -35,15 +36,15 @@ describe('social-media-manager manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.57.4')
+    expect(plugin.version).toBe('0.58.0')
     expect(plugin.version).toBe(pkg.version)
   })
 
   test('every member is presentable in Studio', () => {
-    expect(plugin.scripts.map((s) => s.id)).toEqual(['add-post', 'retry-failed', 'add-posts', 'add-group', 'start-group', 'retry-group', 'update-post', 'resolve-attempt', 'skip-platform', 'update-group', 'clean-phone-videos', 'sync-accounts', 'add-warmup'])
+    expect(plugin.scripts.map((s) => s.id)).toEqual(['add-post', 'retry-failed', 'add-posts', 'add-group', 'start-group', 'retry-group', 'update-post', 'resolve-attempt', 'skip-platform', 'update-group', 'clean-phone-videos', 'sync-accounts', 'add-warmup', 'run-warmup'])
     // Typed against the members themselves rather than the manifest's erased
     // `ScriptDefinition`, which drops `title`/`description` from the type.
-    const members: Array<{ id: string; title?: string; description?: string }> = [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts, addWarmup]
+    const members: Array<{ id: string; title?: string; description?: string }> = [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts, addWarmup, runWarmup]
     expect(members.map((m) => m.id).sort()).toEqual(plugin.scripts.map((s) => s.id).sort())
     for (const member of members) {
       expect({ id: member.id, titled: (member.title ?? '').length > 0 }).toEqual({ id: member.id, titled: true })

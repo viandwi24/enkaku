@@ -216,6 +216,8 @@ export type WarmupStep = z.infer<typeof WarmupStepSchema>
 export const WarmupRowSchema = z.object({
   version: z.literal(1),
   groupId: z.string(),
+  /** Which run of the session this row belongs to; a row written before runs existed reads as the first. */
+  runId: z.string().default('r-first'),
   deviceId: z.string(),
   deviceName: z.string().nullable().default(null),
   phase: z.number().default(0),
@@ -242,6 +244,18 @@ export async function listWarmupRows(groupId: string): Promise<WarmupRow[]> {
     if (parsed.success) runs.push(parsed.data)
   }
   return runs.sort((a, b) => a.phase - b.phase || (a.deviceName ?? a.deviceId).localeCompare(b.deviceName ?? b.deviceId))
+}
+
+/**
+ * Start an existing warm-up again — a new RUN, through the member that plans
+ * it.
+ *
+ * A member and not a browser write, unlike Stop: planning reads the fleet and
+ * writes a row per phone per phase, and — the reason that settles it — a
+ * SCHEDULE has to be able to do this, and a schedule can only run a script.
+ */
+export async function runWarmupAgain(groupId: string, hostDeviceId: string): Promise<void> {
+  await runMember('smm/run-warmup@latest', { groupId, dedupeMinutes: 0 }, hostDeviceId)
 }
 
 /** A response whose body this caller has no use for. */

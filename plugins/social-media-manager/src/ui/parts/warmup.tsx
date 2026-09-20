@@ -28,8 +28,8 @@ import {
 } from '@enkaku/ui'
 import { PLATFORM_IDS, type PlatformId } from '../../platforms'
 import { DevicePicker, newPick, pickRefusal, resolvePick, type DevicePick } from './device-picker'
-import { readDuration, rollUpByDevice, sessionReport, type DeviceRollup } from '../../warmup-report'
-import { listDevices, listGroups, listWarmupRows, pickHost, platformLabel, runMember, setSessionStopped, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
+import { readDuration, rollUpByDevice, runsOf, sessionReport, type DeviceRollup } from '../../warmup-report'
+import { listDevices, listGroups, listWarmupRows, pickHost, platformLabel, runMember, runWarmupAgain, setSessionStopped, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
 
 /**
  * The Warm-up screen (plan 900 D5, wave 4).
@@ -578,6 +578,86 @@ function StepList({ steps }: { steps: WarmupStep[] }): ReactElement {
 }
 
 /**
+ * Start this session again — a new run, beside the ones before it.
+ *
+ * Goes through `smm/run-warmup`, which needs a phone to carry the paperwork
+ * like every member does. Refusing early when none is online is better than a
+ * button that appears to work on a farm with nothing connected.
+ */
+function RunAgainButton({ group, onDone }: { group: Group; onDone: () => void }): ReactElement {
+  const { run, isPending } = useAction()
+  return (
+    <ConfirmDialog
+      trigger={
+        <Button size="sm" variant="outline" disabled={isPending(`again:${group.id}`)}>
+          <PlayIcon aria-hidden />
+          Run again
+        </Button>
+      }
+      title={`Run “${group.title}” again?`}
+      destructive={false}
+      confirmLabel="Run again"
+      description={
+        <>
+          A new run starts now, with this session’s own phones and settings. Everything random is drawn again — which platform each phone gets,
+          which activities, in what order, how long it waits — so two runs are two different evenings rather than one repeated.
+          <br />
+          The runs before it are kept, each with its own progress.
+        </>
+      }
+      onConfirm={() => {
+        void run(
+          `again:${group.id}`,
+          async () => {
+            const host = pickHost(await listDevices())
+            if (host === null) throw new Error('No phone is online. A run is planned through one of the farm’s own phones, so at least one has to be connected — nothing has been started.')
+            return runWarmupAgain(group.id, host.id)
+          },
+          {
+            success: `“${group.title}” started again — this run keeps its own progress beside the ones before it`,
+            failure: `Could not start “${group.title}” again`,
+            onSuccess: onDone,
+          },
+        )
+      }}
+    />
+  )
+}
+
+/**
+ * The runs of a session, newest first — the history the owner asked for.
+ *
+ * One row each, because a run is a moment and a verdict: when it started, how
+ * many phones, how it went. Clicking one shows its own table below.
+ */
+function RunPicker({
+  history,
+  shownId,
+  onPick,
+}: {
+  history: { runId: string; plannedAt: number; report: { phones: number; successRate: number | null; finished: boolean } }[]
+  shownId: string | null
+  onPick: (runId: string) => void
+}): ReactElement | null {
+  if (history.length < 2) return null
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {history.map((entry) => {
+        const on = entry.runId === shownId
+        return (
+          <Button key={entry.runId} size="sm" variant={on ? 'default' : 'outline'} onClick={() => onPick(entry.runId)}>
+            {entry.plannedAt === 0 ? 'earlier run' : relativeTime(entry.plannedAt * 1000)}
+            <span className={cn('ml-1.5 text-[11px]', on ? '' : 'text-faint')}>
+              {entry.report.successRate === null ? (entry.report.finished ? 'nothing ran' : 'running') : `${Math.round(entry.report.successRate * 100)}%`}
+            </span>
+          </Button>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
  * One number, with the word that says what it counts.
  *
  * Five of these sit above the table. The set was chosen from what the owner
@@ -678,12 +758,16 @@ function PhaseDetail({ device, phases }: { device: DeviceRollup<WarmupRow>; phas
  */
 export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string; refreshKey: number; onBack: () => void }): ReactElement {
   const [group, setGroup] = useState<Group | null>(null)
+  /** Which run is on screen. `null` means the newest, which is what somebody opening a session wants nine times out of ten. */
+  const [openRun, setOpenRun] = useState<string | null>(null)
   const [runs, setRuns] = useState<WarmupRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set())
   const [showIdle, setShowIdle] = useState(false)
   /* Re-read on a timer as well as on the page's Refresh, because elapsed and "due in" are only true at the moment they were drawn. */
   const [tick, setTick] = useState(0)
+  /** Bumped by Run again, so the new run appears without waiting for the ten-second timer. */
+  const [refresh, setRefresh] = useState(0)
 
   useEffect(() => {
     const timer = setInterval(() => setTick((n) => n + 1), 10_000)
@@ -705,7 +789,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
     return () => {
       live = false
     }
-  }, [groupId, refreshKey, tick])
+  }, [groupId, refreshKey, tick, refresh])
 
   const toggle = useCallback((deviceId: string) => {
     setOpen((prev) => {
@@ -716,9 +800,21 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
     })
   }, [])
 
-  const devices = useMemo(() => (runs === null ? [] : rollUpByDevice(runs)), [runs])
-  const report = useMemo(() => (runs === null ? null : sessionReport(runs, Math.floor(Date.now() / 1000))), [runs])
-  const phases = useMemo(() => (runs === null ? 1 : Math.max(1, ...runs.map((run) => run.phase + 1))), [runs])
+  /*
+    Every run of this session, newest first — and the one being looked at.
+
+    A session is a thing you start again, so the rows under it belong to
+    several evenings. Showing them all in one table would add yesterday's
+    failures to today's success rate, which is the single most misleading
+    number this screen could print.
+  */
+  const history = useMemo(() => (runs === null ? [] : runsOf(runs, Math.floor(Date.now() / 1000))), [runs])
+  const shown = useMemo(() => history.find((entry) => entry.runId === openRun) ?? history[0] ?? null, [history, openRun])
+  const rows = shown?.rows ?? []
+
+  const devices = useMemo(() => rollUpByDevice(rows), [rows])
+  const report = shown?.report ?? null
+  const phases = useMemo(() => (rows.length === 0 ? 1 : Math.max(1, ...rows.map((row) => row.phase + 1))), [rows])
   const working = devices.filter((device) => !device.idle)
   const idle = devices.filter((device) => device.idle)
 
@@ -729,7 +825,8 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
         All warm-ups
       </Button>
       <span className="text-[13px] font-medium">{group?.title ?? groupId}</span>
-      {phases > 1 ? <span className="text-[11px] text-faint">{phases} phases</span> : null}
+      {phases > 1 ? <span className="text-[11px] text-faint">{phases} platforms per phone</span> : null}
+      {group !== null ? <RunAgainButton group={group} onDone={() => setRefresh((n) => n + 1)} /> : null}
     </div>
   )
 
@@ -751,6 +848,8 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
   return (
     <div className="flex flex-col gap-3">
       {header}
+
+      <RunPicker history={history} shownId={shown?.runId ?? null} onPick={setOpenRun} />
 
       <Card className="grid grid-cols-2 gap-4 px-4 py-3 sm:grid-cols-3 lg:grid-cols-5">
         <Stat label="Phones" value={String(report.working)} hint={report.idle === 0 ? null : `${report.idle} given nothing`} />

@@ -19,6 +19,9 @@ import {
   type WarmupRow,
   type WarmupStepRow,
   type WarmupStepState,
+  LEGACY_RUN_ID,
+  newRunId,
+  warmupRunPrefix,
 } from './warmup-rows'
 
 const STARTED = 1_800_000_000
@@ -38,7 +41,7 @@ const assignment = (over: Partial<WarmupAssignment> = {}): WarmupAssignment => (
 })
 
 const oneRun = (over: Partial<WarmupAssignment> = {}): WarmupRow =>
-  runsFromPlan({ groupId: 'g1', assignments: [assignment(over)], phase: 0, startedAt: STARTED })[0] as WarmupRow
+  runsFromPlan({ groupId: 'g1', runId: 'r1', assignments: [assignment(over)], phase: 0, startedAt: STARTED })[0] as WarmupRow
 
 const withStates = (run: WarmupRow, states: readonly WarmupStepState[]): WarmupRow =>
   withRunSummary({ ...run, steps: run.steps.map((step, i) => ({ ...step, state: states[i] ?? step.state })) })
@@ -72,16 +75,39 @@ describe('runsFromPlan — the plan becomes rows once, at start', () => {
     expect(WarmupRowSchema.parse(run)).toEqual(run)
   })
 
-  test('the key is per session, per phase and per phone, and the prefix reads one whole session', () => {
-    expect(warmupRowKey('g1', 0, 'd1')).toBe('warmup:g1:0:d1')
-    expect(warmupRowKey('g1', 0, 'd1').startsWith(warmupRowPrefix('g1'))).toBe(true)
-    expect(warmupRowKey('g1', 2, 'd1').startsWith(warmupRowPrefix('g1'))).toBe(true)
-    expect(warmupRowKey('g2', 0, 'd1').startsWith(warmupRowPrefix('g1'))).toBe(false)
+  test('the key is per session, per run, per phase and per phone, and one prefix reads a whole session', () => {
+    expect(warmupRowKey('g1', 'r1', 0, 'd1')).toBe('warmup:g1:r1:0:d1')
+    expect(warmupRowKey('g1', 'r1', 0, 'd1').startsWith(warmupRowPrefix('g1'))).toBe(true)
+    expect(warmupRowKey('g1', 'r9', 2, 'd1').startsWith(warmupRowPrefix('g1'))).toBe(true)
+    expect(warmupRowKey('g2', 'r1', 0, 'd1').startsWith(warmupRowPrefix('g1'))).toBe(false)
   })
 
   /* Three phases are three pieces of work for one phone; one key would lose two of them. */
   test('two phases of one phone do not share a key', () => {
-    expect(warmupRowKey('g1', 0, 'd1')).not.toBe(warmupRowKey('g1', 1, 'd1'))
+    expect(warmupRowKey('g1', 'r1', 0, 'd1')).not.toBe(warmupRowKey('g1', 'r1', 1, 'd1'))
+  })
+
+  /*
+    And the one the run id exists for: starting a session again must not write
+    over what the last start did. Without the run in the key the second run
+    would overwrite the first phone for phone, and a session would be a thing
+    with no memory.
+  */
+  test('two runs of one session do not share a key, and one run reads on its own', () => {
+    expect(warmupRowKey('g1', 'r1', 0, 'd1')).not.toBe(warmupRowKey('g1', 'r2', 0, 'd1'))
+    expect(warmupRowKey('g1', 'r2', 0, 'd1').startsWith(warmupRunPrefix('g1', 'r2'))).toBe(true)
+    expect(warmupRowKey('g1', 'r1', 0, 'd1').startsWith(warmupRunPrefix('g1', 'r2'))).toBe(false)
+  })
+
+  test('a row written before runs existed is read as the first run, not skipped', () => {
+    // The whole migration: a farm that upgrades keeps its history instead of
+    // appearing to lose it.
+    const { runId, ...older } = oneRun()
+    expect(WarmupRowSchema.parse(older).runId).toBe(LEGACY_RUN_ID)
+  })
+
+  test('run ids sort by the moment they started', () => {
+    expect(newRunId(1_000) < newRunId(2_000)).toBe(true)
   })
 })
 
@@ -278,7 +304,7 @@ describe('the stored shape survives a version that adds a field', () => {
 */
 describe('dueSequence — a row that goes out as one workflow job', () => {
   const workflowRun = (): WarmupRow =>
-    runsFromPlan({ groupId: 'g1', assignments: [assignment()], phase: 0, startedAt: STARTED, sequence: 'workflow' })[0] as WarmupRow
+    runsFromPlan({ groupId: 'g1', runId: 'r1', assignments: [assignment()], phase: 0, startedAt: STARTED, sequence: 'workflow' })[0] as WarmupRow
 
   test('a job-per-activity row offers nothing here', () => {
     expect(dueSequence(oneRun(), STARTED + 10_000)).toBeNull()
