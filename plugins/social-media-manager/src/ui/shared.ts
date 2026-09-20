@@ -383,20 +383,28 @@ export async function setSessionStopped(group: Group, action: 'stop' | 'start', 
  * One read of every warm-up row, rather than one per session: a farm with
  * forty sessions would otherwise make forty prefix scans to draw one list.
  */
-export async function stoppedNewestRuns(): Promise<Set<string>> {
-  const byGroup = new Map<string, WarmupRow[]>()
+export async function listAllWarmupRows(): Promise<WarmupRow[]> {
+  const out: WarmupRow[] = []
   for (const row of await readAll('warmup:')) {
     const parsed = WarmupRowSchema.safeParse(row.value)
-    if (!parsed.success) continue
-    const list = byGroup.get(parsed.data.groupId)
-    if (list) list.push(parsed.data)
-    else byGroup.set(parsed.data.groupId, [parsed.data])
+    if (parsed.success) out.push(parsed.data)
+  }
+  return out
+}
+
+/** Pure: which sessions have a stopped newest run, from rows already in hand. */
+export function stoppedNewestFrom(rows: readonly WarmupRow[]): Set<string> {
+  const byGroup = new Map<string, WarmupRow[]>()
+  for (const row of rows) {
+    const list = byGroup.get(row.groupId)
+    if (list) list.push(row)
+    else byGroup.set(row.groupId, [row])
   }
 
   const out = new Set<string>()
-  for (const [groupId, rows] of byGroup) {
-    const newest = newestRunId(rows)
-    if (newest !== null && rows.some((row) => row.runId === newest && row.stopped)) out.add(groupId)
+  for (const [groupId, own] of byGroup) {
+    const newest = newestRunId(own)
+    if (newest !== null && own.some((row) => row.runId === newest && row.stopped)) out.add(groupId)
   }
   return out
 }

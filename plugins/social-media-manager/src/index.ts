@@ -83,6 +83,24 @@ import {
  *
  * ## Changelog
  *
+ * - **0.59.1 — the warm-up screens keep themselves up to date.**
+ *   The session LIST had no auto-refresh at all: a session's progress sat at
+ *   whatever it said when the page loaded, so watching a fleet meant pressing
+ *   Refresh over and over — *"ga realtime membuat user harus refresh page
+ *   terus nah itu jelek"*. It polls now, and so does the detail page, on the
+ *   same ten-second cadence the Posts page uses.
+ *
+ *   The half that matters more is when they do NOT poll. A settled session —
+ *   every activity answered, or the run stopped — makes no requests at all
+ *   while the screen is open, which is the rule `sessions.tsx` already
+ *   followed: a farm whose last warm-up finished yesterday should cost nothing
+ *   to leave on a monitor. The detail page's old timer ticked for ever
+ *   regardless.
+ *
+ *   A `LiveLine` says which state it is in, because "nothing has changed for
+ *   two minutes" and "this page stopped updating" look identical otherwise,
+ *   and telling them apart by pressing Refresh is the very habit this removes.
+ *
  * - **0.59.0 — stopping is a thing you do to a RUN, and a run can be retried
  *   or removed on its own.**
  *
@@ -2290,7 +2308,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.59.0',
+  version: '0.59.1',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

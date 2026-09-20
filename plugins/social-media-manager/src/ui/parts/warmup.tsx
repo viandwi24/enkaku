@@ -31,7 +31,7 @@ import {
 import { PLATFORM_IDS, type PlatformId } from '../../platforms'
 import { DevicePicker, newPick, pickRefusal, resolvePick, type DevicePick } from './device-picker'
 import { readDuration, rollUpByDevice, runsOf, sessionReport, type DeviceRollup } from '../../warmup-report'
-import { listDevices, listGroups, listWarmupRows, pickHost, platformLabel, deleteWarmupRun, retryWarmupRun, runMember, runWarmupAgain, setSessionStopped, stoppedNewestRuns, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
+import { listDevices, listGroups, listWarmupRows, pickHost, platformLabel, deleteWarmupRun, retryWarmupRun, runMember, runWarmupAgain, setSessionStopped, listAllWarmupRows, stoppedNewestFrom, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
 
 /**
  * The Warm-up screen (plan 900 D5, wave 4).
@@ -113,6 +113,46 @@ function WarmupControls({ group, newestStopped, busy, onStop }: { group: Group; 
 }
 
 /**
+ * How often a MOVING warm-up is re-read, and the line that says so.
+ *
+ * Ten seconds, the same cadence the Posts page uses and for the same reason: a
+ * warm-up moves in minutes, not frames, and a phone that just answered will
+ * still be on screen a moment later.
+ *
+ * The important half is when it does NOT poll. A settled session — every
+ * activity answered, or the run stopped — makes no requests at all while this
+ * screen is open. A farm whose last warm-up finished yesterday should cost
+ * nothing to leave on a monitor, and a screen that keeps asking a question it
+ * already has the answer to is how a dashboard turns into load.
+ */
+const POLL_MS = 10_000
+
+/** Is anything on this screen going to change on its own? */
+function isMoving(rows: readonly WarmupRow[]): boolean {
+  return rows.some((row) => !row.stopped && row.steps.some((step) => step.state === 'queued' || step.state === 'pending'))
+}
+
+/**
+ * The one line that tells an operator the screen is alive.
+ *
+ * Without it, "nothing has changed for two minutes" and "this page stopped
+ * updating" look identical, and the only way to tell them apart is to press
+ * Refresh — which is exactly the habit auto-refresh exists to remove.
+ */
+function LiveLine({ moving, updatedAt, now }: { moving: boolean; updatedAt: number | null; now: number }): ReactElement {
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] text-dim">
+      <span className="inline-flex items-center gap-1.5">
+        <span className={cn('size-1.5 shrink-0 rounded-pill', moving ? 'animate-pulse bg-accent' : 'bg-faint-2')} aria-hidden />
+        {updatedAt !== null ? <span>Updated {relativeTime(Math.floor(updatedAt / 1000), now)}</span> : <span>Reading…</span>}
+      </span>
+      <span aria-hidden>·</span>
+      <span>{moving ? `checking every ${POLL_MS / 1000}s` : 'nothing is moving — not refreshing'}</span>
+    </div>
+  )
+}
+
+/**
  * What the pick means HERE — the picker's own lines are about posting.
  *
  * Since 0.57.3 the two say the same thing, and that is the point: the
@@ -182,15 +222,38 @@ export function WarmupPanel({ refreshKey, onOpen, onNew }: { refreshKey: number;
 
   /* Which sessions have a stopped NEWEST run — what the list's Stop button is about. */
   const [stoppedNewest, setStoppedNewest] = useState<ReadonlySet<string>>(new Set())
+  /*
+    The list had NO auto-refresh at all until 0.59.1: a session's Progress
+    column sat at whatever it said when the page loaded, and the only way to
+    watch a fleet was to keep pressing Refresh. That is the habit this exists
+    to remove — see `LiveLine`.
+  */
+  const [moving, setMoving] = useState(false)
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null)
+  const [now, setNow] = useState(() => Date.now())
+  const [tick, setTick] = useState(0)
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1_000)
+    return () => clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    if (!moving) return
+    const timer = setInterval(() => setTick((n) => n + 1), POLL_MS)
+    return () => clearInterval(timer)
+  }, [moving])
 
   useEffect(() => {
     let live = true
     setError(null)
-    Promise.all([listGroups(), stoppedNewestRuns()])
-      .then(([all, stopped]) => {
+    Promise.all([listGroups(), listAllWarmupRows()])
+      .then(([all, rows]) => {
         if (!live) return
         setGroups(all.filter((group) => group.kind === 'warmup'))
-        setStoppedNewest(stopped)
+        setStoppedNewest(stoppedNewestFrom(rows))
+        setMoving(isMoving(rows))
+        setUpdatedAt(Date.now())
       })
       .catch((err: unknown) => {
         if (live) setError(err instanceof Error ? err.message : String(err))
@@ -198,7 +261,7 @@ export function WarmupPanel({ refreshKey, onOpen, onNew }: { refreshKey: number;
     return () => {
       live = false
     }
-  }, [refreshKey, reloadKey])
+  }, [refreshKey, reloadKey, tick])
 
   if (error !== null) return <ErrorState message={`Could not read the warm-up sessions: ${error}`} />
   if (groups === null) return <LoadingRows rows={3} />
@@ -218,7 +281,9 @@ export function WarmupPanel({ refreshKey, onOpen, onNew }: { refreshKey: number;
   }
 
   return (
-    <div className="overflow-hidden rounded-inner border border-line">
+    <div className="flex flex-col gap-2">
+      <LiveLine moving={moving} updatedAt={updatedAt} now={now} />
+      <div className="overflow-hidden rounded-inner border border-line">
       <Table>
         <TableHeader>
           <TableRow>
@@ -262,6 +327,7 @@ export function WarmupPanel({ refreshKey, onOpen, onNew }: { refreshKey: number;
           ))}
         </TableBody>
       </Table>
+      </div>
     </div>
   )
 }
@@ -882,11 +948,15 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
   const [showIdle, setShowIdle] = useState(false)
   /* Re-read on a timer as well as on the page's Refresh, because elapsed and "due in" are only true at the moment they were drawn. */
   const [tick, setTick] = useState(0)
-  /** Bumped by Run again, so the new run appears without waiting for the ten-second timer. */
+  /** Bumped by an action, so its result appears without waiting for the timer. */
   const [refresh, setRefresh] = useState(0)
+  /** When the last read landed, and a clock for the relative times on screen. */
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null)
+  const [now, setNow] = useState(() => Date.now())
 
+  /* A second hand for "updated 12s ago" and the elapsed counter — cheap, and never a fetch. */
   useEffect(() => {
-    const timer = setInterval(() => setTick((n) => n + 1), 10_000)
+    const timer = setInterval(() => setNow(Date.now()), 1_000)
     return () => clearInterval(timer)
   }, [])
 
@@ -898,6 +968,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
         if (!live) return
         setGroup(groups.find((g) => g.id === groupId) ?? null)
         setRuns(rows)
+        setUpdatedAt(Date.now())
       })
       .catch((err: unknown) => {
         if (live) setError(err instanceof Error ? err.message : String(err))
@@ -927,6 +998,18 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
   const history = useMemo(() => (runs === null ? [] : runsOf(runs, Math.floor(Date.now() / 1000))), [runs])
   const shown = useMemo(() => history.find((entry) => entry.runId === openRun) ?? history[0] ?? null, [history, openRun])
   const rows = shown?.rows ?? []
+
+  /*
+    Poll only while something is going to change on its own, and stop when it
+    is not — see `isMoving`. The old timer ticked every ten seconds for ever,
+    including on a session that finished last week.
+  */
+  const moving = useMemo(() => isMoving(runs ?? []), [runs])
+  useEffect(() => {
+    if (!moving) return
+    const timer = setInterval(() => setTick((n) => n + 1), POLL_MS)
+    return () => clearInterval(timer)
+  }, [moving])
 
   const devices = useMemo(() => rollUpByDevice(rows), [rows])
   const report = shown?.report ?? null
@@ -975,6 +1058,8 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
         <RunPicker history={history} shownId={shown?.runId ?? null} newestId={history[0]?.runId ?? null} onPick={setOpenRun} />
         {group !== null && shown !== null ? <RunControls group={group} runId={shown.runId} rows={shown.rows} onDone={() => setRefresh((n) => n + 1)} /> : null}
       </div>
+
+      <LiveLine moving={moving} updatedAt={updatedAt} now={now} />
 
       <Card className="grid grid-cols-2 gap-4 px-4 py-3 sm:grid-cols-3 lg:grid-cols-5">
         <Stat label="Phones" value={String(report.working)} hint={report.idle === 0 ? null : `${report.idle} given nothing`} />

@@ -310,6 +310,25 @@ Stopping the newest run from that page then left **42 of 42 rows stopped in it
 and 0 in the older one**, whose history stayed exactly as it was — eleven
 activities answered and one failed.
 
+### D12 — The screens keep themselves up to date, and say when they are not (0.59.1)
+
+*"ga realtime membuat user harus refresh page terus nah itu jelek"*.
+
+The session LIST had no auto-refresh at all — a session's progress sat at
+whatever it said when the page loaded. Both screens poll now, on the same ten
+second cadence `sessions.tsx` uses: a warm-up moves in minutes, not frames.
+
+The half that matters more is when they do NOT poll. A settled session — every
+activity answered, or the run stopped — makes no requests while the screen is
+open. A farm whose last warm-up finished yesterday should cost nothing to
+leave on a monitor, and a screen that keeps asking a question it already has
+the answer to is how a dashboard turns into load. The detail page's previous
+timer ticked for ever regardless.
+
+`LiveLine` says which of the two states it is in, because "nothing has changed
+for two minutes" and "this page stopped updating" look identical otherwise —
+and telling them apart by pressing Refresh is the very habit this removes.
+
 ## 5. Still open
 
 - **Cadence** (*"sehari bisa sekali, atau sehari bisa 2 kali"*) is the farm's
