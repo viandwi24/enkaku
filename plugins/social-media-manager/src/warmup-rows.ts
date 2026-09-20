@@ -479,29 +479,44 @@ export function warmupSummary(progress: WarmupProgress): string {
 }
 
 /**
- * Codes the farm answers with when the request itself is wrong, and will be
- * wrong again in fifteen seconds.
+ * Refusals the farm will repeat, whatever it is asked again.
  *
- * `invalid_job_params` is the one this exists for. A dispatch that throws
- * leaves its step PENDING on purpose — a row claiming a job that does not
- * exist would wait for an answer for ever — and for a transient fault that is
- * exactly right: the next tick tries again.
+ * `E_BAD_INPUT` is the one this exists for: the params are wrong, and they
+ * will be exactly as wrong in fifteen seconds. `E_FORBIDDEN` and `E_NO_GRANT`
+ * are the same shape — the plugin lacks a permission, and only an operator can
+ * change that.
  *
- * For a permanent one it is a trap. The owner's own farm hit it: one activity
- * sent a param outside the member's range, the farm refused it, and the phone
- * re-sent the same activity every fifteen seconds. Its whole warm-up sat
- * behind that one step, with a green session, no failed row, and nothing
- * anywhere an operator looks that could say why the phone had stopped.
+ * Everything else is transient and SHOULD be retried: `E_DEVICE_CONFLICT` and
+ * `E_DEVICE_OFFLINE` are a phone that is busy or away, `E_DEADLINE` and
+ * `E_INTERNAL` are the farm having a bad moment.
  *
- * So a refusal the farm will repeat FAILS the step by name and the sequence
- * moves on. Being one activity short is a smaller loss than being stopped, and
- * the row says which one and why.
+ * ## Why this matters more than it looks
+ *
+ * A dispatch that throws leaves its step PENDING on purpose — a row claiming a
+ * job that does not exist would wait for an answer for ever. For a transient
+ * fault that is exactly right. For a permanent one it is a trap, and the trap
+ * has teeth: `planWarmupTick` claims the phone for a row BEFORE the dispatch
+ * is attempted, so a row that can never be sent starves every other row on
+ * that phone. One bad activity stops a phone's whole warm-up, and every
+ * session still reads healthy.
  */
-const PERMANENT_DISPATCH_CODES = ['invalid_job_params', 'E_PARAMS_INVALID', 'E_SCRIPT_NOT_FOUND', 'script_not_found', 'E_NOT_SUPPORTED']
+const PERMANENT_DISPATCH_CODES = new Set(['E_BAD_INPUT', 'E_FORBIDDEN', 'E_NO_GRANT', 'E_PARAMS_INVALID', 'invalid_job_params', 'E_SCRIPT_NOT_FOUND', 'script_not_found', 'E_NOT_SUPPORTED'])
 
-/** Will the farm refuse this dispatch again, however long we wait? */
-export function isPermanentDispatchFailure(message: string): boolean {
-  return PERMANENT_DISPATCH_CODES.some((code) => message.includes(code))
+/**
+ * Will the farm refuse this dispatch again, however long we wait?
+ *
+ * Reads the error's CODE, and falls back to its text only for the callers that
+ * have lost the object. Matching on message substrings was how this was first
+ * written, and it missed the very case it was built for: the broker's refusal
+ * message names the capability and the actor and never the code, so an
+ * `E_BAD_INPUT` about a missing `query` read as transient and retried for ever
+ * (owner's farm, 2026-09-21).
+ */
+export function isPermanentDispatchFailure(err: unknown): boolean {
+  const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code: unknown }).code) : null
+  if (code !== null && PERMANENT_DISPATCH_CODES.has(code)) return true
+  const text = err instanceof Error ? err.message : String(err ?? '')
+  return [...PERMANENT_DISPATCH_CODES].some((known) => text.includes(known))
 }
 
 /**

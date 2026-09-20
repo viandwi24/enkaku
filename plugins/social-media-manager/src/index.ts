@@ -83,6 +83,22 @@ import {
  *
  * ## Changelog
  *
+ * - **0.59.4 — a refusal is judged by its CODE, not by its wording.**
+ *   `isPermanentDispatchFailure` matched substrings, and missed the very case
+ *   it was built for: the broker's refusal message names the capability and
+ *   the actor and never the code, so an `E_BAD_INPUT` about a missing `query`
+ *   read as transient and was retried every fifteen seconds for ever.
+ *
+ *   The teeth on that are worth stating, because they are not obvious:
+ *   `planWarmupTick` claims a phone for a row BEFORE the dispatch is
+ *   attempted. So a row that can never be sent starves every other row on that
+ *   phone — one bad activity stops a phone's whole warm-up, and every session
+ *   still reads healthy.
+ *
+ *   It reads `err.code` first now, and `E_DEVICE_CONFLICT`,
+ *   `E_DEVICE_OFFLINE`, `E_DEADLINE` and `E_INTERNAL` stay transient: those
+ *   are a busy phone or a bad moment, and retrying them is right.
+ *
  * - **0.59.3 — a browser write stops destroying the fields it does not model,
  *   and the router says when it last ran.**
  *
@@ -1810,7 +1826,7 @@ async function runWarmupPass(
         its sequence, instead of re-sending the same bad request for ever
         behind a session that still reads as healthy.
       */
-      if (isPermanentDispatchFailure(why)) {
+      if (isPermanentDispatchFailure(err)) {
         let stuck = entry.run
         for (const step of dispatch.steps) stuck = withStepState(stuck, step.activityId, { state: 'failed', error: `The farm refused this activity and would refuse it again: ${why}`, settledAt: input.now })
         entry.run = withRunSummary(stuck)
@@ -2382,7 +2398,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.59.3',
+  version: '0.59.4',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

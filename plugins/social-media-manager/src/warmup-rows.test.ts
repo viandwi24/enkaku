@@ -22,6 +22,7 @@ import {
   LEGACY_RUN_ID,
   newRunId,
   warmupRunPrefix,
+  isPermanentDispatchFailure,
 } from './warmup-rows'
 
 const STARTED = 1_800_000_000
@@ -421,5 +422,44 @@ describe('warmupProgress counts PHONES, not stored rows', () => {
 
   test('the summary says phones and means phones', () => {
     expect(warmupSummary(warmupProgress([rowFor('a', 0, 'success'), rowFor('a', 1, 'success')]))).toBe('1 done of 1 phone')
+  })
+})
+
+describe('isPermanentDispatchFailure — which refusals are worth retrying', () => {
+  /*
+    The teeth on this: `planWarmupTick` claims a phone for a row BEFORE the
+    dispatch is attempted, so a row that can never be sent starves every other
+    row on that phone. One bad activity stops a phone's whole warm-up, and
+    every session still reads healthy.
+  */
+  test('a refusal about the REQUEST is permanent, read from the code', () => {
+    for (const code of ['E_BAD_INPUT', 'E_FORBIDDEN', 'E_NO_GRANT']) {
+      expect(isPermanentDispatchFailure(Object.assign(new Error('refused'), { code }))).toBe(true)
+    }
+  })
+
+  test('a refusal about the FARM or the phone is transient, and goes again', () => {
+    for (const code of ['E_DEVICE_CONFLICT', 'E_DEVICE_OFFLINE', 'E_DEADLINE', 'E_INTERNAL']) {
+      expect(isPermanentDispatchFailure(Object.assign(new Error('not now'), { code }))).toBe(false)
+    }
+  })
+
+  test("the broker's own wording does not name the code, which is why the code is read first", () => {
+    /*
+      This exact message retried for ever on the owner's farm: the broker names
+      the capability and the actor, never the code, so a substring check missed
+      the one case it was built for.
+    */
+    const refusal = Object.assign(
+      new Error('ctx.farm.call("job.run") was refused for plugin "smm" (as plugin:smm, role admin): query: required'),
+      { code: 'E_BAD_INPUT' },
+    )
+    expect(refusal.message).not.toContain('E_BAD_INPUT')
+    expect(isPermanentDispatchFailure(refusal)).toBe(true)
+  })
+
+  test('a caller that only kept the text still gets an answer', () => {
+    expect(isPermanentDispatchFailure('the farm said invalid_job_params')).toBe(true)
+    expect(isPermanentDispatchFailure('the phone went away')).toBe(false)
   })
 })

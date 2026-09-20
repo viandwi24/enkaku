@@ -352,6 +352,17 @@ hour ago" — and here it did its job in the other direction, proving the tick
 was alive and sending the search to `plugins/smm/runtime.log`, which had the
 real answer waiting.
 
+**A refusal is judged by its CODE, not its wording.** The same stall had a
+second half: `isPermanentDispatchFailure` matched substrings, and the broker's
+refusal message names the capability and the actor and never the code — so an
+`E_BAD_INPUT` about a missing `query` read as transient and retried for ever.
+The teeth are not obvious: `planWarmupTick` claims a phone for a row BEFORE the
+dispatch is attempted, so a row that can never be sent starves every other row
+on that phone. One bad activity stops a phone's whole warm-up, and every
+session still reads healthy. `E_DEVICE_CONFLICT`, `E_DEVICE_OFFLINE`,
+`E_DEADLINE` and `E_INTERNAL` stay transient — those are a busy phone or a bad
+moment, and retrying them is right.
+
 The lesson generalises past this plugin: **a plugin's own log is where its
 service speaks, and `ctx.log.warn` does not reach the core's stdout.** Two
 stalls in this series were diagnosed the slow way before anyone looked there.
