@@ -1,9 +1,10 @@
 import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
-import { GROUP_PREFIX, GroupSchema, WarmupSettingsSchema, DEFAULT_WARMUP_KEYWORDS, groupKeyFor, newGroupId, reusableWarmup, type Group } from './groups'
+import { GROUP_PREFIX, GroupSchema, WarmupSettingsSchema, DEFAULT_WARMUP_KEYWORDS, groupKeyFor, newGroupId, reusableWarmup, slotFor, type Group } from './groups'
 import { PLATFORMS, PLATFORM_IDS, PlatformIdSchema, deviceCarriesPlatform, type PlatformId } from './platforms'
 import { phaseCount, planWarmup, type WarmupDevice } from './warmup'
+import { WarmupTargetSchema, describeTarget, reachesNothing, resolveWarmupTarget } from './warmup-target'
 import { runsFromPlan, warmupProgress, warmupRunKey, warmupSummary } from './warmup-runs'
 
 /**
@@ -32,7 +33,7 @@ const settingsParams = {
     .min(1)
     .max(10)
     .default([...DEFAULT_WARMUP_KEYWORDS])
-    .describe('The niche. Searched as queries, and used to hold attention on matching content.')
+    .describe('The account\'s interests. Used as search queries, and — wherever a phone is scrolling — a caption, author or hashtag matching one of these raises its chance of liking and of opening the comments.')
     .meta(ui({ title: 'Keywords' })),
   amount: z.number().min(0.2).max(3).default(1).describe('Scales how many videos, reels and scrolls, and how long to watch. 0.5 is short, 2 is long.').meta(ui({ title: 'Activity amount' })),
   gapMinSec: z.number().int().min(0).max(3_600).default(8).describe('Each phone waits a random time between these two before its next activity.').meta(ui({ title: 'Gap min (s)' })),
@@ -45,9 +46,47 @@ const settingsParams = {
     .default(120)
     .describe('Each phone first waits a random 0 to this many seconds, so a fleet does not start in one instant.')
     .meta(ui({ title: 'Start jitter (s)' })),
-  slot: z.number().int().min(0).max(5).default(0).describe('Shifts the platform rotation. Leave 0 for one session a day; a second on the same day uses 1.').meta(ui({ title: 'Session slot' })),
-  phases: z.number().int().min(1).max(3).default(1).describe('How many platform phases to run. With three platforms and three phases every phone warms up every platform.').meta(ui({ title: 'Phases' })),
+  activities: z
+    .number()
+    .int()
+    .min(1)
+    .max(12)
+    .default(4)
+    .describe('How many activities each phone does on each platform. The system picks which ones, and shuffles them per phone.')
+    .meta(ui({ title: 'Activities per phone' })),
+  /**
+   * Left in the params because a stored schedule may still send it, and
+   * defaulted to `-1` meaning "work it out".
+   *
+   * The owner's instruction was that the plugin should own this
+   * (*"ga perlu ada slot sesi lagi, biarkan sistem smm yang mengaturnya"*), and
+   * a knob whose right value is "however many sessions you already ran today"
+   * is a knob that asks the operator to keep count for the computer.
+   */
+  slot: z
+    .number()
+    .int()
+    .min(-1)
+    .max(5)
+    .default(-1)
+    .describe('Shifts the platform rotation. Leave it alone — the plugin counts today\'s sessions and rotates on its own.')
+    .meta(ui({ title: 'Session slot (automatic)' })),
+  phases: z
+    .number()
+    .int()
+    .min(1)
+    .max(3)
+    .default(3)
+    .describe('How many platforms each phone covers, one after another. Three means every phone warms up every platform it carries.')
+    .meta(ui({ title: 'Platforms per phone' })),
   likeChance: z.number().min(0).max(1).default(0.1).describe('How often a phone presses like, on the activities that can.').meta(ui({ title: 'Like chance' })),
+  commentChance: z
+    .number()
+    .min(0)
+    .max(1)
+    .default(0.05)
+    .describe('How often a phone opens a comment sheet, reads it and closes it. It never types.')
+    .meta(ui({ title: 'Comment chance' })),
   keywordBoost: z.number().min(1).max(10).default(3).describe('How much a keyword match raises the like and watch chance.').meta(ui({ title: 'Keyword boost' })),
   sequenceMode: z
     .enum(['jobs', 'workflow'])
@@ -64,12 +103,36 @@ const params = z.object({
     .default([...PLATFORM_IDS])
     .describe('Which platforms this session covers. A phone is only sent to one it carries a label for.')
     .meta(ui({ title: 'Platforms' })),
+  /**
+   * The legacy one-label shorthand, kept because a stored SCHEDULE may still
+   * send it (0.53.0 to 0.56.0 shipped it as the only way to pick phones).
+   *
+   * It folds into `targetLabels` below rather than being read separately —
+   * two independent phone-picking rules in one member is exactly how a session
+   * ends up reaching a fleet nobody chose.
+   */
   label: z
     .string()
     .max(60)
     .default('')
-    .describe('Only warm up phones carrying this label. Leave empty for the whole fleet.')
-    .meta(ui({ title: 'Only phones labelled' })),
+    .describe('Older shorthand for "only phones labelled this". Leave empty and use Which phones below.')
+    .meta(ui({ title: 'Only phones labelled (older)' })),
+  targetMode: z
+    .enum(['all', 'labels', 'groups', 'devices'])
+    .default('all')
+    .describe('Where the phone list starts, before any exception below.')
+    .meta(
+      ui({
+        title: 'Which phones',
+        labels: { all: 'Every phone', labels: 'Phones with these labels', groups: 'Phones in these device groups', devices: 'Only the phones I name' },
+      }),
+    ),
+  targetLabels: z.array(z.string().min(1).max(60)).max(20).default([]).describe('Used when "Phones with these labels" is chosen. A phone needs any one of them, not all.').meta(ui({ title: 'Labels' })),
+  targetGroups: z.array(z.string().min(1).max(60)).max(20).default([]).describe('Used when "Phones in these device groups" is chosen.').meta(ui({ title: 'Device groups' })),
+  targetDeviceIds: z.array(z.string().min(1)).max(500).default([]).describe('Used when "Only the phones I name" is chosen.').meta(ui({ title: 'Phones' })),
+  exceptDeviceIds: z.array(z.string().min(1)).max(500).default([]).describe('Left out whatever the choice above was.').meta(ui({ title: 'Except these phones' })),
+  exceptLabels: z.array(z.string().min(1).max(60)).max(20).default([]).describe('Any phone carrying one of these is left out, whatever the choice above was.').meta(ui({ title: 'Except these labels' })),
+  exceptGroups: z.array(z.string().min(1).max(60)).max(20).default([]).describe('Any phone in one of these is left out, whatever the choice above was.').meta(ui({ title: 'Except these device groups' })),
   /**
    * Minutes within which a warm-up of the same title is taken as already made.
    *
@@ -103,6 +166,8 @@ const result = z.object({
   activities: z.number().int().describe('Activities planned across the fleet.').meta(ui({ title: 'Activities', summary: true })),
   phases: z.number().int().meta(ui({ title: 'Phases' })),
   skipped: z.number().int().describe('Phones given nothing — each row says why.').meta(ui({ title: 'Skipped' })),
+  /** Phones the target left out entirely. They get no row: they were never part of this session. */
+  outOfScope: z.number().int().describe('Phones this session does not cover.').meta(ui({ title: 'Out of scope' })),
   summary: z.string().meta(ui({ title: 'Summary' })),
   reused: z.boolean().describe('True when an existing session of this title was used instead of making another.').meta(ui({ title: 'Reused' })),
 })
@@ -115,6 +180,8 @@ const DeviceListOutput = z.object({
       labels: z.array(z.object({ name: z.string() })).default([]),
       label: z.string().default(''),
       number: z.number().int().nullable().default(null),
+      /** For `mode: 'groups'` and `exceptGroups`. Absent on an older core, which simply matches no group. */
+      group: z.object({ id: z.string(), name: z.string() }).nullable().default(null),
     }),
   ),
 })
@@ -129,27 +196,17 @@ const script: PluginMemberScript<typeof params, typeof result> = {
   timeout: 180_000,
 
   async run(ctx: ScriptContext<z.infer<typeof params>>) {
-    const settings = WarmupSettingsSchema.parse({
-      keywords: ctx.params.keywords,
-      amount: ctx.params.amount,
-      gapSec: [Math.min(ctx.params.gapMinSec, ctx.params.gapMaxSec), Math.max(ctx.params.gapMinSec, ctx.params.gapMaxSec)],
-      startJitterSec: ctx.params.startJitterSec,
-      slot: ctx.params.slot,
-      phases: ctx.params.phases,
-      like: { chance: ctx.params.likeChance, keywordBoost: ctx.params.keywordBoost },
-      sequenceMode: ctx.params.sequenceMode,
-    })
-
     const now = Math.floor(Date.now() / 1000)
     const title = ctx.params.title.trim() || 'Warm-up'
 
     /*
-      Already made? See `dedupeMinutes`. Checked FIRST, before the fleet is
-      read or anything is planned, so seventy-nine of eighty scheduled runs
-      cost one storage scan and nothing else.
+      The sessions this farm already has. ONE scan, read before anything is
+      planned, and both of the things that need it read from here: the dedupe
+      guard below and the rotation slot. Two scans would be two chances for
+      them to see different farms.
     */
-    if (ctx.params.dedupeMinutes > 0) {
-      const made: Group[] = []
+    const made: Group[] = []
+    {
       let cursor: string | null = null
       do {
         const opts: { prefix: string; limit: number; cursor?: string } = { prefix: GROUP_PREFIX, limit: 200 }
@@ -161,18 +218,60 @@ const script: PluginMemberScript<typeof params, typeof result> = {
         }
         cursor = page.nextCursor
       } while (cursor !== null)
+    }
+
+    const settings = WarmupSettingsSchema.parse({
+      keywords: ctx.params.keywords,
+      amount: ctx.params.amount,
+      activitiesPerPhone: ctx.params.activities,
+      gapSec: [Math.min(ctx.params.gapMinSec, ctx.params.gapMaxSec), Math.max(ctx.params.gapMinSec, ctx.params.gapMaxSec)],
+      startJitterSec: ctx.params.startJitterSec,
+      // `-1` is the default and means "work it out" — see the param's note.
+      slot: ctx.params.slot >= 0 ? ctx.params.slot : slotFor(made, now),
+      phases: ctx.params.phases,
+      like: { chance: ctx.params.likeChance, commentChance: ctx.params.commentChance, keywordBoost: ctx.params.keywordBoost },
+      sequenceMode: ctx.params.sequenceMode,
+    })
+
+    /* Already made? See `dedupeMinutes`. */
+    if (ctx.params.dedupeMinutes > 0) {
       const existing = reusableWarmup(made, title, now, ctx.params.dedupeMinutes)
       if (existing !== null) {
         ctx.log.info('a warm-up of this title was made moments ago — using it rather than making another', { groupId: existing.id, title, madeAgoSec: now - existing.createdAt })
-        return { groupId: existing.id, title: existing.title, devices: 0, activities: 0, phases: 0, skipped: 0, summary: existing.summary ?? '', reused: true }
+        return { groupId: existing.id, title: existing.title, devices: 0, activities: 0, phases: 0, skipped: 0, outOfScope: 0, summary: existing.summary ?? '', reused: true }
       }
     }
 
+    /*
+      The legacy `label` folds in here and nowhere else (see its note above), so
+      a schedule written against 0.53.0 still means what it meant, and the rest
+      of this member has one phone-picking rule to read.
+    */
+    const legacy = ctx.params.label.trim()
+    const target = WarmupTargetSchema.parse({
+      mode: legacy !== '' && ctx.params.targetMode === 'all' ? 'labels' : ctx.params.targetMode,
+      labels: legacy !== '' && ctx.params.targetMode === 'all' ? [legacy] : ctx.params.targetLabels,
+      groups: ctx.params.targetGroups,
+      deviceIds: ctx.params.targetDeviceIds,
+      exceptLabels: ctx.params.exceptLabels,
+      exceptGroups: ctx.params.exceptGroups,
+      exceptDeviceIds: ctx.params.exceptDeviceIds,
+    })
+    /*
+      Refused BEFORE the fleet is read: "only these labels" with no label ticked
+      reaches nothing, and the dangerous reading of it is the whole fleet. An
+      operator who meant the fleet says so.
+    */
+    if (reachesNothing(target)) {
+      throw Object.assign(new Error(`${describeTarget(target)} — this session would reach no phone at all. Choose "Every phone", or name what it should cover.`), { code: 'E_PARAMS_INVALID' })
+    }
+
     const fleet = await ctx.farm.call('device.list', {}, DeviceListOutput)
-    const wanted = ctx.params.label.trim().toLowerCase()
-    const chosen = fleet.items.filter((item) => wanted === '' || item.labels.some((l) => l.name.trim().toLowerCase() === wanted))
+    const resolved = resolveWarmupTarget(fleet.items, target)
+    const chosen = resolved.chosen
     if (chosen.length === 0) {
-      throw Object.assign(new Error(wanted === '' ? 'This farm has no phones to warm up.' : `No phone carries the label "${ctx.params.label}".`), { code: 'E_NO_DEVICES' })
+      const why = fleet.items.length === 0 ? 'This farm has no phones to warm up.' : `${describeTarget(target)} — no phone on this farm matches. ${resolved.left[0]?.reason ?? ''}`.trim()
+      throw Object.assign(new Error(why), { code: 'E_NO_DEVICES' })
     }
 
     /*
@@ -235,12 +334,13 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       videoArtifactIds: [],
       kind: 'warmup',
       warmup: settings,
+      target,
       summary,
     })
     await ctx.storage.global.set(groupKeyFor(groupId), group)
 
-    ctx.log.info('warm-up session planned', { groupId, title: group.title, devices: written, activities, phases, skipped })
-    return { groupId, title: group.title, devices: written, activities, phases, skipped, summary, reused: false }
+    ctx.log.info('warm-up session planned', { groupId, title: group.title, devices: written, activities, phases, skipped, outOfScope: resolved.left.length, target: describeTarget(target) })
+    return { groupId, title: group.title, devices: written, activities, phases, skipped, outOfScope: resolved.left.length, summary, reused: false }
   },
 }
 

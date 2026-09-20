@@ -60,6 +60,12 @@ jobs:
       # check of the tag found that. Nothing else in CI can see it — the build is fine, the tests
       # pass, and the artifact is simply never loaded.
       - run: bun run scripts/check-pack-versions.ts
+      # A warm-up activity sending a param its script does not declare is refused at dispatch, with
+      # an error naming the plugin and not the line; one that never sends a param the script DOES
+      # declare is worse, because there is no error at all — eight activities left
+      # `commentProbability` unsent for two versions and the feature simply did half of what it
+      # promised. Neither is reachable by running a phone.
+      - run: bun run scripts/check-warmup-params.ts
       # AGENTS.md and CLAUDE.md are one document with two addressees. They
       # drifted once and nothing noticed — AGENTS.md spent weeks telling an
       # agent the release workflow does not build the guest agent APK, that CI

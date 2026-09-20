@@ -18,6 +18,7 @@ import { platformPostTexts } from './platform-captions'
 import { GROUP_PREFIX, GroupSchema, groupKeyFor, isRowDue, roomInFlight, withProgress, type Group, type RowState } from './groups'
 import retryFailed from './retry-failed'
 import addWarmup from './add-warmup'
+import stopSession from './stop-session'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
 import { WARMUP_PREFIX, WarmupRunSchema, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRun } from './warmup-runs'
 import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
@@ -81,6 +82,50 @@ import {
  * memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.57.0 — a warm-up you can start, stop and actually read.** Five things,
+ *   all of them from the owner using 0.56.0 on a real fleet:
+ *
+ *   **Stop and Start** (`stop-session.ts`, `session-control.ts`). Until now the
+ *   only way to halt a session was to REMOVE it, which threw away every row
+ *   saying what the phones had done. Stop cancels what is running, puts that
+ *   work back in the queue and sends nothing more; Start carries on — and for a
+ *   warm-up it re-bases the remaining schedule so the gaps survive a long stop.
+ *   This is why `job.cancel` joined the permissions: the plugin could already
+ *   create work on an operator's phones and could not take it back.
+ *
+ *   **A real device picker.** Warm-up asked which phones with a text box; every
+ *   other screen in this plugin already used `DevicePicker` — every phone,
+ *   these labels, these groups, or the ones I name, plus exceptions
+ *   (`warmup-target.ts`, which resolves the same choice again whenever a
+ *   schedule fires rather than freezing today's ids).
+ *
+ *   **Activities are a number the operator picks**, not however many steps the
+ *   drawn style happened to have (`pickActivities`).
+ *
+ *   **Every phone covers every platform it carries**, in order — `phases`
+ *   defaults to 3 — and a phase past what a phone carries gives it nothing
+ *   rather than sending it to the same account twice. That bug would have been
+ *   invisible: three green phases, one account never touched.
+ *
+ *   **The session page reads per phone**, not per phone-per-phase, with the
+ *   numbers an operator asks for above it (success rate, elapsed, what is still
+ *   due) and a link to each activity's own run. `warmup-report.ts` owns that
+ *   and is deliberately generic, so the service and the browser share one
+ *   implementation of it.
+ *
+ *   The rotation slot stopped being a setting: the plugin counts the warm-ups
+ *   this farm has already run and rotates on its own (`slotFor`).
+ *
+ *
+ *   Also here, and found by a check rather than by a phone: **the keywords are
+ *   an account's INTERESTS, and now tilt what it reads as well as what it
+ *   likes.** Every scrolling member already boosted both its like and its
+ *   comment chance on a keyword match; eight of the nine styles were sending
+ *   only the first, so a session set to `trading` liked trading content and
+ *   opened comments at the script's own default rate. `scripts/check-warmup-params.ts`
+ *   is the gate for it — a param a script declares and no activity sends
+ *   produces no error anywhere, which is how it survived two versions.
  *
  * - **0.56.0 — one page, for one product.** Warm-up arrived in 0.53.0 with its
  *   own menu entry, on the argument that warming up is a different job from
@@ -1388,7 +1433,7 @@ function warmupGapsFor(run: WarmupRun): [number, number] {
  */
 async function runWarmupPass(
   ctx: PluginServiceContext,
-  input: { fleet: z.infer<typeof DeviceListOutput>; names: Map<string, string>; claimed: ReadonlySet<string>; now: number },
+  input: { fleet: z.infer<typeof DeviceListOutput>; names: Map<string, string>; claimed: ReadonlySet<string>; now: number; stopped: ReadonlySet<string> },
 ): Promise<void> {
   const entries: { key: string; version: number; run: WarmupRun }[] = []
   try {
@@ -1470,7 +1515,12 @@ async function runWarmupPass(
 
   // --- send what is due ------------------------------------------------------
   const devices = new Map(input.fleet.items.map((item) => [item.id, item as unknown as RouterDevice]))
-  const runs = entries.map((entry) => entry.run)
+  /*
+    A stopped session still SETTLES above — an answer to a job that was already
+    out is owed whatever the operator has since decided — but sends nothing.
+    Filtering here rather than at the top is what makes those two true at once.
+  */
+  const runs = entries.map((entry) => entry.run).filter((run) => !input.stopped.has(run.groupId))
   const busy = new Set<string>([...input.claimed, ...phonesInFlight(runs)])
   const plan = planWarmupTick({ runs, devices, claimed: busy, now: input.now })
 
@@ -1562,6 +1612,18 @@ function messageOf(err: unknown): string {
  * rewritten — the same rule the post rows keep, and for the same reason: it
  * may have been written by a newer version an operator is about to activate.
  */
+/** The sessions the operator has stopped — the one place that rule is read from a group map. */
+function stoppedIds(groups: ReadonlyMap<string, Group>): Set<string> {
+  const out = new Set<string>()
+  for (const group of groups.values()) if (group.stopped) out.add(group.id)
+  return out
+}
+
+/** The same answer when the tick took the early exit and never read the groups for itself. */
+async function stoppedGroupIds(ctx: PluginServiceContext): Promise<Set<string>> {
+  return stoppedIds(await readGroups(ctx))
+}
+
 async function readGroups(ctx: PluginServiceContext): Promise<Map<string, Group>> {
   const out = new Map<string, Group>()
   try {
@@ -1652,7 +1714,7 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
   }
   if (listed.items.length === 0) {
     // No posts is not no work: a warm-up session runs on its own rows.
-    await runWarmupPass(ctx, { fleet, names, claimed: new Set(), now: Math.floor(Date.now() / 1000) })
+    await runWarmupPass(ctx, { fleet, names, claimed: new Set(), now: Math.floor(Date.now() / 1000), stopped: await stoppedGroupIds(ctx) })
     return
   }
 
@@ -1685,6 +1747,8 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     both decide there was room for one more.
   */
   const groups = await readGroups(ctx)
+  /** Sessions the operator stopped. Read once, honoured by both halves of the tick. */
+  const stopped = stoppedIds(groups)
   const groupStates = new Map<string, RowState[]>()
   /** groupId → deviceId → the row key that owns that phone. */
   const ownersByGroup = new Map<string, Map<string, string>>()
@@ -1893,6 +1957,10 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     const nowSec = Math.floor(Date.now() / 1000)
     if (!isRowDue(post, nowSec)) continue
     if (post.groupId !== null) {
+      // Stopped by the operator (0.57.0). A skip, like the two below it: the
+      // row keeps its state and owes the same work, and starting the session
+      // sends it on the next tick.
+      if (stopped.has(post.groupId)) continue
       const left = room.get(post.groupId) ?? Number.POSITIVE_INFINITY
       if (left <= 0) continue
     }
@@ -1985,7 +2053,7 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
   }
 
   // Last, and with the post pass's claims: posting is the higher-value work.
-  await runWarmupPass(ctx, { fleet, names, claimed, now: Math.floor(Date.now() / 1000) })
+  await runWarmupPass(ctx, { fleet, names, claimed, now: Math.floor(Date.now() / 1000), stopped })
 }
 
 /**
@@ -2037,11 +2105,11 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.56.0',
+  version: '0.57.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
-  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts, addWarmup],
+  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts, addWarmup, stopSession],
   /*
     Plan 315 — workflows this plugin ships. Registered on the farm as
     `smm/<name>` when this version is activated, read-only there; an operator
@@ -2068,8 +2136,14 @@ export default definePlugin({
      * rather than only when that mode is on, because the list is what an
      * operator consents to at install and a permission that appears later is a
      * permission nobody agreed to.
+     *
+     * `job.cancel` (0.57.0) is Stop. The plugin can already CREATE work on an
+     * operator's phones; being unable to take it back was the asymmetry that
+     * made a runaway session something you had to wait out. It is used in
+     * exactly one place — `stop-session.ts`, on job ids the session's own rows
+     * are waiting for — and never on a job this plugin did not dispatch.
      */
-    permissions: ['device.list', 'job.run', 'job.get', 'artifact.get', 'actions.run'],
+    permissions: ['device.list', 'job.run', 'job.get', 'job.cancel', 'artifact.get', 'actions.run'],
     setup: (ctx) => {
       const timer = setInterval(() => {
         void maybeRunTick(ctx).catch((err) => ctx.log.warn('router tick failed', { error: messageOf(err) }))

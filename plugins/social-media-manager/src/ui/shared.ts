@@ -172,6 +172,8 @@ export const GroupSchema = z.object({
    * on upgrade with nothing on screen saying why.
    */
   kind: z.enum(['post', 'warmup']).default('post'),
+  /** Stopped by the operator (0.57.0): the router sends nothing for it until it is started again. */
+  stopped: z.boolean().default(false),
   /** A warm-up session's settings; `null` on a post session. */
   warmup: z
     .object({

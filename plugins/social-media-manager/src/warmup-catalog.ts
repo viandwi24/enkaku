@@ -29,7 +29,8 @@ export interface WarmupDraw {
   keywords: readonly string[]
   /** Scales every count; 0.5 is a short session, 2 a long one. */
   amount: number
-  like: { chance: number; keywordBoost: number }
+  /** The account's interests, as rates: the base like and comment chances, and what a keyword match multiplies them by. */
+  like: { chance: number; commentChance: number; keywordBoost: number }
   random: () => number
 }
 
@@ -83,6 +84,31 @@ export function keyword(draw: WarmupDraw): string {
  */
 export function likes(draw: WarmupDraw): { likeProbability: number; keywordBoostFactor: number } {
   return { likeProbability: draw.like.chance, keywordBoostFactor: draw.like.keywordBoost }
+}
+
+/**
+ * Like AND the comment sheet, for the members that accept both.
+ *
+ * ## What the keywords are actually for
+ *
+ * They are the account's INTERESTS, not a search term list. The owner put it
+ * plainly (2026-09-20): *"keywords itu dipakai sebagai sarana personality atau
+ * interests nya ... selama nanti pas di scroll fyp ada title / description /
+ * hastags yang berhubungan sama kata trading, maka menaikan likes dan open
+ * comment section"*.
+ *
+ * Every scrolling member already implements exactly that — it reads the
+ * caption, the author and the hashtags of what is on screen, and multiplies
+ * BOTH chances by `keywordBoostFactor` on a match. What was missing was this
+ * plugin sending the second one: eight of the nine styles passed
+ * `likeProbability` and left `commentProbability` at the script's own default,
+ * so a phone's interests tilted what it liked and never what it read. Found by
+ * checking every activity's params against the packs' schemas
+ * (`scripts/check-warmup-params.ts`), not on a phone — an unsent param is
+ * silent, which is why it survived a working feature for two versions.
+ */
+export function likesAndComments(draw: WarmupDraw): { likeProbability: number; commentProbability: number; keywordBoostFactor: number } {
+  return { likeProbability: draw.like.chance, commentProbability: draw.like.commentChance, keywordBoostFactor: draw.like.keywordBoost }
 }
 
 /**
@@ -148,8 +174,9 @@ export const WARMUP_STYLES: readonly WarmupStyle[] = [
     platform: 'instagram',
     title: 'Reels, stories and activity',
     activities: [
-      activity('ig-a-reels', 'Scroll reels', 'instagram/scroll-reels@latest', (d) => ({ reels: scaled(d, 6, 10), keywords: [...d.keywords], ...likes(d) })),
-      activity('ig-a-stories', 'Watch stories', 'instagram/watch-stories@latest', (d) => ({ frames: scaled(d, 5, 10) })),
+      activity('ig-a-reels', 'Scroll reels', 'instagram/scroll-reels@latest', (d) => ({ reels: scaled(d, 6, 10), keywords: [...d.keywords], ...likesAndComments(d) })),
+      /* `watch-stories` likes but has no keyword boost of its own — it never reads a caption. Sending one would be refused. */
+      activity('ig-a-stories', 'Watch stories', 'instagram/watch-stories@latest', (d) => ({ frames: scaled(d, 5, 10), likeProbability: d.like.chance })),
       activity('ig-a-activity', 'Check activity', 'instagram/check-activity@latest'),
     ],
   },
@@ -158,7 +185,7 @@ export const WARMUP_STYLES: readonly WarmupStyle[] = [
     platform: 'instagram',
     title: 'Explore, feed and inbox',
     activities: [
-      activity('ig-b-explore', 'Explore reels', 'instagram/explore-reels@latest', (d) => ({ reels: scaled(d, 4, 8), keywords: [...d.keywords], ...likes(d) })),
+      activity('ig-b-explore', 'Explore reels', 'instagram/explore-reels@latest', (d) => ({ reels: scaled(d, 4, 8), keywords: [...d.keywords], ...likesAndComments(d) })),
       activity('ig-b-feed', 'Scroll feed', 'instagram/scroll-feed@latest', (d) => ({ posts: scaled(d, 8, 12), keywords: [...d.keywords], ...likes(d) })),
       activity('ig-b-inbox', 'Check inbox', 'instagram/check-inbox@latest'),
     ],
@@ -169,7 +196,7 @@ export const WARMUP_STYLES: readonly WarmupStyle[] = [
     title: 'Search, explore and the profile',
     activities: [
       activity('ig-c-search', 'Search a keyword', 'instagram/search-keyword@latest', (d) => ({ query: keyword(d) })),
-      activity('ig-c-explore', 'Explore reels', 'instagram/explore-reels@latest', (d) => ({ reels: scaled(d, 3, 6), keywords: [...d.keywords], ...likes(d) })),
+      activity('ig-c-explore', 'Explore reels', 'instagram/explore-reels@latest', (d) => ({ reels: scaled(d, 3, 6), keywords: [...d.keywords], ...likesAndComments(d) })),
       activity('ig-c-profile', 'Check profile', 'instagram/check-profile@latest'),
     ],
   },
@@ -180,8 +207,8 @@ export const WARMUP_STYLES: readonly WarmupStyle[] = [
     platform: 'youtube',
     title: 'Shorts, search and notifications',
     activities: [
-      activity('yt-a-shorts', 'Scroll Shorts', 'youtube/scroll-shorts@latest', (d) => ({ videos: scaled(d, 6, 10), keywords: [...d.keywords], ...likes(d) })),
-      activity('yt-a-search', 'Search and play', 'youtube/search-play@latest', (d) => ({ query: keyword(d), watchMs: scaled(d, 20_000, 40_000), keywords: [...d.keywords], ...likes(d) })),
+      activity('yt-a-shorts', 'Scroll Shorts', 'youtube/scroll-shorts@latest', (d) => ({ videos: scaled(d, 6, 10), keywords: [...d.keywords], ...likesAndComments(d) })),
+      activity('yt-a-search', 'Search and play', 'youtube/search-play@latest', (d) => ({ query: keyword(d), watchMs: scaled(d, 20_000, 40_000), keywords: [...d.keywords], ...likesAndComments(d) })),
       activity('yt-a-notif', 'Check notifications', 'youtube/check-notifications@latest', (d) => ({ maxItems: scaledAtLeast(d, 5, 10, 20) })),
     ],
   },
@@ -190,8 +217,8 @@ export const WARMUP_STYLES: readonly WarmupStyle[] = [
     platform: 'youtube',
     title: 'Search and Shorts',
     activities: [
-      activity('yt-b-search', 'Search and play', 'youtube/search-play@latest', (d) => ({ query: keyword(d), watchMs: scaled(d, 45_000, 90_000), keywords: [...d.keywords], ...likes(d) })),
-      activity('yt-b-shorts', 'Scroll Shorts (short)', 'youtube/scroll-shorts@latest', (d) => ({ videos: scaled(d, 3, 6), keywords: [...d.keywords], ...likes(d) })),
+      activity('yt-b-search', 'Search and play', 'youtube/search-play@latest', (d) => ({ query: keyword(d), watchMs: scaled(d, 45_000, 90_000), keywords: [...d.keywords], ...likesAndComments(d) })),
+      activity('yt-b-shorts', 'Scroll Shorts (short)', 'youtube/scroll-shorts@latest', (d) => ({ videos: scaled(d, 3, 6), keywords: [...d.keywords], ...likesAndComments(d) })),
     ],
   },
   {
@@ -199,7 +226,7 @@ export const WARMUP_STYLES: readonly WarmupStyle[] = [
     platform: 'youtube',
     title: 'Watch, home, a channel and the profile',
     activities: [
-      activity('yt-c-watch', 'Search and watch', 'youtube/watch-video@latest', (d) => ({ query: keyword(d), keywords: [...d.keywords], ...likes(d) })),
+      activity('yt-c-watch', 'Search and watch', 'youtube/watch-video@latest', (d) => ({ query: keyword(d), keywords: [...d.keywords], ...likesAndComments(d) })),
       activity('yt-c-home', 'Home feed', 'youtube/download-home@latest', (d) => ({ videos: scaled(d, 1, 2) })),
       activity('yt-c-channel', 'Open a channel', 'youtube/search-channel@latest', (d) => ({ query: keyword(d) })),
       activity('yt-c-profile', 'Check profile', 'youtube/check-profile@latest', (d) => ({ maxRows: scaledAtLeast(d, 3, 8, 12) })),

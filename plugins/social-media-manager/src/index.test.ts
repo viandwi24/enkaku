@@ -14,6 +14,7 @@ import updateGroup from './update-group'
 import cleanPhoneVideos from './clean-phone-videos'
 import syncAccounts from './sync-accounts'
 import addWarmup from './add-warmup'
+import stopSession from './stop-session'
 import { PLATFORMS } from './platforms'
 import { POST_PREFIX, RESULT_UNREADABLE } from './posts'
 
@@ -35,15 +36,15 @@ describe('social-media-manager manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.56.0')
+    expect(plugin.version).toBe('0.57.0')
     expect(plugin.version).toBe(pkg.version)
   })
 
   test('every member is presentable in Studio', () => {
-    expect(plugin.scripts.map((s) => s.id)).toEqual(['add-post', 'retry-failed', 'add-posts', 'add-group', 'start-group', 'retry-group', 'update-post', 'resolve-attempt', 'skip-platform', 'update-group', 'clean-phone-videos', 'sync-accounts', 'add-warmup'])
+    expect(plugin.scripts.map((s) => s.id)).toEqual(['add-post', 'retry-failed', 'add-posts', 'add-group', 'start-group', 'retry-group', 'update-post', 'resolve-attempt', 'skip-platform', 'update-group', 'clean-phone-videos', 'sync-accounts', 'add-warmup', 'stop-session'])
     // Typed against the members themselves rather than the manifest's erased
     // `ScriptDefinition`, which drops `title`/`description` from the type.
-    const members: Array<{ id: string; title?: string; description?: string }> = [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts, addWarmup]
+    const members: Array<{ id: string; title?: string; description?: string }> = [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts, addWarmup, stopSession]
     expect(members.map((m) => m.id).sort()).toEqual(plugin.scripts.map((s) => s.id).sort())
     for (const member of members) {
       expect({ id: member.id, titled: (member.title ?? '').length > 0 }).toEqual({ id: member.id, titled: true })
@@ -84,7 +85,11 @@ describe('the service declaration', () => {
     // `actions.run` (plan 908) is used only by a session in `workflow`
     // sequence mode, and is declared anyway: a permission that appears the
     // first time somebody turns a setting on is a permission nobody agreed to.
-    expect(plugin.service?.permissions).toEqual(['device.list', 'job.run', 'job.get', 'artifact.get', 'actions.run'])
+    //
+    // `job.cancel` (0.57.0) is Stop. The plugin could already create work on an
+    // operator's phones; being unable to take it back was the asymmetry that
+    // made a runaway session something you had to wait out.
+    expect(plugin.service?.permissions).toEqual(['device.list', 'job.run', 'job.get', 'job.cancel', 'artifact.get', 'actions.run'])
   })
 
   test('a service exists — the router is a timer and cannot run without one', () => {

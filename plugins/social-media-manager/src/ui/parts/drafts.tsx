@@ -190,8 +190,8 @@ export function DraftsPanel(): ReactElement {
 
   return (
     <div className="space-y-3">
-      <Card>
-        <CardContent className="space-y-4 py-4">
+      <Card className="gap-0 py-0">
+        <CardContent className="space-y-4 p-4">
           <div>
             <p className="text-row font-medium text-text">Clean up</p>
             <p className="text-[12px] text-dim">Deletes every draft each platform keeps on the phone's account, and optionally the old videos the post scripts left on the phone. Permanent — a dry run only counts.</p>
@@ -278,8 +278,8 @@ export function DraftsPanel(): ReactElement {
       </Card>
 
       {dispatches.length > 0 ? (
-        <Card>
-          <CardContent className="py-3">
+        <Card className="gap-0 py-0">
+          <CardContent className="p-3">
             <div className="overflow-x-auto">
               <table className="w-full text-[13px]">
                 <thead>

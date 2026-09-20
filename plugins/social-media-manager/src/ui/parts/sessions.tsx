@@ -14,6 +14,7 @@ import {
   Input,
   LoadingRows,
   PencilSimpleIcon,
+  PauseIcon,
   PlayIcon,
   PlusIcon,
   Progress,
@@ -655,6 +656,36 @@ function useSessionActions(reload: () => void, onRemoved?: (group: Group) => voi
   }
 
   /**
+   * Stop a session, or start it again (0.57.0).
+   *
+   * This is what Remove used to be the only way to do, and the difference is
+   * the whole point: removing a session stops it by deleting it, which throws
+   * away every row that says what the phones did. Stopping keeps all of it and
+   * is reversible — the owner asked for exactly that, *"tapi bisa di start
+   * lagi juga"*.
+   *
+   * The member cancels what is running and puts it back in the queue; this
+   * only says which way to move and reports what came back.
+   */
+  function stopSession(group: Group, action: 'stop' | 'start'): void {
+    void run(
+      `stop:${group.id}`,
+      async () => {
+        const host = await hostOrRefuse()
+        return runMember('smm/stop-session@latest', { groupId: group.id, action }, host.id)
+      },
+      {
+        success:
+          action === 'stop'
+            ? `“${group.title}” stopped — anything running was cancelled and put back in the queue`
+            : `“${group.title}” started again — the router sends the rest on its next pass`,
+        failure: action === 'stop' ? `Could not stop “${group.title}”` : `Could not start “${group.title}”`,
+        onSuccess: () => reload(),
+      },
+    )
+  }
+
+  /**
    * Remove the session row — which is also how a session is STOPPED.
    *
    * The router refuses to dispatch a row whose session no longer exists
@@ -823,7 +854,7 @@ function useSessionActions(reload: () => void, onRemoved?: (group: Group) => voi
     )
   }
 
-  return { startSession, retrySession, removeSession, updatePost, updatePacing, saving, busy, outcome }
+  return { startSession, retrySession, stopSession, removeSession, updatePost, updatePacing, saving, busy, outcome }
 }
 
 /** One shared empty map, so a render before the first load does not allocate one per card. */
@@ -870,7 +901,7 @@ export function SessionsPanel({
   onNew: () => void
 }): ReactElement {
   const { data, error, loading, reload } = useSessionsData(refreshKey)
-  const { startSession, retrySession, removeSession, busy } = useSessionActions(reload)
+  const { startSession, retrySession, stopSession, removeSession, busy } = useSessionActions(reload)
 
   const groups = data?.groups ?? []
 
@@ -928,6 +959,7 @@ export function SessionsPanel({
                   busy={busy(group)}
                   onStart={() => startSession(group)}
                   onRetry={() => retrySession(group)}
+                  onStop={(action) => stopSession(group, action)}
                   onRemove={() => removeSession(group)}
                 />
               ))}
@@ -1103,7 +1135,7 @@ export function SessionDetail({ groupId, refreshKey, onBack }: { groupId: string
   // Removing the session removes the page it is on: there is nothing left to
   // watch, so the operator is put back on the list rather than left looking at
   // a header for a thing that no longer exists.
-  const { startSession, retrySession, removeSession, updatePost, updatePacing, saving, busy, outcome } = useSessionActions(reload, onBack)
+  const { startSession, retrySession, stopSession, removeSession, updatePost, updatePacing, saving, busy, outcome } = useSessionActions(reload, onBack)
   const now = useNow(TICK_MS)
 
   const group = (data?.groups ?? []).find((g) => g.id === groupId) ?? null
@@ -1153,6 +1185,7 @@ export function SessionDetail({ groupId, refreshKey, onBack }: { groupId: string
               busy={busy(group)}
               onStart={() => startSession(group)}
               onRetry={() => retrySession(group)}
+              onStop={(action) => stopSession(group, action)}
               onRemove={() => removeSession(group)}
               onEditPacing={(edit, done) => updatePacing(group, edit, done)}
             />
@@ -3156,6 +3189,7 @@ function SessionRow({
   busy,
   onStart,
   onRetry,
+  onStop,
   onRemove,
 }: {
   group: Group
@@ -3163,6 +3197,7 @@ function SessionRow({
   busy: boolean
   onStart: () => void
   onRetry: () => void
+  onStop: (action: 'stop' | 'start') => void
   onRemove: () => void
 }): ReactElement {
   const p = group.progress
@@ -3217,7 +3252,7 @@ function SessionRow({
       </TableCell>
       <TableCell className="hidden text-[11.5px] text-dim @5xl:table-cell">{pacing}</TableCell>
       <TableCell>
-        <SessionActions group={group} busy={busy} onStart={onStart} onRetry={onRetry} onRemove={onRemove} className="flex-nowrap" />
+        <SessionActions group={group} busy={busy} onStart={onStart} onRetry={onRetry} onStop={onStop} onRemove={onRemove} className="flex-nowrap" />
       </TableCell>
     </TableRow>
   )
@@ -3263,6 +3298,7 @@ function SessionHead({
   busy,
   onStart,
   onRetry,
+  onStop,
   onRemove,
   onEditPacing,
 }: {
@@ -3270,6 +3306,7 @@ function SessionHead({
   busy: boolean
   onStart: () => void
   onRetry: () => void
+  onStop: (action: 'stop' | 'start') => void
   onRemove: () => void
   onEditPacing: (edit: PacingChange, onDone: () => void) => void
 }): ReactElement {
@@ -3285,7 +3322,7 @@ function SessionHead({
           <h2 className="text-row font-medium wrap-anywhere text-text">{group.title}</h2>
           <p className="mt-0.5 text-[11.5px] leading-relaxed text-dim">{summary ?? NOT_REPORTED}</p>
         </div>
-        <SessionActions group={group} busy={busy} onStart={onStart} onRetry={onRetry} onRemove={onRemove} className="shrink-0 flex-wrap" />
+        <SessionActions group={group} busy={busy} onStart={onStart} onRetry={onRetry} onStop={onStop} onRemove={onRemove} className="shrink-0 flex-wrap" />
       </div>
 
       {/* How far along, and what that number leaves out. The bar is posted-only
@@ -3391,6 +3428,7 @@ function SessionActions({
   busy,
   onStart,
   onRetry,
+  onStop,
   onRemove,
   className,
 }: {
@@ -3398,15 +3436,28 @@ function SessionActions({
   busy: boolean
   onStart: () => void
   onRetry: () => void
+  onStop: (action: 'stop' | 'start') => void
   onRemove: () => void
   className?: string
 }): ReactElement {
   const total = group.progress?.total ?? group.videoArtifactIds.length
   return (
     <div className={cn('flex items-center justify-end gap-1.5', className)}>
+      {/*
+        Stopped sessions offer Start-again first and nothing else: the two
+        Starts mean different things (give the waiting videos their turns,
+        versus let this session send at all) and showing both would make the
+        operator guess which one they need.
+      */}
+      {group.stopped ? (
+        <Button size="sm" disabled={busy} onClick={() => onStop('start')}>
+          <PlayIcon aria-hidden />
+          Start again
+        </Button>
+      ) : null}
       <ConfirmDialog
         trigger={
-          <Button size="sm" disabled={busy}>
+          <Button size="sm" variant={group.stopped ? 'outline' : 'default'} disabled={busy}>
             <PlayIcon aria-hidden />
             Start
           </Button>
@@ -3445,6 +3496,29 @@ function SessionActions({
         }
         onConfirm={onRetry}
       />
+
+      {group.stopped ? null : (
+        <ConfirmDialog
+          trigger={
+            <Button variant="outline" size="sm" disabled={busy}>
+              <PauseIcon aria-hidden />
+              Stop
+            </Button>
+          }
+          title={`Stop “${group.title}”?`}
+          destructive
+          confirmLabel="Stop"
+          description={
+            <>
+              Every upload this session has <strong>running right now</strong> is cancelled on its phone, and goes back into the queue. Nothing more
+              is sent until you start it again.
+              <br />
+              Anything that already posted stays posted — a stop never undoes a post, and the session keeps every row saying what each phone did.
+            </>
+          }
+          onConfirm={() => onStop('stop')}
+        />
+      )}
 
       <ConfirmDialog
         trigger={

@@ -128,12 +128,17 @@ describe('a phone is only sent to a platform it carries', () => {
     ignores that sends a third of the fleet to fail on a signed-out app one day
     in three.
   */
-  test('a phone with one platform always gets that one, and never the others', () => {
+  test('a phone with one platform gets that one, never the others, and is not sent to it again', () => {
+    // It used to get `tiktok` in every phase, which was harmless while a
+    // session ran ONE phase. With three the same phone would warm up the same
+    // account three times in an hour, which is the tell this plugin exists to
+    // avoid. A phase past what a phone carries gives it nothing, and says so.
     const device: WarmupDevice = { deviceId: 'd', number: 5, platforms: ['tiktok'] }
-    for (let phase = 0; phase < 3; phase++) {
-      const [plan] = planWarmup({ devices: [device], settings: settings(), platforms: PLATFORMS, phase, nowMs: NOW, random: rng(phase) })
-      expect(plan?.platform).toBe('tiktok')
-    }
+    const got = [0, 1, 2].map((phase) => planWarmup({ devices: [device], settings: settings(), platforms: PLATFORMS, phase, nowMs: NOW, random: rng(phase) })[0])
+    expect(got[0]?.platform).toBe('tiktok')
+    expect(got[1]?.platform).toBeNull()
+    expect(got[2]?.platform).toBeNull()
+    expect(got[1]?.note).toContain('covered in the earlier phases')
   })
 
   test('a phone with two platforms still alternates between them', () => {
@@ -236,11 +241,41 @@ describe('D6.1, D6.5 — start jitter, shuffle and gaps', () => {
     expect(orders.size).toBeGreaterThan(1)
   })
 
-  test('every activity of the drawn style runs exactly once', () => {
-    for (const assignment of plan()) {
+  test('a phone does the number of activities the operator asked for, and never one twice', () => {
+    // Since 0.57.0 the COUNT is the operator's (`activitiesPerPhone`) and the
+    // style only decides what the activities are. Repeating one inside a
+    // sequence is the one shape that reads as a script rather than a person,
+    // so the top-up from other styles must never do it.
+    for (const assignment of plan({ activitiesPerPhone: 5 })) {
       if (assignment.styleId === null) continue
-      const style = WARMUP_STYLES.find((s) => s.id === assignment.styleId)
-      expect(assignment.steps.map((s) => s.activityId).sort()).toEqual(style?.activities.map((a) => a.id).sort() as string[])
+      const ids = assignment.steps.map((step) => step.activityId)
+      expect(new Set(ids).size).toBe(ids.length)
+      expect(ids.length).toBe(5)
+    }
+  })
+
+  test('asking for fewer than a style has takes some of it, still shuffled', () => {
+    for (const assignment of plan({ activitiesPerPhone: 2 })) {
+      if (assignment.styleId === null) continue
+      expect(assignment.steps).toHaveLength(2)
+    }
+  })
+
+  test('the drawn style is where a phone\'s activities come from first', () => {
+    // The top-up exists for a style shorter than the number asked for; it must
+    // not quietly become the main source and flatten the styles into one pool.
+    for (const assignment of plan({ activitiesPerPhone: 1 })) {
+      if (assignment.styleId === null) continue
+      const style = WARMUP_STYLES.find((entry) => entry.id === assignment.styleId)
+      expect(style?.activities.map((activity) => activity.id)).toContain(assignment.steps[0]?.activityId as string)
+    }
+  })
+
+  test('a phone gets what the platform actually has when it has fewer', () => {
+    for (const assignment of plan({ activitiesPerPhone: 12 })) {
+      if (assignment.platform === null) continue
+      const available = new Set(WARMUP_STYLES.filter((style) => style.platform === assignment.platform).flatMap((style) => style.activities.map((a) => a.id)))
+      expect(assignment.steps.length).toBe(Math.min(12, available.size))
     }
   })
 })
@@ -317,7 +352,7 @@ describe('the plan itself', () => {
   })
 
   test("the operator's like settings reach the members that accept them", () => {
-    const plan = planWarmup({ devices: fleet(30), settings: settings({ like: { chance: 0.42, keywordBoost: 7 } }), platforms: PLATFORMS, phase: 0, nowMs: NOW, random: rng(6) })
+    const plan = planWarmup({ devices: fleet(30), settings: settings({ like: { chance: 0.42, commentChance: 0.05, keywordBoost: 7 } }), platforms: PLATFORMS, phase: 0, nowMs: NOW, random: rng(6) })
     const withLikes = plan.flatMap((a) => a.steps).filter((s) => 'likeProbability' in s.params)
     expect(withLikes.length).toBeGreaterThan(0)
     for (const step of withLikes) {
@@ -352,7 +387,7 @@ describe('the catalog', () => {
     error naming the plugin rather than the line that caused it.
   */
   test('tiktok/keyword-videos is sent the keyword boost but never a like chance', () => {
-    const steps = planWarmup({ devices: fleet(40), settings: settings({ like: { chance: 0.5, keywordBoost: 6 } }), platforms: ['tiktok'], phase: 0, nowMs: NOW, random: rng(8) })
+    const steps = planWarmup({ devices: fleet(40), settings: settings({ like: { chance: 0.5, commentChance: 0.05, keywordBoost: 6 } }), platforms: ['tiktok'], phase: 0, nowMs: NOW, random: rng(8) })
       .flatMap((a) => a.steps)
       .filter((s) => s.script.startsWith('tiktok/keyword-videos'))
     expect(steps.length).toBeGreaterThan(0)
@@ -366,5 +401,37 @@ describe('the catalog', () => {
     for (const style of WARMUP_STYLES) {
       for (const item of style.activities) expect(item.script.startsWith(`${style.platform}/`)).toBe(true)
     }
+  })
+})
+
+describe('a phone is never sent to the same platform twice in one session', () => {
+  /*
+    The failure this guards is silent: three green phases, one account never
+    touched and another warmed up twice within the hour. It appeared the moment
+    `phases` defaulted to 3 (0.57.0) on a farm whose phones carry two labels.
+  */
+  const twoLabelFleet = (n: number): WarmupDevice[] =>
+    Array.from({ length: n }, (_, i) => ({ deviceId: `d${i}`, number: i + 1, platforms: ['tiktok', 'youtube'] as PlatformId[] }))
+
+  const phasesOf = (device: WarmupDevice['deviceId'], fleet: WarmupDevice[]): (PlatformId | null)[] =>
+    [0, 1, 2].map(
+      (phase) => planWarmup({ devices: fleet, settings: settings({ phases: 3 }), platforms: [...PLATFORMS], phase, nowMs: 0, random: Math.random }).find((a) => a.deviceId === device)?.platform ?? null,
+    )
+
+  test('a phone carrying two of three platforms covers both, and gets nothing in the third phase', () => {
+    const fleet = twoLabelFleet(6)
+    for (const device of fleet) {
+      const got = phasesOf(device.deviceId, fleet)
+      const covered = got.filter((p): p is PlatformId => p !== null)
+      expect(new Set(covered).size).toBe(covered.length)
+      expect(covered.length).toBe(2)
+      expect(got[2]).toBeNull()
+    }
+  })
+
+  test('and the empty phase says why, rather than looking like a broken row', () => {
+    const fleet = twoLabelFleet(2)
+    const third = planWarmup({ devices: fleet, settings: settings({ phases: 3 }), platforms: [...PLATFORMS], phase: 2, nowMs: 0, random: Math.random })
+    expect(third[0]?.note).toContain('covered in the earlier phases')
   })
 })

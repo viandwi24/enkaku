@@ -142,7 +142,16 @@ export function pickRefusal(pick: DevicePick): string | null {
   return null
 }
 
-/** What each mode does to the platform's own label, said once, under the control that does it. */
+/**
+ * What each mode does to the platform's own label, said once, under the control
+ * that does it.
+ *
+ * This is the POSTING consequence, and it is only true where an explicit list
+ * of phones makes the service stop checking the label. A warm-up checks the
+ * label whatever the pick was — a phone with no `youtube` label is given
+ * nothing to do on YouTube rather than failing there — so it passes its own
+ * `consequence` instead of letting this one mislead.
+ */
 const CONSEQUENCE: Record<DeviceMode, string> = {
   all: 'Every phone in the farm, and the platform’s label is no longer checked: a phone not signed in to that platform fails its own job by name rather than being skipped.',
   devices: 'Exactly the phones ticked, and the platform’s label is no longer checked — a phone not signed in to it fails its own job by name.',
@@ -158,6 +167,7 @@ export function DevicePicker({
   onRetry,
   value,
   onChange,
+  consequence,
 }: {
   fleet: readonly Device[]
   /** The fleet read is still out. With rows already on screen it is a refresh, not a blank. */
@@ -166,6 +176,8 @@ export function DevicePicker({
   onRetry: () => void
   value: DevicePick
   onChange: (next: DevicePick) => void
+  /** Overrides the posting consequence below, for a caller where it is not true. */
+  consequence?: Partial<Record<DeviceMode, string>> | undefined
 }): ReactElement {
   /* The search box is about finding a row, not about the choice — the caller has no use for it. */
   const [query, setQuery] = useState('')
@@ -343,7 +355,9 @@ export function DevicePicker({
         That is a thing an operator should read here, not infer from a post that
         failed on a phone nobody signed in.
       */}
-      <p className={cn('text-[11.5px]', value.mode === 'all' ? 'text-warn' : 'text-dim')}>{CONSEQUENCE[value.mode]}</p>
+      <p className={cn('text-[11.5px]', consequence === undefined && value.mode === 'all' ? 'text-warn' : 'text-dim')}>
+        {consequence?.[value.mode] ?? CONSEQUENCE[value.mode]}
+      </p>
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { GroupSchema, WarmupSettingsSchema, defaultWarmupSettings, isWarmup, reusableWarmup, drawGap, editPacing, withProgress, groupProgress, groupSummary, isRowDue, maxDevicesFor, newGroupId, planSchedule, retimeTurns, roomInFlight, shuffled, type Pacing, type RowState } from './groups'
+import { GroupSchema, type Group, WarmupSettingsSchema, defaultWarmupSettings, isWarmup, reusableWarmup, drawGap, editPacing, withProgress, groupProgress, groupSummary, isRowDue, maxDevicesFor, newGroupId, planSchedule, retimeTurns, roomInFlight, shuffled, type Pacing, type RowState, SLOT_COUNT, SLOT_WINDOW_SEC, slotFor } from './groups'
 
 /** A deterministic `random` — the same draws every run, so a schedule can be asserted exactly. */
 function seeded(values: readonly number[]): () => number {
@@ -26,8 +26,14 @@ describe('the stored shape', () => {
       progress: null,
       summary: null,
     }
-    // `kind` and `warmup` are filled in by their defaults — see the migration test below.
-    expect(GroupSchema.parse(group)).toEqual({ ...group, kind: 'post', warmup: null })
+    // `kind`, `warmup`, `stopped` and `target` are filled in by their defaults — see the migration test below.
+    expect(GroupSchema.parse(group)).toEqual({
+      ...group,
+      kind: 'post',
+      warmup: null,
+      stopped: false,
+      target: { mode: 'all', labels: [], groups: [], deviceIds: [], exceptLabels: [], exceptGroups: [], exceptDeviceIds: [] },
+    })
   })
 
   /*
@@ -69,7 +75,7 @@ describe('the stored shape', () => {
     expect(isWarmup(parsed)).toBe(true)
     expect(parsed.warmup?.amount).toBe(1)
     expect(parsed.warmup?.gapSec).toEqual([8, 20])
-    expect(parsed.warmup?.like).toEqual({ chance: 0.1, keywordBoost: 3 })
+    expect(parsed.warmup?.like).toEqual({ chance: 0.1, commentChance: 0.05, keywordBoost: 3 })
     expect(parsed.warmup?.styleWeights).toEqual({})
   })
 
@@ -353,5 +359,56 @@ describe('reusableWarmup — a schedule aimed at a fleet must not make a session
   test('a window of zero turns the guard off, for someone who means it', () => {
     const made = [session({ id: 'g-first', createdAt: NOW })]
     expect(reusableWarmup(made, 'Warm-up pagi', NOW, 0)).toBeNull()
+  })
+})
+
+describe('slotFor — the rotation the plugin keeps for itself', () => {
+  const warmup = (createdAt: number): Group =>
+    GroupSchema.parse({
+      version: 1,
+      id: `g${createdAt}`,
+      title: 'Warm-up',
+      createdAt,
+      platforms: ['tiktok'],
+      assignment: 'one-per-phone',
+      pacing: { order: 'as-listed', concurrency: 1, gapSec: [8, 20] },
+      videoArtifactIds: [],
+      kind: 'warmup',
+      warmup: { keywords: ['a'] },
+    })
+
+  const now = 1_000_000
+
+  test('the first warm-up of the day takes slot 0', () => {
+    expect(slotFor([], now)).toBe(0)
+  })
+
+  test('a second warm-up rotates, so the fleet does not meet the same platform twice', () => {
+    // The bug this replaces has no symptom: every run green, and a third of
+    // the accounts never touched, because the operator forgot to count.
+    expect(slotFor([warmup(now - 60)], now)).toBe(1)
+    expect(slotFor([warmup(now - 60), warmup(now - 120)], now)).toBe(2)
+  })
+
+  test('yesterday does not count against today', () => {
+    expect(slotFor([warmup(now - SLOT_WINDOW_SEC - 1)], now)).toBe(0)
+  })
+
+  test('a post session is not a warm-up and never shifts the rotation', () => {
+    const post = GroupSchema.parse({
+      version: 1,
+      id: 'p1',
+      title: 'Posts',
+      createdAt: now - 60,
+      platforms: ['tiktok'],
+      assignment: 'one-per-phone',
+      pacing: { order: 'as-listed', concurrency: 1, gapSec: [8, 20] },
+      videoArtifactIds: [],
+    })
+    expect(slotFor([post], now)).toBe(0)
+  })
+
+  test('a farm running more sessions than there are slots starts over rather than failing the schema', () => {
+    expect(slotFor(Array.from({ length: SLOT_COUNT }, (_, i) => warmup(now - i - 1)), now)).toBe(0)
   })
 })

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { ExcludeRuleSchema, NO_EXCLUDES } from './excludes'
 import { HashtagRuleSchema, NO_HASHTAG_RULE } from './hashtags'
 import { PlatformIdSchema } from './platforms'
+import { WarmupTargetSchema } from './warmup-target'
 
 /**
  * A GROUP: one upload session an operator can name, start, watch and retry as
@@ -112,23 +113,57 @@ export const WarmupSettingsSchema = z.object({
    */
   startJitterSec: z.number().int().min(0).max(1_800).default(120),
   /**
-   * Shifts the platform rotation (plan 900 D6.2). Leave 0 for one session a
-   * day; a second session on the same day uses 1, a third 2.
+   * How many activities each phone does, per platform (0.57.0).
+   *
+   * The style decides WHAT a phone does; this decides how much. Before it, a
+   * phone did however many steps its drawn style happened to have — three or
+   * four, invisible to the operator and not a number they could choose. The
+   * owner asks in activities (*"1 device itu melakukan 4 aktifitas"*), so that
+   * is the knob. `pickActivities` tops up from the platform's other styles
+   * when a style is shorter than the number asked for, never repeating one.
+   */
+  activitiesPerPhone: z.number().int().min(1).max(12).default(4),
+  /**
+   * Shifts the platform rotation (plan 900 D6.2).
+   *
+   * No longer an operator setting (0.57.0): `add-warmup` derives it from how
+   * many warm-up sessions the farm already made today, so a second session on
+   * one day rotates the platforms on its own. The owner's instruction was
+   * exactly that — *"ga perlu ada slot sesi lagi, biarkan sistem smm yang
+   * mengaturnya"*. It stays in the schema because the derived value has to be
+   * STORED: the rotation must still mean the same thing when the row is read
+   * back tomorrow.
    */
   slot: z.number().int().min(0).max(5).default(0),
   /**
    * How many platform PHASES one session runs (plan 900 D6.3). With three
    * platforms and three phases, every phone warms up every platform in one
    * session — the thing plan 316 spent `$run.repeat` on.
+   *
+   * Defaulted to 3 since 0.57.0, bounded by `phaseCount` to the platforms the
+   * session actually covers. The owner's expectation is that a warm-up covers
+   * a phone's accounts, not one of them: *"setiap 1 device yah harus urut ada
+   * youtube, tiktok dan instagram semuanya ke warmup"*. One platform per
+   * session was a default that quietly did a third of the job.
    */
-  phases: z.number().int().min(1).max(3).default(1),
-  /** How often a phone presses like, and how much a keyword match raises it. */
+  phases: z.number().int().min(1).max(3).default(3),
+  /**
+   * How a phone's INTERESTS show up in what it does.
+   *
+   * `chance` and `commentChance` are the base rates; `keywordBoost` multiplies
+   * BOTH when what is on screen matches one of the session's keywords. That is
+   * what makes the keywords a personality rather than a search list: a phone
+   * set to `trading` likes and reads trading content more often than the rest
+   * of what it scrolls past, without ever searching for it.
+   */
   like: z
     .object({
       chance: z.number().min(0).max(1).default(0.1),
+      /** Opening the comment sheet, reading it and closing it. Never types. Lower than `chance` because it is a bigger action. */
+      commentChance: z.number().min(0).max(1).default(0.05),
       keywordBoost: z.number().min(1).max(10).default(3),
     })
-    .default({ chance: 0.1, keywordBoost: 3 }),
+    .default({ chance: 0.1, commentChance: 0.05, keywordBoost: 3 }),
   /**
    * How a phone's activities are dispatched (plan 908).
    *
@@ -203,6 +238,20 @@ export const GroupSchema = z.object({
   /** A warm-up session's settings; `null` on a post session. Tied to `kind` by the check below. */
   warmup: WarmupSettingsSchema.nullable().default(null),
   /**
+   * Which phones a warm-up covers (0.57.0, `warmup-target.ts`).
+   *
+   * Stored although it has already been APPLIED when the rows were written —
+   * the same trade `excludes` above explains. The rows are what the phones are
+   * doing; this is what was ASKED FOR, so the session page can still say
+   * "every phone except the ones tagged banned" long after the fleet changed
+   * shape. It is never re-applied on its own.
+   *
+   * A post session leaves it at its default and ignores it: a post session's
+   * phones come from the videos' own assignment, decided when the session was
+   * made, and a second phone-picking rule would be two answers to one question.
+   */
+  target: WarmupTargetSchema,
+  /**
    * How far the batch has got, as of the router's last look.
    *
    * DERIVED from the group's post rows and rewritten by the router, never
@@ -214,6 +263,21 @@ export const GroupSchema = z.object({
   progress: GroupProgressSchema.nullable().default(null),
   /** The same thing in one line, for the column an operator actually reads. */
   summary: z.string().max(200).nullable().default(null),
+  /**
+   * Stopped by the operator: the router sends nothing for this session until
+   * it is started again (0.57.0).
+   *
+   * `false` by default, which is what every session stored before this field
+   * existed is — and it must stay that way round. A flag whose default paused
+   * work would stop an upgraded farm's sessions in silence, and the first sign
+   * of it would be a session that simply never finished.
+   *
+   * The flag only gates what goes OUT. Pulling back what is already out is a
+   * separate thing the stop member does through `session-control.ts`, because
+   * the gate cannot do it: a job the farm is running is not the plugin's to
+   * forget, it has to be cancelled.
+   */
+  stopped: z.boolean().default(false),
 })
   /*
     The two fields are one fact, so they are checked as one (plan 900 D4). A
@@ -247,6 +311,41 @@ export function reusableWarmup(groups: readonly Group[], title: string, now: num
   // The NEWEST, so two runs a second apart both answer with the same session
   // rather than each finding a different older one.
   return matches.sort((a, b) => b.createdAt - a.createdAt)[0] ?? null
+}
+
+/**
+ * The rotation slot a new warm-up should take, from the sessions already made.
+ *
+ * ## Why this is derived and not asked
+ *
+ * `slot` shifts which platform each phone gets, so that a farm running two
+ * warm-ups in a day does not send every phone to YouTube twice. Getting it
+ * right meant the operator keeping count — and an operator who forgets, or who
+ * adds a second schedule months later, silently gets the first session's
+ * rotation again. That is a bug with no symptom: every run is green and half
+ * the accounts are never touched.
+ *
+ * So the plugin counts. The owner's instruction was exactly this — *"ga perlu
+ * ada slot sesi lagi, biarkan sistem smm yang mengaturnya"*.
+ *
+ * ## Why a rolling window and not "today"
+ *
+ * A calendar day needs a timezone, and the farm's is not this module's to
+ * guess: a UTC day boundary falls at 07:00 in the owner's own timezone, which
+ * would give a 06:00 session yesterday's slot. `SLOT_WINDOW_SEC` asks the
+ * question that actually matters — how many warm-ups has this farm run
+ * RECENTLY — and needs no calendar at all.
+ *
+ * Wraps at `SLOT_COUNT`, so a farm running six sessions in a day starts the
+ * rotation over rather than failing the schema's `max(5)`.
+ */
+export const SLOT_WINDOW_SEC = 20 * 60 * 60
+export const SLOT_COUNT = 6
+
+export function slotFor(groups: readonly Group[], now: number): number {
+  const since = now - SLOT_WINDOW_SEC
+  const recent = groups.filter((group) => group.kind === 'warmup' && group.createdAt >= since).length
+  return recent % SLOT_COUNT
 }
 
 /** Is this a warm-up session? Narrows `warmup` to non-null, so callers stop re-checking. */

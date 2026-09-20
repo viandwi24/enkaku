@@ -267,8 +267,8 @@ export function AccountsPanel(): ReactElement {
 
   return (
     <div className="space-y-3">
-      <Card>
-        <CardContent className="space-y-4 py-4">
+      <Card className="gap-0 py-0">
+        <CardContent className="space-y-4 p-4">
           <div>
             <p className="text-row font-medium text-text">Sync accounts</p>
             <p className="text-[12px] text-dim">
@@ -328,8 +328,8 @@ export function AccountsPanel(): ReactElement {
 
 function DispatchTable({ dispatches, byId }: { dispatches: readonly Dispatch[]; byId: Map<string, Device> }): ReactElement {
   return (
-    <Card>
-      <CardContent className="py-3">
+    <Card className="gap-0 py-0">
+      <CardContent className="p-3">
         <div className="overflow-x-auto">
           <table className="w-full text-[13px]">
             <thead>
@@ -470,8 +470,8 @@ function StoredAccounts({
   if (rows === null) return <LoadingRows rows={3} />
 
   return (
-    <Card>
-      <CardContent className="@container space-y-2 py-3">
+    <Card className="gap-0 py-0">
+      <CardContent className="@container space-y-2 p-3">
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-row font-medium text-text">Accounts on the phones</p>
           <span className="text-[12px] text-dim">

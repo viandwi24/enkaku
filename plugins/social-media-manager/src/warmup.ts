@@ -1,6 +1,6 @@
 import { drawGap, shuffled, type WarmupSettings } from './groups'
 import type { PlatformId } from './platforms'
-import { stylesFor, type WarmupDraw, type WarmupStyle } from './warmup-catalog'
+import { stylesFor, type WarmupActivity, type WarmupDraw, type WarmupStyle } from './warmup-catalog'
 
 /**
  * The warm-up planner (plan 900 D1, D6; wave 2) — who does what, on which
@@ -125,6 +125,60 @@ export function drawStyle(platform: PlatformId, weights: Readonly<Record<string,
 }
 
 /**
+ * Exactly `want` activities for one phone, drawn from its own style first.
+ *
+ * ## Why the count is the operator's and not the style's
+ *
+ * A style is a shape — "watch the home feed, open a channel, search, check the
+ * profile" — and it happens to be three or four steps long. The operator does
+ * not think in styles; they think *"1 device itu melakukan 4 aktifitas"* (the
+ * owner, 2026-09-20). So the style decides WHAT a phone does and this decides
+ * HOW MUCH.
+ *
+ * Two directions, both of which have to stay varied:
+ *
+ * - **fewer than the style has**: take the front of the shuffled list, so
+ *   which three of the four a phone does still differs between phones.
+ * - **more than the style has**: top up from the platform's OTHER styles,
+ *   shuffled, skipping activities already picked. Repeating the same activity
+ *   twice in one sequence is the one shape that reads as a script rather than
+ *   a person, so an id is never taken twice — and if the platform genuinely
+ *   has no more distinct activities, the phone gets what exists rather than a
+ *   padded list.
+ *
+ * A style weighted to zero stays out of the top-up too: it is off for this
+ * session, and "off" cannot mean "off unless we run short".
+ */
+function pickActivities(
+  platform: PlatformId,
+  style: WarmupStyle,
+  want: number,
+  weights: Readonly<Record<string, number>>,
+  random: () => number,
+): WarmupActivity[] {
+  const picked: WarmupActivity[] = []
+  const seen = new Set<string>()
+  const take = (items: readonly WarmupActivity[]): void => {
+    for (const item of items) {
+      if (picked.length >= want) return
+      if (seen.has(item.id)) continue
+      seen.add(item.id)
+      picked.push(item)
+    }
+  }
+
+  take(shuffled(style.activities, random))
+  if (picked.length < want) {
+    const others = stylesFor(platform).filter((other) => other.id !== style.id && (weights[other.id] ?? 1) > 0)
+    for (const other of shuffled(others, random)) {
+      take(shuffled(other.activities, random))
+      if (picked.length >= want) break
+    }
+  }
+  return picked
+}
+
+/**
  * Plan one phase of a warm-up session over a fleet.
  *
  * One assignment per device, always — a phone that gets nothing is returned
@@ -157,6 +211,26 @@ export function planWarmup(input: {
         note: `This phone carries no label for any of this session's platforms (${platforms.join(', ')}), so it was given nothing. Add a platform label on the Devices page.`,
       }
     }
+    /*
+      A phase past what this phone can cover gives it nothing, and says so.
+
+      `phaseCount` bounds the session by the platforms the SESSION covers; this
+      bounds each phone by the platforms IT carries. Without it a phone with
+      two of the session's three labels would be sent to one of them twice —
+      which is the opposite of what "every phone warms up every platform it
+      carries" means, and would be invisible: three green phases, one account
+      never touched and another warmed up twice in an hour.
+    */
+    if (phase >= available.length) {
+      return {
+        deviceId: device.deviceId,
+        platform: null,
+        styleId: null,
+        styleTitle: null,
+        steps: [],
+        note: `This phone carries ${available.length} of this session's platforms (${available.join(', ')}), and they were covered in the earlier phases. Nothing is repeated.`,
+      }
+    }
     const platform = platformFor({ device, platforms: available, slot: settings.slot, phase, nowMs })
     if (platform === null) {
       return {
@@ -187,7 +261,7 @@ export function planWarmup(input: {
     */
     let atSec = Math.floor(random() * (settings.startJitterSec + 1))
     const steps: WarmupStep[] = []
-    for (const item of shuffled(style.activities, random)) {
+    for (const item of pickActivities(platform, style, settings.activitiesPerPhone, settings.styleWeights, random)) {
       steps.push({ activityId: item.id, title: item.title, script: item.script, params: item.params(draw), atSec })
       atSec += drawGap(settings.gapSec, random)
     }
