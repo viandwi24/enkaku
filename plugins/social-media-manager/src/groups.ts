@@ -64,6 +64,91 @@ export const GroupProgressSchema = z.object({
   skipped: z.number().int().nonnegative().default(0),
 })
 
+/**
+ * What KIND of session this is (plan 900 D4).
+ *
+ * A session used to be one thing, so nothing said which. Now there are two and
+ * an operator must never have to work out which one they are looking at —
+ * `videoArtifactIds` being empty is not an answer a person should have to
+ * infer.
+ */
+export const SESSION_KINDS = ['post', 'warmup'] as const
+export type SessionKind = (typeof SESSION_KINDS)[number]
+
+/**
+ * A warm-up session's settings — everything an operator tunes without a
+ * release (plan 900 D1, D6).
+ *
+ * The rotation's STRUCTURE is plugin code now, not a graph: which platform a
+ * phone gets, which style it draws, what order its activities run in. What
+ * stayed configurable is what was actually being configured — the ten numbers
+ * and lists below, which `warmup-rotation`'s own params exposed and which are
+ * the only part of that workflow anybody ever edited.
+ *
+ * Defaulted field by field on purpose. These rows are read with
+ * `safeParse` and a row that fails is SKIPPED ENTIRELY (`index.ts`'s group
+ * reader), so a field added later without a default would make every session
+ * stored before it vanish from the operator's screen rather than fail loudly.
+ * That is the same reason `hashtags`, `excludes` and `progress.skipped` carry
+ * defaults, and it is the rule for anything added here later.
+ */
+export const WarmupSettingsSchema = z.object({
+  /**
+   * The niche. Searched as queries, and used to hold attention on matching
+   * content. One to ten, because a list of one is a valid choice and a list of
+   * fifty is a phone that never repeats itself, which is its own tell.
+   */
+  keywords: z.array(z.string().min(1).max(60)).min(1).max(10),
+  /** Scales how many videos, reels and scrolls, and how long to watch. 0.5 is a short session, 2 a long one. */
+  amount: z.number().min(0.2).max(3).default(1),
+  /** The gap between one activity and the next, drawn per step from this range, in seconds. */
+  gapSec: z.tuple([z.number().int().min(0).max(3_600), z.number().int().min(0).max(3_600)]).default([8, 20]),
+  /**
+   * A random per-phone wait before the first activity (plan 900 D6.1).
+   *
+   * This is not politeness, it is the point: eighty phones that start the same
+   * second are eighty phones visibly doing the same thing, which is the shape
+   * a platform looks for.
+   */
+  startJitterSec: z.number().int().min(0).max(1_800).default(120),
+  /**
+   * Shifts the platform rotation (plan 900 D6.2). Leave 0 for one session a
+   * day; a second session on the same day uses 1, a third 2.
+   */
+  slot: z.number().int().min(0).max(5).default(0),
+  /**
+   * How many platform PHASES one session runs (plan 900 D6.3). With three
+   * platforms and three phases, every phone warms up every platform in one
+   * session — the thing plan 316 spent `$run.repeat` on.
+   */
+  phases: z.number().int().min(1).max(3).default(1),
+  /** How often a phone presses like, and how much a keyword match raises it. */
+  like: z
+    .object({
+      chance: z.number().min(0).max(1).default(0.1),
+      keywordBoost: z.number().min(1).max(10).default(3),
+    })
+    .default({ chance: 0.1, keywordBoost: 3 }),
+  /**
+   * Relative weight per activity style, for the weighted draw that decides
+   * what a phone does inside its platform (plan 900 D6.4).
+   *
+   * A record rather than a list, and missing ids read as weight 1: the style
+   * ids belong to the engine (wave 2), and a settings row written before a
+   * style existed must keep working when that style ships. A weight of 0 turns
+   * a style off without removing it, so an operator can put it back.
+   */
+  styleWeights: z.record(z.string().min(1), z.number().min(0).max(10)).default({}),
+})
+export type WarmupSettings = z.infer<typeof WarmupSettingsSchema>
+
+/** The settings a warm-up session gets when nobody has chosen any — the trading-niche defaults `warmup-rotation` shipped. */
+export const DEFAULT_WARMUP_KEYWORDS = ['trading', 'forex', 'gold', 'xau', 'scalping', 'full margin', 'belajar trading', 'saham', 'crypto', 'investasi'] as const
+
+export function defaultWarmupSettings(): WarmupSettings {
+  return WarmupSettingsSchema.parse({ keywords: [...DEFAULT_WARMUP_KEYWORDS] })
+}
+
 export const GroupSchema = z.object({
   version: z.literal(1),
   id: z.string().min(1),
@@ -89,6 +174,17 @@ export const GroupSchema = z.object({
    */
   excludes: ExcludeRuleSchema.default(NO_EXCLUDES),
   /**
+   * Which kind of session this is (plan 900 D4).
+   *
+   * Defaulted to `post`, which is what every session stored before this field
+   * existed is. That default is the whole migration: the reader skips a row
+   * that fails to parse, so a required discriminator would have emptied the
+   * sessions list on upgrade instead of reporting anything.
+   */
+  kind: z.enum(SESSION_KINDS).default('post'),
+  /** A warm-up session's settings; `null` on a post session. Tied to `kind` by the check below. */
+  warmup: WarmupSettingsSchema.nullable().default(null),
+  /**
    * How far the batch has got, as of the router's last look.
    *
    * DERIVED from the group's post rows and rewritten by the router, never
@@ -101,7 +197,22 @@ export const GroupSchema = z.object({
   /** The same thing in one line, for the column an operator actually reads. */
   summary: z.string().max(200).nullable().default(null),
 })
+  /*
+    The two fields are one fact, so they are checked as one (plan 900 D4). A
+    warm-up session with no settings, or a post session carrying warm-up
+    settings, is a row whose kind cannot be trusted — and the kind is what
+    every screen and every dispatch branches on.
+  */
+  .refine((group) => (group.kind === 'warmup') === (group.warmup !== null), {
+    message: 'a warmup session must carry warmup settings, and a post session must not',
+    path: ['warmup'],
+  })
 export type Group = z.infer<typeof GroupSchema>
+
+/** Is this a warm-up session? Narrows `warmup` to non-null, so callers stop re-checking. */
+export function isWarmup(group: Group): group is Group & { kind: 'warmup'; warmup: WarmupSettings } {
+  return group.kind === 'warmup' && group.warmup !== null
+}
 
 export function groupKeyFor(id: string): string {
   return `${GROUP_PREFIX}${id}`

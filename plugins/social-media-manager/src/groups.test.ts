@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { GroupSchema, drawGap, editPacing, withProgress, groupProgress, groupSummary, isRowDue, maxDevicesFor, newGroupId, planSchedule, retimeTurns, roomInFlight, shuffled, type Pacing, type RowState } from './groups'
+import { GroupSchema, WarmupSettingsSchema, defaultWarmupSettings, isWarmup, drawGap, editPacing, withProgress, groupProgress, groupSummary, isRowDue, maxDevicesFor, newGroupId, planSchedule, retimeTurns, roomInFlight, shuffled, type Pacing, type RowState } from './groups'
 
 /** A deterministic `random` — the same draws every run, so a schedule can be asserted exactly. */
 function seeded(values: readonly number[]): () => number {
@@ -26,7 +26,87 @@ describe('the stored shape', () => {
       progress: null,
       summary: null,
     }
-    expect(GroupSchema.parse(group)).toEqual(group)
+    // `kind` and `warmup` are filled in by their defaults — see the migration test below.
+    expect(GroupSchema.parse(group)).toEqual({ ...group, kind: 'post', warmup: null })
+  })
+
+  /*
+    The migration, and the whole reason `kind` is defaulted rather than required
+    (plan 900 D4): `index.ts` reads these rows with `safeParse` and SKIPS a row
+    that fails. A required discriminator would have emptied the operator's
+    sessions list on upgrade — silently, because a skipped row reports nothing.
+  */
+  test('a session stored before warm-up existed reads as a post session', () => {
+    const stored = {
+      version: 1,
+      id: 'g-1000-0a1b',
+      title: 'post hari Senin',
+      createdAt: 1000,
+      platforms: ['tiktok'],
+      assignment: 'one-per-phone',
+      pacing: PACING,
+      videoArtifactIds: VIDEOS,
+    }
+    const parsed = GroupSchema.parse(stored)
+    expect(parsed.kind).toBe('post')
+    expect(parsed.warmup).toBeNull()
+    expect(isWarmup(parsed)).toBe(false)
+  })
+
+  test('a warm-up session carries its settings and says so', () => {
+    const parsed = GroupSchema.parse({
+      version: 1,
+      id: 'g-2000-beef',
+      title: 'warmup pagi',
+      createdAt: 2000,
+      platforms: ['tiktok', 'instagram', 'youtube'],
+      assignment: 'one-per-phone',
+      pacing: PACING,
+      videoArtifactIds: [],
+      kind: 'warmup',
+      warmup: { keywords: ['trading'] },
+    })
+    expect(isWarmup(parsed)).toBe(true)
+    expect(parsed.warmup?.amount).toBe(1)
+    expect(parsed.warmup?.gapSec).toEqual([8, 20])
+    expect(parsed.warmup?.like).toEqual({ chance: 0.1, keywordBoost: 3 })
+    expect(parsed.warmup?.styleWeights).toEqual({})
+  })
+
+  /* The two fields are one fact (plan 900 D4), so a row that disagrees with itself is refused. */
+  test('a kind that disagrees with its settings is refused', () => {
+    const base = {
+      version: 1,
+      id: 'g1',
+      title: 't',
+      createdAt: 1,
+      platforms: ['tiktok'],
+      assignment: 'one-per-phone',
+      pacing: PACING,
+      videoArtifactIds: [],
+    }
+    expect(GroupSchema.safeParse({ ...base, kind: 'warmup' }).success).toBe(false)
+    expect(GroupSchema.safeParse({ ...base, kind: 'post', warmup: { keywords: ['x'] } }).success).toBe(false)
+  })
+
+  test('warm-up settings are bounded, so a typo cannot ask for a session that never ends', () => {
+    const settings = (over: Record<string, unknown>) => WarmupSettingsSchema.safeParse({ keywords: ['trading'], ...over }).success
+    expect(settings({ amount: 3 })).toBe(true)
+    expect(settings({ amount: 30 })).toBe(false)
+    expect(settings({ phases: 4 })).toBe(false)
+    expect(settings({ like: { chance: 1.5 } })).toBe(false)
+    expect(WarmupSettingsSchema.safeParse({ keywords: [] }).success).toBe(false)
+  })
+
+  /* A style the engine has not shipped yet must not break a stored row (plan 900 D6.4). */
+  test('an unknown style weight is stored, and zero turns a style off without removing it', () => {
+    const parsed = WarmupSettingsSchema.parse({ keywords: ['trading'], styleWeights: { 'tt-a': 2, 'tt-c': 0 } })
+    expect(parsed.styleWeights).toEqual({ 'tt-a': 2, 'tt-c': 0 })
+  })
+
+  test('the shipped defaults are the trading niche the rotation used', () => {
+    expect(defaultWarmupSettings().keywords).toContain('belajar trading')
+    expect(defaultWarmupSettings().keywords.length).toBe(10)
   })
 
   test('a group with no platform, or no title, is refused rather than stored', () => {

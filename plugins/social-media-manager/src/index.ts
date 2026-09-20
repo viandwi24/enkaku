@@ -78,6 +78,20 @@ import {
  *
  * ## Changelog
  *
+ * - **0.50.1 — a session now says which KIND it is** (plan 900 D4, plan 901).
+ *   `GroupSchema` gains `kind` (`post` | `warmup`) and a nullable `warmup`
+ *   settings block, tied to each other by a check: the two are one fact, and
+ *   the kind is what every screen and every dispatch will branch on.
+ *
+ *   `kind` is DEFAULTED, not required, and that default is the whole migration.
+ *   This plugin reads its sessions with `safeParse` and skips a row that fails,
+ *   so a required discriminator would not have raised an error on upgrade — it
+ *   would have emptied the operator's sessions list while every session sat on
+ *   disk, with nothing on screen saying why.
+ *
+ *   Model only: nothing writes a warm-up session yet. Invisible to an operator,
+ *   hence a patch.
+ *
  * - **0.50.0 — thirty phones read as "the YouTube You tab did not open" while
  *   their You tab was wide open and signed in.** The account chip is called
  *   `Ganti akun` on an Indonesian build, and `YOUTUBE_ACCOUNT_LABELS` knew only
@@ -1644,7 +1658,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.50.0',
+  version: '0.50.1',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
