@@ -164,7 +164,7 @@ exist in the rebuilt feature:
 | 2 | 902 | The warm-up engine in plugin code: rotation, phases, style draw, shuffle, gaps, jitter. `warmup-rotation.ts` is marked superseded but NOT deleted — §6 Q1 is unanswered and a farm may have a schedule pointing at it, so wave 5 removes it |
 | 3 | 903 | Dispatch and session rows: per-device, per-platform results; Retry failed; the notes vocabulary that auto-post already has |
 | 4 | 904 | Studio surface: the second nav item, the warm-up session page, the settings form — **done**; per-style weighting deferred, see 904 §2 |
-| 5 | 905 | Scheduling, docs, and the retirement notice for `smm/warmup-rotation` |
+| 5 | 905 | Scheduling, docs, and the retirement notice — **done** except the removal itself, which waits on §6 Q1 |
 
 Waves 1–3 are backend and testable without a device. Wave 4 is Studio, verified
 by `bun run typecheck` and an owner smoke (Studio has no tests, plan 200 §8.3).

@@ -1,7 +1,7 @@
 import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import { z } from 'zod'
-import { GroupSchema, WarmupSettingsSchema, DEFAULT_WARMUP_KEYWORDS, groupKeyFor, newGroupId } from './groups'
+import { GROUP_PREFIX, GroupSchema, WarmupSettingsSchema, DEFAULT_WARMUP_KEYWORDS, groupKeyFor, newGroupId, reusableWarmup, type Group } from './groups'
 import { PLATFORMS, PLATFORM_IDS, PlatformIdSchema, deviceCarriesPlatform, type PlatformId } from './platforms'
 import { phaseCount, planWarmup, type WarmupDevice } from './warmup'
 import { runsFromPlan, warmupProgress, warmupRunKey, warmupSummary } from './warmup-runs'
@@ -65,6 +65,29 @@ const params = z.object({
     .default('')
     .describe('Only warm up phones carrying this label. Leave empty for the whole fleet.')
     .meta(ui({ title: 'Only phones labelled' })),
+  /**
+   * Minutes within which a warm-up of the same title is taken as already made.
+   *
+   * This exists because of how the thing it replaces was RUN. `smm/warmup-rotation`
+   * was a workflow dispatched to every phone, so a schedule naturally targeted
+   * the whole fleet. This member plans the whole fleet from ONE run — so a
+   * schedule pointed at eighty phones the same way would create eighty
+   * identical sessions, each planning the same eighty phones, and the farm
+   * would spend its day warming up eighty times over.
+   *
+   * A dedupe window is the guard that does not depend on the operator reading
+   * a warning: the first run makes the session and the other seventy-nine find
+   * it and answer with its id. 0 turns it off, for someone who genuinely wants
+   * two sessions of one name in one hour.
+   */
+  dedupeMinutes: z
+    .number()
+    .int()
+    .min(0)
+    .max(1_440)
+    .default(30)
+    .describe('If a warm-up with this title was made within this many minutes, use it instead of making another. Guards a schedule aimed at many phones.')
+    .meta(ui({ title: 'Reuse a session made in the last (min)' })),
   ...settingsParams,
 })
 
@@ -76,6 +99,7 @@ const result = z.object({
   phases: z.number().int().meta(ui({ title: 'Phases' })),
   skipped: z.number().int().describe('Phones given nothing — each row says why.').meta(ui({ title: 'Skipped' })),
   summary: z.string().meta(ui({ title: 'Summary' })),
+  reused: z.boolean().describe('True when an existing session of this title was used instead of making another.').meta(ui({ title: 'Reused' })),
 })
 
 const DeviceListOutput = z.object({
@@ -110,6 +134,34 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       like: { chance: ctx.params.likeChance, keywordBoost: ctx.params.keywordBoost },
     })
 
+    const now = Math.floor(Date.now() / 1000)
+    const title = ctx.params.title.trim() || 'Warm-up'
+
+    /*
+      Already made? See `dedupeMinutes`. Checked FIRST, before the fleet is
+      read or anything is planned, so seventy-nine of eighty scheduled runs
+      cost one storage scan and nothing else.
+    */
+    if (ctx.params.dedupeMinutes > 0) {
+      const made: Group[] = []
+      let cursor: string | null = null
+      do {
+        const opts: { prefix: string; limit: number; cursor?: string } = { prefix: GROUP_PREFIX, limit: 200 }
+        if (cursor !== null) opts.cursor = cursor
+        const page = await ctx.storage.global.list(opts)
+        for (const entry of page.items) {
+          const parsed = GroupSchema.safeParse(entry.value)
+          if (parsed.success) made.push(parsed.data)
+        }
+        cursor = page.nextCursor
+      } while (cursor !== null)
+      const existing = reusableWarmup(made, title, now, ctx.params.dedupeMinutes)
+      if (existing !== null) {
+        ctx.log.info('a warm-up of this title was made moments ago — using it rather than making another', { groupId: existing.id, title, madeAgoSec: now - existing.createdAt })
+        return { groupId: existing.id, title: existing.title, devices: 0, activities: 0, phases: 0, skipped: 0, summary: existing.summary ?? '', reused: true }
+      }
+    }
+
     const fleet = await ctx.farm.call('device.list', {}, DeviceListOutput)
     const wanted = ctx.params.label.trim().toLowerCase()
     const chosen = fleet.items.filter((item) => wanted === '' || item.labels.some((l) => l.name.trim().toLowerCase() === wanted))
@@ -130,7 +182,6 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     }))
     const names = new Map(chosen.map((item) => [item.id, item.label.trim() || item.id]))
 
-    const now = Math.floor(Date.now() / 1000)
     const groupId = newGroupId(now)
     const platforms = ctx.params.platforms as PlatformId[]
     const phases = phaseCount(settings, platforms)
@@ -169,7 +220,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     const group = GroupSchema.parse({
       version: 1,
       id: groupId,
-      title: ctx.params.title.trim(),
+      title,
       createdAt: now,
       platforms,
       assignment: 'one-per-phone',
@@ -183,7 +234,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     await ctx.storage.global.set(groupKeyFor(groupId), group)
 
     ctx.log.info('warm-up session planned', { groupId, title: group.title, devices: written, activities, phases, skipped })
-    return { groupId, title: group.title, devices: written, activities, phases, skipped, summary }
+    return { groupId, title: group.title, devices: written, activities, phases, skipped, summary, reused: false }
   },
 }
 

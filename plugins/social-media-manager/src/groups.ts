@@ -209,6 +209,28 @@ export const GroupSchema = z.object({
   })
 export type Group = z.infer<typeof GroupSchema>
 
+/**
+ * A warm-up of this title made moments ago, or `null` — the guard that stops a
+ * schedule aimed at a whole fleet from making one session per phone.
+ *
+ * `smm/warmup-rotation` was a workflow DISPATCHED to every phone, so a schedule
+ * for it naturally targeted the fleet. Its replacement plans the whole fleet
+ * from one run, and a schedule pointed the same way would make eighty identical
+ * sessions each planning the same eighty phones. Seventy-nine of those runs
+ * should find the first one's work and stop.
+ *
+ * Pure, and `now`/`windowMin` are arguments, so the window is a decision a test
+ * can make rather than a clock it has to wait for. `windowMin: 0` turns it off.
+ */
+export function reusableWarmup(groups: readonly Group[], title: string, now: number, windowMin: number): Group | null {
+  if (windowMin <= 0) return null
+  const since = now - windowMin * 60
+  const matches = groups.filter((group) => group.kind === 'warmup' && group.title === title && group.createdAt >= since)
+  // The NEWEST, so two runs a second apart both answer with the same session
+  // rather than each finding a different older one.
+  return matches.sort((a, b) => b.createdAt - a.createdAt)[0] ?? null
+}
+
 /** Is this a warm-up session? Narrows `warmup` to non-null, so callers stop re-checking. */
 export function isWarmup(group: Group): group is Group & { kind: 'warmup'; warmup: WarmupSettings } {
   return group.kind === 'warmup' && group.warmup !== null

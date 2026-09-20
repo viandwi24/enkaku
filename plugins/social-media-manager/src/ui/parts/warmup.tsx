@@ -52,6 +52,7 @@ const AddWarmupResultSchema = z.object({
   phases: z.number(),
   skipped: z.number(),
   summary: z.string(),
+  reused: z.boolean().default(false),
 })
 
 /** The colour a state reads as, in the same vocabulary the Posts table uses. */

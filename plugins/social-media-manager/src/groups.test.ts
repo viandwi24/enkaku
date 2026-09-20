@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { GroupSchema, WarmupSettingsSchema, defaultWarmupSettings, isWarmup, drawGap, editPacing, withProgress, groupProgress, groupSummary, isRowDue, maxDevicesFor, newGroupId, planSchedule, retimeTurns, roomInFlight, shuffled, type Pacing, type RowState } from './groups'
+import { GroupSchema, WarmupSettingsSchema, defaultWarmupSettings, isWarmup, reusableWarmup, drawGap, editPacing, withProgress, groupProgress, groupSummary, isRowDue, maxDevicesFor, newGroupId, planSchedule, retimeTurns, roomInFlight, shuffled, type Pacing, type RowState } from './groups'
 
 /** A deterministic `random` — the same draws every run, so a schedule can be asserted exactly. */
 function seeded(values: readonly number[]): () => number {
@@ -286,5 +286,72 @@ describe('a session that skips platforms (0.45.0)', () => {
 
   test('a session with no skips reads exactly as it did before they existed', () => {
     expect(groupSummary('Senin', groupProgress(states({ succeeded: 40 })))).toBe('Senin: all 40 posted')
+  })
+})
+
+/*
+  The guard that stops a schedule aimed at a whole fleet from making one session
+  per phone. `smm/warmup-rotation` was a workflow DISPATCHED to every phone, so
+  a schedule for it naturally targeted the fleet; its replacement plans the
+  whole fleet from one run, and eighty scheduled runs pointed the same way would
+  make eighty identical sessions each planning the same eighty phones.
+*/
+describe('reusableWarmup — a schedule aimed at a fleet must not make a session per phone', () => {
+  const NOW = 1_800_000_000
+  const session = (over: Record<string, unknown>) =>
+    GroupSchema.parse({
+      version: 1,
+      id: 'g1',
+      title: 'Warm-up pagi',
+      createdAt: NOW,
+      platforms: ['tiktok'],
+      assignment: 'one-per-phone',
+      pacing: PACING,
+      videoArtifactIds: [],
+      kind: 'warmup',
+      warmup: { keywords: ['trading'] },
+      ...over,
+    })
+
+  test('a warm-up of the same title made moments ago is reused', () => {
+    const made = [session({ id: 'g-first', createdAt: NOW - 60 })]
+    expect(reusableWarmup(made, 'Warm-up pagi', NOW, 30)?.id).toBe('g-first')
+  })
+
+  test('one made before the window is not', () => {
+    const made = [session({ id: 'g-old', createdAt: NOW - 31 * 60 })]
+    expect(reusableWarmup(made, 'Warm-up pagi', NOW, 30)).toBeNull()
+  })
+
+  test('a different title is a different session', () => {
+    const made = [session({ id: 'g-other', title: 'Warm-up sore', createdAt: NOW - 60 })]
+    expect(reusableWarmup(made, 'Warm-up pagi', NOW, 30)).toBeNull()
+  })
+
+  /* A post session of the same name is not a warm-up, however recent. */
+  test('a post session is never reused as a warm-up', () => {
+    const post = GroupSchema.parse({
+      version: 1,
+      id: 'g-post',
+      title: 'Warm-up pagi',
+      createdAt: NOW - 60,
+      platforms: ['tiktok'],
+      assignment: 'one-per-phone',
+      pacing: PACING,
+      videoArtifactIds: ['v1'],
+    })
+    expect(reusableWarmup([post], 'Warm-up pagi', NOW, 30)).toBeNull()
+  })
+
+  /* Two runs a second apart must answer with the SAME session, not two different old ones. */
+  test('the newest match wins, so concurrent runs agree', () => {
+    const made = [session({ id: 'g-older', createdAt: NOW - 600 }), session({ id: 'g-newer', createdAt: NOW - 30 })]
+    expect(reusableWarmup(made, 'Warm-up pagi', NOW, 30)?.id).toBe('g-newer')
+    expect(reusableWarmup([...made].reverse(), 'Warm-up pagi', NOW, 30)?.id).toBe('g-newer')
+  })
+
+  test('a window of zero turns the guard off, for someone who means it', () => {
+    const made = [session({ id: 'g-first', createdAt: NOW })]
+    expect(reusableWarmup(made, 'Warm-up pagi', NOW, 0)).toBeNull()
   })
 })

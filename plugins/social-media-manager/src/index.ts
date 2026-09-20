@@ -81,6 +81,24 @@ import {
  *
  * ## Changelog
  *
+ * - **0.54.0 — a scheduled warm-up cannot make one session per phone**
+ *   (plan 900 wave 5, plan 905).
+ *
+ *   This is a hazard the REPLACEMENT created, not one it inherited.
+ *   `smm/warmup-rotation` was a workflow dispatched to every phone, so a
+ *   schedule for it naturally targeted the whole fleet. `add-warmup` plans the
+ *   whole fleet from ONE run — so a schedule pointed the same way, which is
+ *   exactly how an operator would move an existing schedule over, would create
+ *   eighty identical sessions each planning the same eighty phones, and the
+ *   farm would spend its day warming up eighty times over.
+ *
+ *   `dedupeMinutes` (30 by default) is the guard, and it is a guard rather than
+ *   a warning on purpose: the first run makes the session and the other
+ *   seventy-nine find it and answer with its id. The decision is
+ *   `reusableWarmup`, pure and tested — including that two runs a second apart
+ *   agree on the same session, and that a POST session of the same name is
+ *   never reused as a warm-up.
+ *
  * - **0.53.0 — Warm-up is its own screen** (plan 900 D5, plan 904).
  *   A SECOND menu entry, in a plugin whose last redesign deliberately removed
  *   two. That decision is not undone: it was about three entries for one JOB
@@ -1889,7 +1907,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.53.0',
+  version: '0.54.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
