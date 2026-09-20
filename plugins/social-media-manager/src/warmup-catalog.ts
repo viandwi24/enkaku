@@ -226,7 +226,26 @@ export const WARMUP_STYLES: readonly WarmupStyle[] = [
     platform: 'youtube',
     title: 'Watch, home, a channel and the profile',
     activities: [
-      activity('yt-c-watch', 'Search and watch', 'youtube/watch-video@latest', (d) => ({ query: keyword(d), keywords: [...d.keywords], ...likesAndComments(d) })),
+      /*
+        The long-video activity, and the one place a warm-up asks for a DURATION
+        rather than a count.
+
+        `minWatchMs` is what the owner asked for (*"selalu nonton video selama
+        belum capai minimum waktunya, kalau satu video tidak kuat sampai
+        minimum misalnya yah cari video lagi"*): the script keeps opening fresh
+        videos — a different query from `queries`, a row it has not already
+        seen — until the total is met. `maxVideos` bounds it so a fleet of
+        eighty cannot spend an afternoon on one activity.
+      */
+      activity('yt-c-watch', 'Search and watch', 'youtube/watch-video@latest', (d) => ({
+        query: keyword(d),
+        queries: [...d.keywords],
+        minWatchMs: scaled(d, 90_000, 180_000),
+        maxWatchMs: scaled(d, 240_000, 420_000),
+        maxVideos: scaledAtLeast(d, 2, 4, 6),
+        keywords: [...d.keywords],
+        ...likesAndComments(d),
+      })),
       activity('yt-c-home', 'Home feed', 'youtube/download-home@latest', (d) => ({ videos: scaled(d, 1, 2) })),
       activity('yt-c-channel', 'Open a channel', 'youtube/search-channel@latest', (d) => ({ query: keyword(d) })),
       activity('yt-c-profile', 'Check profile', 'youtube/check-profile@latest', (d) => ({ maxRows: scaledAtLeast(d, 3, 8, 12) })),

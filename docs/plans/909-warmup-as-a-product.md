@@ -188,6 +188,46 @@ smm 0.57.0 seeded from a real `.enkaku` package (2026-09-20):
 - the stored session carried `slot: 2` (derived), `phases: 3`,
   `activitiesPerPhone: 4` and `like.commentChance: 0.05`.
 
+### D9 — "Watch a long video" had to mean a length, not a video (youtube 0.48.0)
+
+`youtube/watch-video` opened one video, watched it for whatever the dwell
+model drew, and stopped. `WATCH_BUCKETS` is a SCROLLING model — half its mass
+is 4 to 10 seconds and 0.15 of it is under four — so a warm-up asking a phone
+to watch a long video got four seconds one time in seven, and nothing said so.
+
+`minWatchMs` is now the ask. Two properties of how it is met are the point:
+
+- **a short video is never stretched.** Another one is opened, with a fresh
+  query drawn from `queries` and a row this run has not seen. The owner asked
+  for exactly that: *"kalau satu video tidak kuat sampai minimum misalnya yah
+  cari video lagi ... biar ga dikira bot nonton video yang sama terus
+  terusan"*.
+- **a minimum changes the BEHAVIOUR, not only the exit condition.** With one
+  set, the per-video dwell comes from a long-video range instead of the Shorts
+  table. Approaching 90 s nine seconds at a time is ten searches to do what
+  was asked for once, which is its own tell.
+
+#### What the phone taught us, which no reading would have
+
+Three failures on the owner's moto g06 power, each one diagnosed from the
+captured tree rather than guessed:
+
+1. **The phone left YouTube entirely** for an advertiser's ebook sign-up form.
+   A later round had tapped a promoted result.
+2. **Skipping rows labelled `Sponsored` did not fix it.** On a half-loaded
+   results page `resultRowsOf` returns the ad card's own SUB-nodes as rows —
+   one search produced three "rows": the ad's `More options` button, the
+   advertiser's name, and one real video. The `Sponsored` label is a sibling of
+   those, so no filter that walks the row can see it.
+3. So the question became **"is this a video"**, not "is this an advert". A
+   real row carries a duration, a view count or an age somewhere inside it; a
+   toolbar button and an advertiser's name carry none. Verified offline against
+   both captured trees before it went near a phone again.
+
+Plus the two guards that came out of it: a round that cannot open a video no
+longer throws away the ones that did (`reachedMinimum` says so), and a phone
+that ends up outside YouTube is brought back rather than failing the run.
+
 ## 5. Still open
 
 - **Cadence** (*"sehari bisa sekali, atau sehari bisa 2 kali"*) is the farm's

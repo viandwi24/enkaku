@@ -86,7 +86,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.47.0',
+  version: '0.48.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -95,6 +95,34 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.48.0 — `watch-video` watches for a TIME, not for a video.**
+   *
+   *   It opened one video, watched it for whatever the dwell model drew — a
+   *   0.15 chance of under four seconds — and stopped. A warm-up that asks a
+   *   phone to "watch a long video" got four seconds one time in seven, and
+   *   nothing anywhere said so.
+   *
+   *   `minWatchMs` is now the ask, and the way it is met is the important part:
+   *   a short video is never STRETCHED past what the dwell model says a person
+   *   would give it. Another video is opened instead — a fresh query drawn from
+   *   `queries`, and a result row this run has not already seen, because a
+   *   second round that reopened the first round's video is exactly the tell
+   *   the whole model exists to avoid. `maxVideos` and `maxWatchMs` bound it so
+   *   a fleet cannot spend an afternoon on one activity.
+   *
+   *   A round that cannot open a video no longer throws away the ones that
+   *   did. Opening a result is the flaky step — a row can be a Short, a
+   *   playlist, a channel, or an advert that swallows the tap — and the longer
+   *   a run goes the more likely it is to meet one. Measured on the owner's
+   *   moto g06 power: three rounds, two good (38 s then 6 s, different rows,
+   *   the second query drawn from `queries`) and a third that tapped a row no
+   *   player followed. That reported a bare failure with nothing watched,
+   *   which is false as well as useless. It now stops, keeps the 44 s, and
+   *   says which round gave up and why; `reachedMinimum` is the flag for it.
+   *   Nothing watched at all is still a failure.
+   *
+   *   Defaults are unchanged: `minWatchMs: 0` is one video, exactly as before.
    *
    * **0.47.0 — the title is aimed at the title field again, and two theories about the frozen
    *   editor are buried with evidence.**

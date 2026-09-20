@@ -15,6 +15,15 @@ import { between, browseComments, keywordBoost, makeRng, pickWatchMs, pressLike,
  * random interactions, and natural scrolling patterns.
  */
 
+/** How long to let the result list grow before picking from it, and how often to look. */
+const SETTLE_BUDGET_MS = 12_000
+const SETTLE_STEP_MS = 800
+/** Below this many real videos the page is still loading, whatever the count did between two looks. */
+const SETTLE_MIN_ROWS = 5
+/** How long one video is watched when a minimum was asked for — a long-video range, not the Shorts dwell table. */
+const LONG_WATCH_MIN_MS = 35_000
+const LONG_WATCH_MAX_MS = 95_000
+
 const paramsSchema = z.object({
   query: z
     .string()
@@ -49,6 +58,36 @@ const paramsSchema = z.object({
     .describe('Multiplier applied to like/comment chance when a keyword matches the video title or channel.')
     .meta(ui({ title: 'Keyword boost' })),
   keywords: z.array(z.string()).default([]).describe('Keywords to tilt behaviour toward; the title read off the result row is what gets matched.').meta(ui({ title: 'Keywords' })),
+  queries: z
+    .array(z.string().min(1).max(120))
+    .max(20)
+    .default([])
+    .describe('More things to search for. Each video this run opens draws one of these (or the query above), so a phone does not search the same words every time.')
+    .meta(ui({ title: 'More queries' })),
+  minWatchMs: z
+    .number()
+    .int()
+    .min(0)
+    .max(60 * 60_000)
+    .default(0)
+    .describe('Keep opening videos until this much has been watched in total. A short video is not stretched — another one is opened. 0 watches exactly one video.')
+    .meta(ui({ title: 'Watch at least (ms)' })),
+  maxWatchMs: z
+    .number()
+    .int()
+    .min(0)
+    .max(60 * 60_000)
+    .default(0)
+    .describe('Never watch longer than this in total, whatever the minimum says. 0 leaves it to the dwell model.')
+    .meta(ui({ title: 'Watch at most (ms)' })),
+  maxVideos: z
+    .number()
+    .int()
+    .min(1)
+    .max(20)
+    .default(5)
+    .describe('The most videos one run may open while working toward the minimum.')
+    .meta(ui({ title: 'Most videos' })),
   seed: z.number().int().min(0).default(0).describe('RNG seed; 0 derives one per run.').meta(ui({ title: 'Seed (0 = random)' })),
 })
 
@@ -61,9 +100,87 @@ const resultSchema = z.object({
   playEvidence: z.string().describe('What proved the video was playing, and whether an advert ran first.').meta(ui({ title: 'Evidence' })),
   like: z.string().describe('Outcome of the like attempt, or `not attempted`.').meta(ui({ title: 'Like' })),
   comments: z.string().describe('Outcome of the comment visit, or `not attempted`.').meta(ui({ title: 'Comments' })),
-  watchTime: z.number().int().describe('How long the video was actually watched (ms).').meta(ui({ title: 'Watch time', summary: true })),
+  watchTime: z.number().int().describe('How long was watched in total, across every video this run opened (ms).').meta(ui({ title: 'Watch time', summary: true })),
+  videosWatched: z.number().int().describe('How many videos it took to reach the minimum.').meta(ui({ title: 'Videos', summary: true })),
+  /* False when a round could not open a video and the run stopped with what it had — `steps` says which round and why. */
+  reachedMinimum: z.boolean().describe('Whether the minimum watch time was met.').meta(ui({ title: 'Reached minimum', summary: true })),
+  videos: z.array(z.string()).describe('Each video, with how long it was watched.').meta(ui({ title: 'Watched' })),
   steps: z.array(z.string()).meta(ui({ title: 'Steps' })),
 })
+
+/** Toolbar and filter-chip labels that `resultRowsOf` also matches. Not results, in any locale this pack has met. */
+const CHROME_LABELS = /^(more options|more actions|navigate up|clear|voice search|search|filters|shorts|unwatched|watched|videos|recently uploaded)$/i
+
+/** Every readable string inside a row, in tree order. */
+function readableOf(row: UiNode): string[] {
+  const out: string[] = []
+  const walk = (node: UiNode): void => {
+    out.push(node.text ?? '', node.desc ?? '')
+    for (const child of node.children ?? []) walk(child)
+  }
+  walk(row)
+  return out.filter((value) => value.trim() !== '')
+}
+
+/**
+ * Is this row a video worth opening?
+ *
+ * ## Why the question is "is it a video" and not "is it an advert"
+ *
+ * Measured on the owner's moto g06 power (2026-09-20). A round tapped a result
+ * and the phone left YouTube entirely for an advertiser's ebook sign-up form.
+ * The obvious fix — skip rows labelled `Sponsored` — did not work, and reading
+ * the captured tree showed why: on a half-loaded results page `resultRowsOf`
+ * returns the sponsored card's own SUB-nodes as rows. A search for
+ * "gold xau analysis" produced three "rows": the ad's `More options` button,
+ * the advertiser's name `Take Profit Trader`, and one real video. The
+ * `Sponsored` label is a sibling of those two, not inside them, so no filter
+ * that walks the row can see it.
+ *
+ * So this asks the positive question instead. A real result row carries a
+ * duration (`4:35`), a view count, or an age (`2 years ago`) somewhere in its
+ * own subtree; a toolbar button and an advertiser's name carry none of them.
+ * That holds for the partial page and the full one alike, which is what makes
+ * it worth more than the label test it replaces.
+ *
+ * Verified offline against both captured trees before it went near a phone.
+ */
+function looksPlayable(row: UiNode): boolean {
+  const readable = readableOf(row)
+  if (readable.length === 0) return false
+  if (readable.every((value) => CHROME_LABELS.test(value.trim()))) return false
+  if (readable.some((value) => /^sponsored\b/i.test(value.trim()))) return false
+  return readable.some((value) => /\d+:\d{2}/.test(value) || /\bviews?\b/i.test(value) || /\bago\b/i.test(value))
+}
+
+/**
+ * Poll until the result list stops growing, or the budget runs out.
+ *
+ * Returns the last tree seen either way — a page that never settles is still a
+ * page to pick from, and refusing to pick would turn a slow network into a
+ * failed run.
+ */
+async function settleResults(ctx: Parameters<NonNullable<(typeof script)['run']>>[0], first: UiNode): Promise<UiNode> {
+  const playable = (tree: UiNode): number => resultRowsOf(tree).filter(looksPlayable).length
+  let tree = first
+  let last = playable(first)
+  const deadline = Date.now() + SETTLE_BUDGET_MS
+  while (Date.now() < deadline) {
+    await sleep(SETTLE_STEP_MS)
+    const next = await ctx.device.dump()
+    const count = playable(next)
+    tree = next
+    /*
+      Stable AND worth picking from. Counting every row, and accepting any
+      stable count, is what made this return a three-row page twice in a row —
+      of which one row was a button and one was an advertiser's name. A page
+      with fewer than `SETTLE_MIN_ROWS` real videos is a page still loading.
+    */
+    if (count === last && count >= SETTLE_MIN_ROWS) return tree
+    last = count
+  }
+  return tree
+}
 
 const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   id: 'watch-video',
@@ -71,7 +188,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   icon: 'play',
   node: { category: 'device', icon: 'play', summary: ['query'], keywords: ['watch', 'video', 'long'] },
   title: 'Watch Video',
-  description: 'Searches YouTube, picks a video, watches it with human-like behavior patterns, and optionally interacts.',
+  description: 'Searches YouTube and watches videos with human-like behaviour. Give it a minimum watch time and it keeps opening fresh videos — a different query and a row it has not seen — until that time is met.',
   params: paramsSchema,
   result: resultSchema,
   timeout: 15 * 60_000,
@@ -88,149 +205,337 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
       throw new Error(`${message} (steps: ${steps.join(' → ')})`)
     }
 
-    // --- search -------------------------------------------------------------
-    const home = await capture(ctx, '01-home')
-    const entry = firstMatch(home, SEARCH_ENTRY)
-    if (!entry) fail('open-search', 'no search button on the YouTube home screen — see artifact 01-home')
-    await tapNode(ctx, entry!.node)
-    // No fixed wait here: `openSearchField` polls for the search screen itself.
-    // The capture stays, so a failure still carries the page it actually saw.
-    const screen = await capture(ctx, '02-search-open')
-    const field = await openSearchField(ctx)
-    if (!field) fail('type-query', 'the search screen opened with no text field — see artifact 02-search-open')
-    await tapNode(ctx, field!)
-    await sleep(between(rng, 400, 800))
-    await ctx.device.type(ctx.params.query, {
-      // Typed the way a person does (0.39.8): the `natural` profile already paced this
-      // per-character, but `human` adds the beat at the end of a word and the occasional pause to
-      // think. Typos stay off — YouTube's search box edits its suggestion list under the cursor,
-      // and a backspace there can commit a suggestion instead of what was typed.
-      human: { typo: { probability: 0 } },
-    })
-    await ctx.device.key('ENTER')
+    /*
+      The queries this run may use.
 
-    const loaded = await waitForTree(ctx, hasResultRows, { budgetMs: 30_000 })
-    const results = await capture(ctx, '03-results', loaded.tree)
-    steps.push(loaded.ok ? 'results' : 'results(timeout)')
-    if (!loaded.ok) fail('results', `no result rows appeared within the budget — see artifact 03-results`)
+      One video is one search, and a phone that searches the same words every
+      time is a phone with one habit. The caller passes the account's whole
+      interest list and a round draws from it; `query` stays as the first and
+      as the only one a caller who passes nothing else gets.
+    */
+    const pool = [ctx.params.query, ...ctx.params.queries].filter((q, i, all) => q.trim() !== '' && all.indexOf(q) === i)
 
-    // --- pick from the ranked first page --------------------------------------
-    const rows = resultRowsOf(results)
-    if (rows.length === 0) fail('pick-row', 'the results page reported rows but the walk found none — see artifact 03-results')
-    const index = ctx.params.pick === 'top' ? 0 : Math.floor(rng() * rows.length)
-    const chosen = rows[index] as UiNode
-    const videoTitle = titleFromRow(chosen)
-    await tapNode(ctx, chosen.clickable ? chosen : clickableFor(results, chosen))
-    steps.push(`picked rank ${index + 1}/${rows.length}`)
+    const minMs = ctx.params.minWatchMs
+    const maxMs = ctx.params.maxWatchMs > 0 ? ctx.params.maxWatchMs : Number.POSITIVE_INFINITY
+    /* Titles already opened, so a second round never reopens the first round's video. */
+    const seen = new Set<string>()
+    const watched: { title: string; rank: number; ms: number; like: string; comments: string }[] = []
+    let total = 0
+    let round = 0
 
-    // --- player, advert, watch --------------------------------------------------
-    const playing = await waitForTree(ctx, (t) => playerEvidence(t).playing, { budgetMs: 30_000 })
-    const player = await capture(ctx, '04-player', playing.tree)
-    const evidence = playerEvidence(player)
-    if (!evidence.playing) fail('verify-player', 'a result was tapped but nothing that looks like a player appeared — see artifact 04-player')
+    /*
+      Filled by the first round and reported as the run's headline video.
+      An OBJECT rather than two `let`s, because TypeScript narrows a `let`
+      assigned only inside a closure to its initialiser and then reads it as
+      `never` — the object's fields are read fresh instead.
+    */
+    const first: { evidence: string | null; pick: { title: string; rank: number; results: number; query: string } | null } = { evidence: null, pick: null }
 
-    let adSeen = false
-    if (adEvidence(player).ad) {
-      adSeen = true
-      const started = Date.now()
-      let cleared = false
-      while (Date.now() - started < 60_000) {
-        const t = await ctx.device.dump()
-        if (!adEvidence(t).ad) {
-          cleared = true
+    /** One search, one video, one watch. Returns the ms actually spent watching. */
+    const watchOne = async (budgetMs: number): Promise<number> => {
+      round += 1
+      const tag = (name: string): string => `${String(round).padStart(2, '0')}-${name}`
+      const query = pool[Math.floor(rng() * pool.length)] as string
+
+      // --- search -------------------------------------------------------------
+      const home = await capture(ctx, tag('home'))
+      const entry = firstMatch(home, SEARCH_ENTRY)
+      if (!entry) fail('open-search', `no search button on the YouTube home screen — see artifact ${tag('home')}`)
+      await tapNode(ctx, entry!.node)
+      // No fixed wait here: `openSearchField` polls for the search screen itself.
+      const screen = await capture(ctx, tag('search-open'))
+      const field = await openSearchField(ctx)
+      if (!field) fail('type-query', `the search screen opened with no text field — see artifact ${tag('search-open')}`)
+      void screen
+      await tapNode(ctx, field!)
+      await sleep(between(rng, 400, 800))
+      await ctx.device.type(query, {
+        // Typed the way a person does (0.39.8). Typos stay off — YouTube's search box edits its
+        // suggestion list under the cursor, and a backspace there can commit a suggestion.
+        human: { typo: { probability: 0 } },
+      })
+      await ctx.device.key('ENTER')
+
+      const loaded = await waitForTree(ctx, hasResultRows, { budgetMs: 30_000 })
+      /*
+        Wait for the LIST to settle, not for its first row.
+
+        `hasResultRows` answers as soon as anything is there, and on this
+        device that was three rows of an eventual twenty-one. Picking from the
+        short list then tapping is a tap at coordinates the page has since
+        moved: measured on the owner's moto g06 power, round two picked
+        "rank 2/3", the page finished loading, and the tap landed on nothing
+        (2026-09-20). Round one rarely sees it — the phone has been sitting on
+        the home screen and the search is the first thing it does.
+
+        Settled means the row count stopped changing, not that it reached some
+        number: the count is YouTube's business and the budget is short enough
+        that a genuinely slow page just gets picked from as it is.
+      */
+      const settled = await settleResults(ctx, loaded.tree)
+      const results = await capture(ctx, tag('results'), settled)
+      steps.push(loaded.ok ? `results(${query})` : `results(timeout, ${query})`)
+      if (!loaded.ok) fail('results', `no result rows appeared within the budget — see artifact ${tag('results')}`)
+
+      // --- pick from the ranked first page ------------------------------------
+      const rows = resultRowsOf(results)
+      if (rows.length === 0) fail('pick-row', `the results page reported rows but the walk found none — see artifact ${tag('results')}`)
+      /*
+        Rows this run has not already watched. A second round that reopened the
+        first round's video is the exact tell the owner named — *"biar ga
+        dikira bot nonton video yang sama terus terusan"* — and it is easy to
+        hit, because the same query returns the same ranking.
+      */
+      /* Only real videos are candidates — see `looksPlayable`. Filtered first, so a button is never even a fallback. */
+      let page = results
+      let playable = rows.filter(looksPlayable)
+      /*
+        No video at all is a page still loading, not a page without videos —
+        `settleResults` gives up on its own budget and a slow search can spend
+        all of it showing chrome. One more look costs a second and turned a
+        failed round into a watched video on the owner's device.
+      */
+      if (playable.length === 0) {
+        await sleep(SETTLE_BUDGET_MS / 2)
+        page = await capture(ctx, tag('results-again'))
+        playable = resultRowsOf(page).filter(looksPlayable)
+      }
+      if (playable.length < resultRowsOf(page).length) steps.push(`${playable.length} of ${resultRowsOf(page).length} rows are videos`)
+      if (playable.length === 0) fail('pick-row', `the results page carried no playable video — see artifact ${tag('results')}`)
+      const fresh = playable.filter((row) => !seen.has(titleFromRow(row)))
+      const pickFrom = fresh.length > 0 ? fresh : playable
+      const chosen = (ctx.params.pick === 'top' ? pickFrom[0] : pickFrom[Math.floor(rng() * pickFrom.length)]) as UiNode
+      const videoTitle = titleFromRow(chosen)
+      seen.add(videoTitle)
+      const index = resultRowsOf(page).indexOf(chosen)
+      steps.push(`picked rank ${index + 1}/${resultRowsOf(page).length}`)
+
+      /*
+        Tap, and if no player follows, FIND THE ROW AGAIN and tap it again.
+
+        Measured on the owner's moto g06 power (2026-09-20): round two's
+        artifact showed the results page unchanged — the search had worked, the
+        tap had landed, and nothing had opened. YouTube's results load
+        incrementally and a Sponsored card arrives late at the top, pushing
+        every row down by its height between the dump the coordinates came from
+        and the tap that used them. Round one rarely sees it because the ad has
+        not arrived yet; the later rounds almost always do.
+
+        So the retry re-dumps and matches the row by its TITLE rather than its
+        position — the one thing about it that does not move. Three attempts,
+        because two consecutive relayouts is already improbable and a fourth
+        tap on a page that genuinely will not open a video is just noise.
+      */
+      let player = results
+      let evidence = playerEvidence(results)
+      let tapped = 0
+      while (tapped < 3) {
+        /*
+          A retry re-DUMPS rather than reusing the tree the failed wait
+          returned: that tree is whatever was on screen when the wait gave up,
+          which on a page that relaid out is exactly the stale picture the tap
+          already missed with.
+        */
+        const surface = tapped === 0 ? page : await ctx.device.dump()
+        const target = tapped === 0 ? chosen : (resultRowsOf(surface).find((row) => titleFromRow(row) === videoTitle) ?? null)
+        if (target === null) {
+          steps.push('retap: the row is no longer on the page')
           break
         }
-        if (ctx.params.skipAds) {
-          const skip = skipControlOf(t)
-          if (skip) {
-            await tapNode(ctx, skip)
-            await sleep(700)
-            continue
-          }
+        await tapNode(ctx, target.clickable ? target : clickableFor(surface, target))
+        tapped += 1
+        const playing = await waitForTree(ctx, (t) => playerEvidence(t).playing, { budgetMs: 30_000 })
+        player = playing.tree
+        evidence = playerEvidence(player)
+        if (evidence.playing) break
+        if (tapped < 3) steps.push(`retap ${tapped}`)
+      }
+      await capture(ctx, tag('player'), player)
+      if (!evidence.playing) {
+        /*
+          Left the app entirely — an advert's landing page opens in a custom
+          tab, and the phone is no longer in YouTube at all. `isSponsored`
+          should stop this happening; the recovery is here because "should" is
+          not "does", and a phone parked on an advertiser's sign-up form is the
+          worst state this script can end in.
+
+          Recovered, not failed: the app goes back and the round returns
+          nothing, so the run carries on and its own round budget bounds it.
+        */
+        if (player.packageName !== undefined && player.packageName !== '' && player.packageName !== YOUTUBE_PACKAGE) {
+          steps.push(`left YouTube for ${player.packageName} — going back`)
+          await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: true })
+          await relaunch(ctx)
+          return 0
         }
-        await sleep(1_000)
+        fail('verify-player', `a result was tapped ${tapped} time(s) and nothing that looks like a player appeared — see artifact ${tag('player')}`)
       }
-      steps.push(cleared ? 'ad-cleared' : 'ad(timeout)')
+
+      let adSeen = false
+      if (adEvidence(player).ad) {
+        adSeen = true
+        const started = Date.now()
+        let cleared = false
+        while (Date.now() - started < 60_000) {
+          const t = await ctx.device.dump()
+          if (!adEvidence(t).ad) {
+            cleared = true
+            break
+          }
+          if (ctx.params.skipAds) {
+            const skip = skipControlOf(t)
+            if (skip) {
+              await tapNode(ctx, skip)
+              await sleep(700)
+              continue
+            }
+          }
+          await sleep(1_000)
+        }
+        steps.push(cleared ? 'ad-cleared' : 'ad(timeout)')
+      }
+      if (first.evidence === null) first.evidence = `${evidence.via}${adSeen ? ' (after advert)' : ''}`
+      if (first.pick === null) first.pick = { title: videoTitle, rank: index + 1, results: resultRowsOf(page).length, query }
+      steps.push('watching')
+
+      let like = 'not attempted'
+      let comments = 'not attempted'
+      // The keyword tilt reads the title the row gave us plus whatever the player shows.
+      const tiltText = `${videoTitle} ${query} ${readableStrings(player).join(' ')}`
+      const likeP = keywordBoost(tiltText, ctx.params.keywords, ctx.params.likeProbability, ctx.params.keywordBoostFactor)
+      const comP = keywordBoost(tiltText, ctx.params.keywords, ctx.params.commentProbability, ctx.params.keywordBoostFactor)
+
+      const watchStart = Date.now()
+      let lastInteraction = Date.now()
+      /*
+        The dwell is drawn ONCE (0.39.9).
+
+        It used to be drawn inside the loop and compared against elapsed time, which reads as "one
+        sample per round" but is not: with a fresh draw every 5–15 s, the run stops as soon as ANY
+        draw falls under the time already spent, and the chance of that accumulates. The heavy tail
+        this model exists for — a 0.1 chance of watching 25–55 s — was therefore almost never
+        reached. One draw, held for the whole watch, is what the distribution means.
+
+        `budgetMs` then CAPS it, and only ever downwards: a minimum is met by watching more videos,
+        never by stretching one past what the model says a person would give it.
+      */
+      /*
+        With a MINIMUM asked for, the per-video dwell comes from a long-video
+        range instead of the Shorts table.
+
+        `WATCH_BUCKETS` is a scrolling model — half its mass is 4 to 10
+        seconds, and 0.15 of it is under four. That is right for a phone
+        flicking through Shorts and wrong for one asked to watch a long video:
+        measured on the owner's moto g06 power, a 90 s minimum was being
+        approached 9 seconds at a time, which is ten searches to do what the
+        operator asked for once. A minimum is a statement about how the phone
+        should behave, so it changes the behaviour rather than only the exit
+        condition.
+
+        Still capped by `budgetMs`, and still never stretched past it: the
+        maximum wins over the minimum.
+      */
+      const drawn = minMs > 0 ? { ms: between(rng, LONG_WATCH_MIN_MS, LONG_WATCH_MAX_MS), label: 'long' } : pickWatchMs(rng)
+      const targetMs = Math.min(drawn.ms, budgetMs)
+
+      while (true) {
+        if (like === 'not attempted' && rng() < likeP * 0.3) {
+          like = await pressLike(ctx, rng)
+          steps.push(`like:${like}`)
+          lastInteraction = Date.now()
+        }
+
+        if (comments === 'not attempted' && rng() < comP * 0.2) {
+          comments = await browseComments(ctx, rng, { scrollTimes: 3 })
+          steps.push(`comments:${comments}`)
+          lastInteraction = Date.now()
+        }
+
+        // Human-like pause/check interval, never longer than what is left to watch.
+        const left = targetMs - (Date.now() - watchStart)
+        if (left <= 0) break
+        await sleep(Math.min(between(rng, 5_000, 15_000), left))
+
+        if (Date.now() - watchStart >= targetMs) break
+
+        // A while since anything happened: a small scroll, the way a person fidgets.
+        if (Date.now() - lastInteraction > 30_000 && rng() < 0.4) {
+          const frame = await frameOf(ctx)
+          if (rng() < 0.5) await scrollCommentsRandomised(ctx, frame, rng, 1)
+          lastInteraction = Date.now()
+        }
+      }
+
+      const ms = Date.now() - watchStart
+      steps.push(`watched ${Math.round(ms / 1000)}s (${drawn.label})`)
+      watched.push({ title: videoTitle, rank: index + 1, ms, like, comments })
+      return ms
     }
-    const playEvidence = `${evidence.via}${adSeen ? ' (after advert)' : ''}`
-    steps.push('watching')
 
-    let like = 'not attempted'
-    let comments = 'not attempted'
-    // The keyword tilt reads the title the row gave us plus whatever the player shows.
-    const tiltText = `${videoTitle} ${ctx.params.query} ${readableStrings(player).join(' ')}`
-    const likeP = keywordBoost(tiltText, ctx.params.keywords, ctx.params.likeProbability, ctx.params.keywordBoostFactor)
-    const comP = keywordBoost(tiltText, ctx.params.keywords, ctx.params.commentProbability, ctx.params.keywordBoostFactor)
-    
-    // Watch with human-like behavior
-    const watchStart = Date.now()
-    let lastInteraction = Date.now()
-    
-    // Watch for a human-like duration with periodic interactions
     /*
-      The dwell is drawn ONCE (0.39.9).
+      Keep watching until the MINIMUM is met.
 
-      It used to be drawn inside the loop and compared against elapsed time, which reads as "one
-      sample per round" but is not: with a fresh draw every 5–15 s, the run stops as soon as ANY draw
-      falls under the time already spent, and the chance of that accumulates. The heavy tail this
-      model exists for — a 0.1 chance of watching 25–55 s — was therefore almost never reached, and
-      the longer the video ran the less likely it became to keep running. One draw, held for the
-      whole watch, is what the distribution actually means.
+      The owner's ask: *"akan selalu nonton video selama belum capai minimum
+      waktunya, kalau satu video tidak kuat sampai minimum misalnya yah cari
+      video lagi"*. So a short video is not stretched — the run opens another
+      one, with a fresh query and a row it has not seen. `minWatchMs: 0` (the
+      default) is one video, exactly as before.
     */
-    const watchTarget = pickWatchMs(rng)
     while (true) {
-      // Check if we should interact (like/comment)
-      if (like === 'not attempted' && rng() < likeP * 0.3) { // Reduced chance per check
-        like = await pressLike(ctx, rng)
-        steps.push(`like:${like}`)
-        lastInteraction = Date.now()
-      }
-      
-      if (comments === 'not attempted' && rng() < comP * 0.2) { // Reduced chance per check
-        comments = await browseComments(ctx, rng, { scrollTimes: 3 })
-        steps.push(`comments:${comments}`)
-        lastInteraction = Date.now()
-      }
-      
-      // Human-like pause/check interval
-      await sleep(between(rng, 5_000, 15_000))
-      
-      // Decide watch duration using the same human-like buckets as scroll-shorts
-      const watchDecision = watchTarget
-      
-      // If we've watched long enough, break
-      const elapsed = Date.now() - watchStart
-      if (elapsed >= watchDecision.ms) {
-        steps.push(`watched:${watchDecision.label}`)
+      try {
+        total += await watchOne(maxMs - total)
+      } catch (err) {
+        /*
+          A round that could not open a video does not throw away the ones that
+          did.
+
+          Opening a result is the flaky step — a row can be a Short, a
+          playlist, a channel, or an advert that swallows the tap — and the
+          longer a run goes the more likely it is to meet one. Before this, a
+          run that watched 44 s across two videos and met a bad row on the
+          third reported a bare failure with nothing watched, which is both
+          false and the opposite of useful. Nothing watched at all is still a
+          failure: there is no outcome to report and the reason belongs on the
+          job.
+        */
+        if (watched.length === 0) throw err
+        steps.push(`round ${round} gave up: ${err instanceof Error ? err.message.split(' (steps:')[0] : String(err)}`)
         break
       }
-      
-      // If it's been a while since last interaction, maybe interact
-      if (Date.now() - lastInteraction > 30_000 && rng() < 0.4) {
-        // Random scroll during watch (simulating user scrolling through recommendations)
-        const frame = await frameOf(ctx)
-        if (rng() < 0.5) {
-          await scrollCommentsRandomised(ctx, frame, rng, 1) // Small scroll
-        }
-        lastInteraction = Date.now()
+      if (total >= minMs) break
+      /*
+        Bounded by ROUNDS, not by videos watched. A round that recovered from
+        leaving the app watched nothing, and bounding on `watched.length` would
+        let a run that keeps meeting adverts go round for ever.
+      */
+      if (round >= ctx.params.maxVideos) {
+        steps.push(`stopped after ${round} attempts with ${Math.round(total / 1000)}s watched`)
+        break
       }
+      if (total >= maxMs) break
+      // Back to a clean home screen for the next search. A force-stop plus
+      // relaunch is what `prepare` already does, and it is the one way back
+      // that does not depend on how deep the player left us.
+      await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: true })
+      await relaunch(ctx)
+      await sleep(between(rng, 1_200, 2_500))
     }
-    
-    const watchTime = Date.now() - watchStart
-    steps.push(`watched ${Math.round(watchTime/1000)}s`)
 
     await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: true })
-    return { 
-      query: ctx.params.query, 
-      resultCount: rows.length, 
-      pickedRank: index + 1, 
-      played: true, 
-      videoTitle, 
-      playEvidence, 
-      like, 
-      comments, 
-      watchTime,
-      steps 
+    return {
+      query: first.pick?.query ?? ctx.params.query,
+      resultCount: first.pick?.results ?? 0,
+      pickedRank: first.pick?.rank ?? 0,
+      played: true,
+      videoTitle: first.pick?.title ?? '',
+      playEvidence: first.evidence ?? '',
+      like: watched.find((v) => v.like !== 'not attempted')?.like ?? 'not attempted',
+      comments: watched.find((v) => v.comments !== 'not attempted')?.comments ?? 'not attempted',
+      watchTime: total,
+      videosWatched: watched.length,
+      reachedMinimum: total >= minMs,
+      videos: watched.map((v) => `${v.title} — ${Math.round(v.ms / 1000)}s (rank ${v.rank})`),
+      steps,
     }
   },
 
