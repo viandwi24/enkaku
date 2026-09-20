@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
 import { ArtifactBulkDeleteResponseSchema, ArtifactReferencesResponseSchema, type ShellMode } from '@enkaku/protocol'
 import type { AuthEnv } from '../auth/middleware'
 import type { AuditLogger } from '../auth/audit'
@@ -38,11 +39,12 @@ function setUp(opts: { role?: 'admin' | 'operator' | null; mode?: ShellMode } = 
   })
   app.route('/', inner)
 
-  const addArtifact = (o: { label: string; sizeBytes?: number; ageSec?: number; pinned?: boolean; mimeType?: string; kind?: 'file' | 'video' | 'screenshot'; runId?: string | null }): string => {
+  const addArtifact = (o: { label: string; sizeBytes?: number; body?: string; ageSec?: number; pinned?: boolean; mimeType?: string | null; kind?: 'file' | 'video' | 'screenshot'; runId?: string | null }): string => {
     const id = crypto.randomUUID()
     const rel = join('artifacts', 'uploads', `${id}.bin`)
     mkdirSync(dirname(join(dataDir, rel)), { recursive: true })
-    writeFileSync(join(dataDir, rel), 'x'.repeat(o.sizeBytes ?? 10))
+    const body = o.body ?? 'x'.repeat(o.sizeBytes ?? 10)
+    writeFileSync(join(dataDir, rel), body)
     db.insert(artifacts)
       .values({
         id,
@@ -51,10 +53,10 @@ function setUp(opts: { role?: 'admin' | 'operator' | null; mode?: ShellMode } = 
         kind: o.kind ?? 'video',
         label: o.label,
         path: rel,
-        sizeBytes: o.sizeBytes ?? 10,
+        sizeBytes: o.body === undefined ? (o.sizeBytes ?? 10) : o.body.length,
         createdAt: new Date(Date.now() - (o.ageSec ?? 0) * 1000),
         pinned: o.pinned ?? false,
-        mimeType: o.mimeType ?? 'video/mp4',
+        mimeType: o.mimeType === undefined ? 'video/mp4' : o.mimeType,
       })
       .run()
     return id
@@ -85,7 +87,29 @@ function setUp(opts: { role?: 'admin' | 'operator' | null; mode?: ShellMode } = 
   const post = (body: unknown) => app.request('/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
   const rowExists = (id: string): boolean => getArtifactInfo(db, id) !== null
 
-  return { db, app, audited, addArtifact, fileOf, addJob, addKv, post, rowExists }
+  /**
+   * The same routes behind a REAL `Bun.serve`, with the same `cors()` the core
+   * mounts (`server/http.ts`).
+   *
+   * `app.request()` above never leaves the process: it hands back the
+   * `Response` object the route built, so a body that is wrong only once it
+   * has been serialised over a socket looks perfect. That is not hypothetical
+   * — a `BunFile` range slice passes `app.request()` byte for byte and streams
+   * to EOF through this stack (see the route's own note). Anything asserting
+   * what a PLAYER receives has to come through here.
+   */
+  const serve = () => {
+    const outer = new Hono<AuthEnv>()
+    outer.use('*', cors({ origin: (origin) => origin ?? '*', credentials: true }))
+    outer.route('/', app)
+    const server = Bun.serve({ port: 0, fetch: outer.fetch })
+    return {
+      get: (path: string, init?: RequestInit) => fetch(`http://localhost:${server.port}${path}`, init),
+      stop: () => void server.stop(true),
+    }
+  }
+
+  return { db, app, audited, addArtifact, fileOf, addJob, addKv, post, rowExists, serve }
 }
 
 describe('POST /api/artifacts/delete — body and gate', () => {
@@ -246,5 +270,102 @@ describe('references and single delete', () => {
     const ctx = { artifacts: { get: (artifactId: string) => getArtifactInfo(t.db, artifactId) } } as unknown as CapabilityContext
     expect(await artifactGet.handler(ctx, { artifactId: id })).toMatchObject({ exists: true, artifact: { id, label: 'a.mp4' } })
     expect(await artifactGet.handler(ctx, { artifactId: 'gone' })).toEqual({ exists: false, artifact: null })
+  })
+})
+
+/**
+ * `GET /api/artifacts/:id/content` — what a media player asks for.
+ *
+ * The range half exists because Bun serves a `BunFile` whole and does not read
+ * `Range` for us: before this, seeking a long upload in the Files player made
+ * the browser refetch from byte zero on every scrubber move, because a 200
+ * with the entire body is a legal (and useless) answer to a range request.
+ */
+describe('GET /api/artifacts/:id/content', () => {
+  test('serves the whole file, announces ranges, and uses the PROBED type over the extension', async () => {
+    const t = setUp()
+    // A `.bin` path whose probe read WebM — the case the extension map cannot
+    // answer and used to serve as application/octet-stream, which a <video>
+    // refuses outright.
+    const id = t.addArtifact({ label: 'clip.webm', body: 'abcdefghij', mimeType: 'video/webm' })
+    const res = await t.app.request(`/${id}/content`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('video/webm')
+    expect(res.headers.get('accept-ranges')).toBe('bytes')
+    expect(await res.text()).toBe('abcdefghij')
+  })
+
+  test('falls back to the extension map, then to octet-stream, when nothing was probed', async () => {
+    const t = setUp()
+    const id = t.addArtifact({ label: 'mystery', body: 'abc', mimeType: null })
+    // The stored path is `.bin`, which is in neither map.
+    expect((await t.app.request(`/${id}/content`)).headers.get('content-type')).toBe('application/octet-stream')
+  })
+
+  test('answers a byte range with 206 and exactly those bytes, over a real socket', async () => {
+    const t = setUp()
+    const id = t.addArtifact({ label: 'clip.mp4', body: 'abcdefghij' })
+    const server = t.serve()
+    try {
+      const first = await server.get(`/${id}/content`, { headers: { range: 'bytes=0-4' } })
+      expect(first.status).toBe(206)
+      expect(first.headers.get('content-range')).toBe('bytes 0-4/10')
+      expect(first.headers.get('content-length')).toBe('5')
+      expect(await first.text()).toBe('abcde')
+
+      // Open-ended: everything from byte 5 on. This is the one that caught the
+      // file-slice bug — it used to answer `bytes 5-9/10` and send all ten.
+      const rest = await server.get(`/${id}/content`, { headers: { range: 'bytes=5-' } })
+      expect(rest.status).toBe(206)
+      expect(rest.headers.get('content-range')).toBe('bytes 5-9/10')
+      expect(await rest.text()).toBe('fghij')
+
+      // A suffix range is the LAST n bytes — an mp4 whose moov atom sits at the
+      // end asks for exactly this, and reading it as `0-n` hands the player the
+      // wrong end of the file.
+      const suffix = await server.get(`/${id}/content`, { headers: { range: 'bytes=-3' } })
+      expect(suffix.status).toBe(206)
+      expect(suffix.headers.get('content-range')).toBe('bytes 7-9/10')
+      expect(await suffix.text()).toBe('hij')
+
+      // Past the end is clamped, not refused.
+      const clamped = await server.get(`/${id}/content`, { headers: { range: 'bytes=8-99' } })
+      expect(clamped.headers.get('content-range')).toBe('bytes 8-9/10')
+      expect(await clamped.text()).toBe('ij')
+
+      // And the un-ranged request still carries the whole file.
+      expect(await (await server.get(`/${id}/content`)).text()).toBe('abcdefghij')
+    } finally {
+      server.stop()
+    }
+  })
+
+  test('416s an unsatisfiable range and ignores one it will not serve', async () => {
+    const t = setUp()
+    const id = t.addArtifact({ label: 'clip.mp4', body: 'abcdefghij' })
+    const server = t.serve()
+    try {
+      const past = await server.get(`/${id}/content`, { headers: { range: 'bytes=20-30' } })
+      expect(past.status).toBe(416)
+      expect(past.headers.get('content-range')).toBe('bytes */10')
+
+      // Multi-range and other unsupported forms fall back to the whole file —
+      // the one thing that is never allowed is a wrong slice.
+      const multi = await server.get(`/${id}/content`, { headers: { range: 'bytes=0-1,4-5' } })
+      expect(multi.status).toBe(200)
+      expect(await multi.text()).toBe('abcdefghij')
+    } finally {
+      server.stop()
+    }
+  })
+
+  test('?download=1 names the file so a click saves it instead of playing it', async () => {
+    const t = setUp()
+    const id = t.addArtifact({ label: 'my clip ä.mp4', body: 'abc' })
+    const res = await t.app.request(`/${id}/content?download=1`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-disposition')).toBe("attachment; filename*=UTF-8''my%20clip%20%C3%A4.mp4")
+    // Without it the response stays inline, which is what the <video> needs.
+    expect((await t.app.request(`/${id}/content`)).headers.get('content-disposition')).toBe(null)
   })
 })
