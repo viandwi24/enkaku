@@ -1,6 +1,6 @@
 {
   "name": "@enkaku/plugin-social-media-manager",
-  "version": "0.59.1",
+  "version": "0.59.3",
   "private": true,
   "type": "module",
   "description": "Upload a video once, route it to the phones that carry each platform's label, and let every platform pack post it.",

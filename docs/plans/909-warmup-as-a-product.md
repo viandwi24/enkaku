@@ -329,6 +329,33 @@ timer ticked for ever regardless.
 for two minutes" and "this page stopped updating" look identical otherwise —
 and telling them apart by pressing Refresh is the very habit this removes.
 
+### D13 — A browser write must preserve what it does not model (0.59.3)
+
+Moving Stop and Retry into the browser (D11) made `ui/shared.ts` load-bearing
+in a way it had never been. It MIRRORS schemas the service owns, and a strict
+mirror drops every field it does not name — so a Retry wrote the row back
+without `params` or `sequence`, the farm refused the next dispatch with
+`query: required`, the step stayed `pending`, and the phone's whole warm-up
+stalled with nothing on screen to explain it.
+
+The mirrors are `looseObject` now. That is the structural answer rather than
+"add the two missing fields": a mirror kept in step by hand falls out of step
+the first time the service gains a field, and it fails the same silent way.
+`ui-mirror.test.ts` holds the round trip and asserts that a field added
+TOMORROW survives; made strict again, all four of its cases fail.
+
+**And the router has a heartbeat.** Its `setInterval` stopped twice during this
+work and nothing said so: every session read healthy, every phone sat idle, and
+diagnosing it meant reading storage timestamps by hand. A stamp written at the
+END of a completed pass distinguishes "quiet tonight" from "stopped working an
+hour ago" — and here it did its job in the other direction, proving the tick
+was alive and sending the search to `plugins/smm/runtime.log`, which had the
+real answer waiting.
+
+The lesson generalises past this plugin: **a plugin's own log is where its
+service speaks, and `ctx.log.warn` does not reach the core's stdout.** Two
+stalls in this series were diagnosed the slow way before anyone looked there.
+
 ## 5. Still open
 
 - **Cadence** (*"sehari bisa sekali, atau sehari bisa 2 kali"*) is the farm's

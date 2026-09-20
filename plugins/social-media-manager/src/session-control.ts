@@ -148,13 +148,7 @@ export function stopWarmupRow<R extends ControlRun>(run: R, now: number): StopRe
     pulled += 1
     return { ...step, state: 'pending', jobId: null, startedAt: null, settledAt: null, error: null, notBeforeAt: Math.max(step.notBeforeAt, now) }
   })
-  /*
-    The row's own `state`/`summary` are NOT recomputed here — that belongs to
-    `withRunSummary`, which the service has and the browser mirror does not.
-    The caller applies it where it can, and the router's next tick fixes it
-    where it cannot; a stale summary for one tick is a smaller cost than this
-    module depending on a schema.
-  */
+  /* The caller applies `withRunSummary`, which is generic, so browser and service both can. */
   return { row: pulled === 0 ? run : { ...run, steps }, cancel, pulled }
 }
 

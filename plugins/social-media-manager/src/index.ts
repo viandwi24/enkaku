@@ -83,6 +83,47 @@ import {
  *
  * ## Changelog
  *
+ * - **0.59.3 — a browser write stops destroying the fields it does not model,
+ *   and the router says when it last ran.**
+ *
+ *   Moving Stop and Retry into the browser (0.59.0/0.59.2) made `ui/shared.ts`
+ *   load-bearing in a way it had never been: it MIRRORS schemas the service
+ *   owns, and a strict mirror drops every field it does not name. So a Retry
+ *   wrote the row back without `params` or `sequence`, the next dispatch was
+ *   refused by the farm with `query: required`, the step stayed `pending`, and
+ *   the phone's whole warm-up stalled behind it with nothing on screen to say
+ *   why. Found on the owner's farm by reading `plugins/smm/runtime.log`.
+ *
+ *   The mirrors are `looseObject` now, so unknown keys survive the round trip.
+ *   That is the structural answer rather than "add the two missing fields": a
+ *   mirror kept in step by hand falls out of step the first time the service
+ *   gains a field, and it fails the same silent way. `ui-mirror.test.ts` holds
+ *   the round trip, and asserts that a field added TOMORROW survives — made
+ *   strict again, all four of its cases fail.
+ *
+ *   And the router now writes a heartbeat after every completed pass
+ *   (`ROUTER_HEARTBEAT_KEY`). Its `setInterval` has stopped twice during this
+ *   work, and each time nothing said so: every session read healthy, every
+ *   phone sat idle, and diagnosing it meant reading storage timestamps by
+ *   hand. A stamp written at the END of a pass distinguishes "quiet tonight"
+ *   from "stopped working an hour ago" — and, this time, proved the tick was
+ *   alive and sent me to the plugin's own log for the real answer.
+ *
+ * - **0.59.2 — a retried row stops saying it failed.**
+ *   Caught on the owner's own farm a minute after Retry landed: the activity
+ *   went back to `pending`, and the ROW beside it still read `failed`.
+ *
+ *   `withRunSummary` was service-only, so the browser's Retry could not apply
+ *   it and left the state to the router — and the router only writes a row it
+ *   CHANGES, so the stale word sat there until the activity was dispatched,
+ *   which can be minutes. A state that contradicts the steps printed beside it
+ *   is exactly the ghost this plugin has spent two days removing.
+ *
+ *   `withRunSummary` and `warmupRowState` are generic now, like
+ *   `retryFailedSteps` and `session-control.ts` before them, so every caller
+ *   recomputes the row it just wrote — and the apologetic comments that
+ *   excused the gap are gone with it.
+ *
  * - **0.59.1 — the warm-up screens keep themselves up to date.**
  *   The session LIST had no auto-refresh at all: a session's progress sat at
  *   whatever it said when the page loaded, so watching a fleet meant pressing
@@ -1341,6 +1382,28 @@ const AUTO_POST_SETTINGS_KEY = 'settings:auto-post'
 /** When the router last actually completed a tick, unix seconds — what `intervalMinutes` is measured against. */
 const AUTO_POST_LAST_RUN_KEY = 'state:auto-post-last-run'
 
+/**
+ * When the router last finished a pass — a heartbeat, written every tick.
+ *
+ * ## Why a plugin needs one at all
+ *
+ * The router is a `setInterval` inside the plugin's service. When it stops —
+ * and it has, twice on the owner's own farm during this work — NOTHING says
+ * so. Every session still reads healthy, every phone is idle, every row says
+ * "waiting", and the only symptom is that nothing ever happens. Diagnosing it
+ * took reading the storage timestamps by hand both times.
+ *
+ * A stamp the screen can read turns that into a sentence. It costs one small
+ * write every fifteen seconds, which is nothing beside what the farm writes
+ * per job, and it is the difference between "this farm is quiet tonight" and
+ * "this farm stopped working an hour ago".
+ *
+ * Written at the END of a pass on purpose: it means "a tick completed", not "a
+ * tick started". A router looping forever inside one pass is exactly the shape
+ * of failure this is for, and a stamp written on entry would hide it.
+ */
+const ROUTER_HEARTBEAT_KEY = 'state:router-last-tick'
+
 const AutoPostSettingsSchema = z
   .object({
     version: z.literal(1),
@@ -2297,6 +2360,17 @@ async function maybeRunTick(ctx: PluginServiceContext): Promise<void> {
   }
 
   await runTick(ctx, settings, { dispatch, enabled })
+
+  /*
+    The heartbeat, after the pass — see `ROUTER_HEARTBEAT_KEY`. Never allowed
+    to fail the tick: a router that stopped working because it could not write
+    down that it was working would be its own joke.
+  */
+  try {
+    await ctx.storage.global.set(ROUTER_HEARTBEAT_KEY, Math.floor(Date.now() / 1000))
+  } catch (err) {
+    ctx.log.warn('could not write the router heartbeat', { error: messageOf(err) })
+  }
 }
 
 /** The platform choice an operator sees in the New post form — `tiktok` → `TikTok`. */
@@ -2308,7 +2382,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.59.1',
+  version: '0.59.3',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

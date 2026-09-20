@@ -1,7 +1,7 @@
 import { api } from '@enkaku/ui'
 import { z } from 'zod'
 import { resumeWarmupRow, stopPostRow, stopWarmupRow } from '../session-control'
-import { retryFailedSteps } from '../warmup-rows'
+import { retryFailedSteps, withRunSummary } from '../warmup-rows'
 
 /**
  * The one screen's shared vocabulary: what it reads from the farm, and how.
@@ -200,7 +200,24 @@ export function isWarmupGroup(group: Group): boolean {
   return group.kind === 'warmup'
 }
 
-export const WarmupStepSchema = z.object({
+/**
+ * The browser's view of a step — LOOSE on purpose.
+ *
+ * This file mirrors schemas the service owns, and since 0.59.0 the browser
+ * WRITES these rows too (Stop, Start again, Retry). A strict mirror drops
+ * every field it does not model, so those writes silently destroyed `params`
+ * and `sequence`: the next dispatch of a retried activity was refused by the
+ * farm with `query: required`, the step stayed pending, and the phone's whole
+ * warm-up stalled behind it with nothing on screen to say why (owner's farm,
+ * 2026-09-21).
+ *
+ * `looseObject` is the structural answer rather than "add the two missing
+ * fields". A mirror that has to be kept in step by hand will fall out of step
+ * again the first time the service gains a field, and it will fail the same
+ * silent way. Unknown keys now survive the round trip untouched, which is what
+ * a mirror should do.
+ */
+export const WarmupStepSchema = z.looseObject({
   activityId: z.string(),
   title: z.string(),
   script: z.string(),
@@ -214,7 +231,8 @@ export const WarmupStepSchema = z.object({
 })
 export type WarmupStep = z.infer<typeof WarmupStepSchema>
 
-export const WarmupRowSchema = z.object({
+/** The same, and loose for the same reason — see `WarmupStepSchema`. */
+export const WarmupRowSchema = z.looseObject({
   version: z.literal(1),
   groupId: z.string(),
   /** Which run of the session this row belongs to; a row written before runs existed reads as the first. */
@@ -345,7 +363,7 @@ export async function setSessionStopped(group: Group, action: 'stop' | 'start', 
       pulled += next.pulled
       await cancelJobs(next.cancel)
       /* The flag is written even when nothing was pulled back: it is what stops the NEXT activity going out. */
-      await writeEntry(entry.key, { ...next.row, stopped: stop })
+      await writeEntry(entry.key, { ...withRunSummary(next.row), stopped: stop })
     }
     /*
       The session's own legacy flag is cleared on a start, never set on a stop.
@@ -383,6 +401,24 @@ export async function setSessionStopped(group: Group, action: 'stop' | 'start', 
  * One read of every warm-up row, rather than one per session: a farm with
  * forty sessions would otherwise make forty prefix scans to draw one list.
  */
+/**
+ * When the router last completed a pass, or `null` if it never has.
+ *
+ * The screens show this because a router that stops is otherwise invisible:
+ * every session reads healthy, every phone is idle, and nothing happens. See
+ * `ROUTER_HEARTBEAT_KEY` in the service.
+ */
+export async function routerHeartbeat(): Promise<number | null> {
+  try {
+    for (const row of await readAll('state:router-last-tick')) {
+      if (typeof row.value === 'number') return row.value
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 export async function listAllWarmupRows(): Promise<WarmupRow[]> {
   const out: WarmupRow[] = []
   for (const row of await readAll('warmup:')) {
@@ -436,7 +472,8 @@ export async function retryWarmupRun(groupId: string, runId: string): Promise<nu
     const again = retryFailedSteps(parsed.data, now)
     if (again === null) continue
     requeued += again.steps.filter((step) => step.state === 'pending').length - parsed.data.steps.filter((step) => step.state === 'pending').length
-    await writeEntry(row.key, { ...again, stopped: false })
+    /* Recomputed here, not left to the router: it only writes a row it CHANGES, so a stale `failed` would sit on screen until the activity was dispatched. */
+    await writeEntry(row.key, { ...withRunSummary(again), stopped: false })
   }
   return requeued
 }

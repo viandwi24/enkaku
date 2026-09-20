@@ -212,12 +212,7 @@ describe('retryFailedSteps — Retry failed means the same thing it does on the 
     const again = retryFailedSteps(run, STARTED + 5_000)
     expect(again?.steps.map((s) => s.state)).toEqual(['success', 'pending', 'success'])
     expect(again?.steps[1]?.notBeforeAt).toBe(STARTED + 5_000)
-    /*
-      The row's own `state` is NOT recomputed here — since 0.59.0 the Retry
-      button runs in the BROWSER, which has a narrower mirror of this schema
-      and no `withRunSummary`. The router's next tick fixes it; a stale summary
-      for one tick is a smaller cost than two copies of the retry rule.
-    */
+    /* The state is the caller's to apply — `withRunSummary` is generic, so every caller can, including the browser. */
     expect(withRunSummary(again as WarmupRow).state).toBe('running')
   })
 

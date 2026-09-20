@@ -284,7 +284,7 @@ export function isRunOver(run: WarmupRow): boolean {
  * activity never ends the run (plan 900 D6.5), so `partial` is the common
  * outcome of a phone that met one bad screen.
  */
-export function warmupRowState(steps: readonly WarmupStepRow[]): WarmupRowState {
+export function warmupRowState(steps: readonly { state: WarmupStepState }[]): WarmupRowState {
   if (steps.length === 0) return 'skipped'
   const counts = { success: 0, failed: 0, pending: 0, queued: 0 }
   for (const step of steps) {
@@ -307,7 +307,7 @@ export function warmupRowState(steps: readonly WarmupStepRow[]): WarmupRowState 
 }
 
 /** The one line the sessions table shows for a phone. */
-export function warmupRunSummary(run: WarmupRow): string {
+export function warmupRunSummary<S extends { state: WarmupStepState }>(run: { steps: readonly S[]; note: string | null; platform: string | null }): string {
   if (run.steps.length === 0) return run.note ?? 'Nothing to do'
   const done = run.steps.filter((step) => step.state === 'success').length
   const failed = run.steps.filter((step) => step.state === 'failed').length
@@ -320,10 +320,23 @@ export function warmupRunSummary(run: WarmupRow): string {
   return `${where} — ${done} done, ${failed} failed`
 }
 
-/** The run with its state and summary recomputed from its own steps, so the two can never disagree. */
-export function withRunSummary(run: WarmupRow): WarmupRow {
+/**
+ * The row with its state and summary recomputed from its own steps, so the two
+ * can never disagree.
+ *
+ * Generic since 0.59.2, for the same reason `retryFailedSteps` is: the browser
+ * runs Retry and Stop now, and it holds a narrower mirror of this schema. When
+ * this was service-only, a retried row kept its old `failed` state on screen
+ * until the router next WROTE it — and the router only writes a row it
+ * changes, so "failed" sat there until the activity was dispatched. A state
+ * that contradicts the steps beside it is exactly the ghost the operator
+ * taught us to hunt.
+ */
+export function withRunSummary<S extends { state: WarmupStepState }, R extends { steps: readonly S[]; note: string | null; platform: string | null }>(
+  run: R,
+): R & { state: WarmupRowState; summary: string } {
   const state = warmupRowState(run.steps)
-  return { ...run, state, summary: warmupRunSummary({ ...run, state }) }
+  return { ...run, state, summary: warmupRunSummary(run) }
 }
 
 /**
@@ -520,12 +533,10 @@ export function retryFailedSteps<S extends { state: WarmupStepState }, R extends
     again(step.state) ? ({ ...step, state: 'pending', jobId: null, error: null, startedAt: null, settledAt: null, notBeforeAt: now } as S) : step,
   )
   /*
-    The row's own `state`/`summary` are NOT recomputed here — that belongs to
-    `withRunSummary`, which the service has and the browser mirror does not.
-    Since 0.59.0 the RETRY button runs in the browser (a retry needs no phone,
-    the same argument Stop settled), so this had to stop depending on the
-    schema. The router's next tick fixes the summary; a stale one for one tick
-    is a smaller cost than two copies of this rule.
+    The caller applies `withRunSummary` — it is generic now, so the browser can
+    too. Leaving the state stale here was a real bug for a moment: the router
+    only writes a row it CHANGES, so a retried row kept saying `failed` until
+    its activity was dispatched, which could be minutes.
   */
   return { ...run, steps }
 }
