@@ -26,14 +26,40 @@ import { EnkakuError } from '../util/errors'
 import { decodeCursor, encodeCursor, keysetWhere, parsePageQuery } from './pagination'
 import { typedJson } from './typed-json'
 
+/**
+ * The FALLBACK content type, by extension, for a row whose `mimeType` the probe
+ * could not read — `/:id/content` prefers the probed value, which is read from
+ * the bytes and is right for a file whose name says nothing.
+ *
+ * The media entries past the original eight are the ones a browser has to be
+ * told about before it will play or show a file: a `<video>` or `<img>` handed
+ * `application/octet-stream` does not sniff, it just fails.
+ */
 const CONTENT_TYPES: Record<string, string> = {
   png: 'image/png',
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml',
   json: 'application/json',
   log: 'text/plain; charset=utf-8',
   txt: 'text/plain; charset=utf-8',
+  csv: 'text/csv; charset=utf-8',
   mp4: 'video/mp4',
+  m4v: 'video/mp4',
+  webm: 'video/webm',
+  mkv: 'video/x-matroska',
+  mov: 'video/quicktime',
+  '3gp': 'video/3gpp',
+  avi: 'video/x-msvideo',
+  mp3: 'audio/mpeg',
+  m4a: 'audio/mp4',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  pdf: 'application/pdf',
+  zip: 'application/zip',
   apk: 'application/vnd.android.package-archive',
 }
 
@@ -45,6 +71,21 @@ const CONTENT_TYPES: Record<string, string> = {
  * oversized request body regardless of what the upload is destined for.
  */
 export const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024
+
+/**
+ * The most bytes one ranged response to `GET /:id/content` will carry.
+ *
+ * A range is read into memory before it is sent (see that route for why it
+ * cannot be streamed as a file slice), so this is the ceiling on what one
+ * request can allocate on a machine that is also driving every phone in the
+ * farm. Eight megabytes is a few seconds of a screen recording — large enough
+ * that a player is not making a request per frame, small enough that ten
+ * viewers scrubbing at once is not a problem.
+ *
+ * `ENKAKU_*`-overridable? No: nothing about it differs between farms, and a
+ * client that wants more bytes simply asks for the next range.
+ */
+const MAX_RANGE_BYTES = 8 * 1024 * 1024
 
 /**
  * The ceiling `Bun.serve` itself is given (`daemon.ts`), and the reason this
@@ -533,9 +574,107 @@ export function createArtifactRoutes(deps: {
     const file = Bun.file(abs)
     if (!(await file.exists())) throw new EnkakuError('artifact_not_found', 'the artifact file is no longer on disk')
     const ext = rel.split('.').pop() ?? ''
-    return new Response(file, {
-      headers: { 'content-type': CONTENT_TYPES[ext] ?? 'application/octet-stream' },
-    })
+    /*
+     * The PROBE's answer first, the extension map second.
+     *
+     * `media/probe.ts` reads the container out of the bytes at upload and
+     * stores it on the row — `video/webm`, `video/quicktime`, `video/3gpp`,
+     * `video/x-matroska` among them — and none of those is in the extension
+     * map below, which knows eight. So a WebM recording was uploaded, probed
+     * correctly, listed on the Files screen as a video, and then served as
+     * `application/octet-stream`: a `<video>` element refuses that outright,
+     * and the file read as broken rather than as an unsupported type.
+     */
+    const contentType = row.mimeType ?? CONTENT_TYPES[ext] ?? 'application/octet-stream'
+    const size = file.size
+
+    const headers: Record<string, string> = {
+      'content-type': contentType,
+      // Announced unconditionally: a player asks for a range only when the
+      // first response said it could (below is the half that serves one).
+      'accept-ranges': 'bytes',
+    }
+    /*
+     * `?download=1` — the Files screen's Download action. Without a
+     * disposition the browser plays an mp4 in the tab instead of saving it,
+     * and the anchor's own `download` attribute cannot help across the origin
+     * split Studio dev runs under. `filename*` (RFC 5987) rather than
+     * `filename=` so a label with a space or a non-ASCII character survives;
+     * control characters and quotes are stripped because they are what turns
+     * this header into a second header.
+     */
+    if (c.req.query('download') !== undefined) {
+      const name = (row.label ?? rel.split('/').pop() ?? row.id).replace(/[\u0000-\u001f"\\]/g, '').slice(0, 200)
+      headers['content-disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(name)}`
+    }
+
+    /*
+     * Range requests, so a video can be SEEKED (owner, 2026-09-20).
+     *
+     * Bun serves a `BunFile` body whole; it does not read `Range` for us. A
+     * 200 with the entire body is a legal answer to a range request, and it
+     * is why scrubbing a long upload in the Files player used to stall — the
+     * browser cannot jump to minute nine of a 600 MB clip without asking for
+     * the bytes at minute nine, so it re-fetched from zero every time the
+     * scrubber moved.
+     *
+     * **The bytes are MATERIALISED, and that is not an oversight.** Handing
+     * `file.slice(start, end + 1)` back as the body is the obvious version and
+     * it is silently wrong here: a sliced `BunFile` keeps its end bound in a
+     * bare `Bun.serve`, but once the response passes through middleware that
+     * rebuilds it — this app's `cors()`, among others — the bound is lost and
+     * Bun streams from `start` to EOF, chunked, with the `content-length` we
+     * set dropped. Measured on this route: `Range: bytes=10-19` against a
+     * 709 425-byte upload answered `206`, `Content-Range: bytes 10-19/709425`
+     * and 709 415 bytes of body. A player reading that gets the right header
+     * and the wrong data, which is worse than no range support at all.
+     *
+     * `MAX_RANGE_BYTES` is what keeps materialising affordable: a browser
+     * asking `bytes=0-` for a 1 GB upload is asking for the whole file, and
+     * answering it in one allocation on the laptop that is also driving the
+     * farm is not something this route may do. Serving FEWER bytes than were
+     * asked for is explicitly allowed — the response says exactly which bytes
+     * it carries, and the player comes back for the next chunk.
+     *
+     * Only the single-range form (`bytes=start-end`) is answered. A
+     * multi-range request would need a multipart/byteranges body, nothing
+     * here asks for one, and the correct response to a range we will not
+     * serve is the whole file (200) — never a wrong slice.
+     */
+    const range = c.req.header('range')
+    const match = range === undefined ? null : /^bytes=(\d*)-(\d*)$/.exec(range.trim())
+    if (match && size > 0) {
+      const [, rawStart = '', rawEnd = ''] = match
+      let start: number
+      let end: number
+      if (rawStart === '') {
+        // `bytes=-500` — the LAST 500 bytes, not the first. An mp4 whose
+        // `moov` atom sits at the end is exactly what asks for this, and
+        // reading it as `0-500` hands a player the wrong end of the file.
+        if (rawEnd === '') return new Response(file, { headers })
+        const suffix = Number.parseInt(rawEnd, 10)
+        start = Math.max(0, size - suffix)
+        end = size - 1
+      } else {
+        start = Number.parseInt(rawStart, 10)
+        end = rawEnd === '' ? size - 1 : Math.min(Number.parseInt(rawEnd, 10), size - 1)
+      }
+      // Unsatisfiable: 416 with the real size, which is how a player learns
+      // what it may ask for instead of retrying the same bad range.
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start >= size || end < start) {
+        return new Response(null, { status: 416, headers: { ...headers, 'content-range': `bytes */${size}` } })
+      }
+      // Capped AFTER the range is validated, so the cap narrows what is sent
+      // and never turns an unsatisfiable range into a satisfiable one.
+      end = Math.min(end, start + MAX_RANGE_BYTES - 1)
+      const body = await file.slice(start, end + 1).bytes()
+      return new Response(body, {
+        status: 206,
+        headers: { ...headers, 'content-range': `bytes ${start}-${end}/${size}`, 'content-length': String(body.length) },
+      })
+    }
+
+    return new Response(file, { headers })
   })
 
   const ERROR_STATUS: Record<string, number> = {

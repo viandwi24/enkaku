@@ -2,18 +2,25 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { artifactFamilyOf, type ArtifactBulkDeleteResponse, type ArtifactReference } from '@enkaku/protocol'
+import type { ArtifactBulkDeleteResponse, ArtifactReference } from '@enkaku/protocol'
 import {
+  CaretUpDownIcon,
   Button,
   CheckCircleIcon,
   Checkbox,
   CircleNotchIcon,
-  ConfirmDialog,
-  FileIcon,
-  FilmSlateIcon,
-  FloppyDiskIcon,
-  ImageIcon,
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
   Input,
+  ListDashesIcon,
+  RowsIcon,
+  SquaresFourIcon,
   Tabs,
   TabsList,
   TabsTrigger,
@@ -22,25 +29,39 @@ import {
   XCircleIcon,
   XIcon,
   fileSize,
-  relativeTime,
   useAction,
 } from '@enkaku/ui'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { newId } from '@/lib/ws'
+import { readLocalPrefs, writeLocalPrefs } from '@/lib/prefs'
 import { BulkDeleteDialog, type BulkDeleteTarget } from '@/components/files/BulkDeleteDialog'
+import { FilePreviewDialog } from '@/components/files/FilePreviewDialog'
+import { FilesGrid, FilesList, FilesTable, TILE_WIDTHS, type FileActions, type TileSize } from '@/components/files/FileViews'
+import { FilesPager } from '@/components/files/FilesPager'
 import {
   deleteUpload,
-  describeReference,
-  formatDuration,
   listUploadReferences,
   listUploads,
   renameUpload,
   setUploadPinned,
-  uploadContentUrl,
   uploadFile,
   type FileFilter,
   type FileItem,
 } from '@/components/files/files-api'
+import {
+  PAGE_SIZES,
+  SORT_DIRECTION_LABELS,
+  SORT_LABELS,
+  compareFiles,
+  defaultDirectionFor,
+  filterFiles,
+  pageCount,
+  pageSlice,
+  type FilesSort,
+  type FilesView,
+  type PageSize,
+  type SortDir,
+} from '@/components/files/files-view'
 
 /**
  * One row of the upload queue (plan 800+ owner request — a farm loading
@@ -110,7 +131,9 @@ async function filesFromDataTransfer(dataTransfer: DataTransfer): Promise<File[]
 }
 
 /**
- * `/files` — the media library (plan 800 wave 5).
+ * `/files` — the media library (plan 800 wave 5), rebuilt as a file manager
+ * (owner, 2026-09-20: pagination, a real player, and "mode show, order, dll
+ * biar kaya file manager/finder beneran").
  *
  * Shows only files an OPERATOR uploaded (`?kind=upload`). A run's screenshots
  * and a device's logs are artifacts too, and they belong on the job that
@@ -120,9 +143,22 @@ async function filesFromDataTransfer(dataTransfer: DataTransfer): Promise<File[]
  * **No thumbnail is fetched or stored** (plan 800 wave 4). There is no ffmpeg
  * in this repo, and there does not need to be: the browser already has a
  * decoder, so an image is an `<img>` and a video is a `<video>` seeked to its
- * first tenth of a second. Storing a poster frame server-side would add a
- * dependency, a file to write, and a file for retention to sweep, to duplicate
- * what the tile below does for free.
+ * first tenth of a second (`FileThumb`).
+ *
+ * ## The pipeline, in one place
+ *
+ * Every file the screen holds goes through the same four steps in this order,
+ * and each one is a pure function in `files-view.ts`: FILTER (the family tab
+ * and the search box) → SORT (the operator's column and direction) → PAGE
+ * (`pageSlice`) → RENDER (one of three lenses). They are separate on purpose:
+ *
+ * - The sort is over the FILTERED list, not the page, so "largest first"
+ *   means largest in the library rather than largest among the forty-eight
+ *   that happen to be on screen.
+ * - The preview's ← / → walk the filtered list too, straight across a page
+ *   boundary — a page is a way to render a long list, not a fact about a file.
+ * - Selection and the bulk delete keep working on ids from every page, which
+ *   is why `selected` is a Set of ids and never an index.
  */
 
 const FILTERS: { value: FileFilter; label: string }[] = [
@@ -131,6 +167,14 @@ const FILTERS: { value: FileFilter; label: string }[] = [
   { value: 'video', label: 'Videos' },
   { value: 'other', label: 'Other' },
 ]
+
+const VIEWS: { value: FilesView; label: string; icon: typeof SquaresFourIcon }[] = [
+  { value: 'grid', label: 'Tiles', icon: SquaresFourIcon },
+  { value: 'list', label: 'List', icon: RowsIcon },
+  { value: 'details', label: 'Details', icon: ListDashesIcon },
+]
+
+const SORTS: FilesSort[] = ['name', 'added', 'size', 'duration', 'kind']
 
 export default function FilesPage() {
   const [items, setItems] = useState<FileItem[] | null>(null)
@@ -143,6 +187,8 @@ export default function FilesPage() {
   /** Who still uses each upload (a queued job, plugin data…). Empty when the caller may not manage files. */
   const [references, setReferences] = useState<Record<string, ArtifactReference[]>>({})
   const [bulkTarget, setBulkTarget] = useState<BulkDeleteTarget | null>(null)
+  /** The file the preview lightbox is showing, or null when it is closed. */
+  const [previewId, setPreviewId] = useState<string | null>(null)
   /**
    * The upload queue (null = no batch has run yet; `[]` never happens once a
    * batch starts, since it always seeds with the picked/dropped files). Kept
@@ -154,7 +200,36 @@ export default function FilesPage() {
   const [batchRunning, setBatchRunning] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const { run, pending } = useAction()
+
+  /*
+   * The view choices, read from `localStorage` ONCE on mount and never during
+   * render.
+   *
+   * Studio is a static export: every page is prerendered in Node, where
+   * `localStorage` does not exist. Seeding `useState` from it directly would
+   * throw at build time; seeding it from the schema default and then adopting
+   * the stored value in an effect is the shape that survives both, and it also
+   * keeps the first client render identical to the prerendered HTML instead of
+   * hydrating into a mismatch.
+   */
+  const [view, setView] = useState<FilesView>('grid')
+  const [tileSize, setTileSize] = useState<TileSize>('m')
+  const [sort, setSort] = useState<FilesSort>('added')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
+  const [pageSize, setPageSize] = useState<PageSize>(48)
+  const [page, setPage] = useState(1)
+
+  useEffect(() => {
+    const prefs = readLocalPrefs()
+    setView(prefs.filesView)
+    setTileSize(prefs.filesTileSize)
+    setSort(prefs.filesSort)
+    setSortDir(prefs.filesSortDir)
+    setPageSize(prefs.filesPageSize)
+  }, [])
+
   /*
    * Deliberately NOT a screen-wide "anything in flight" flag.
    *
@@ -185,6 +260,9 @@ export default function FilesPage() {
       setError(null)
       const present = new Set(next.map((i) => i.id))
       setSelected((prev) => new Set([...prev].filter((id) => present.has(id))))
+      // A file deleted from under an open preview closes it rather than
+      // leaving the dialog showing bytes the farm no longer has.
+      setPreviewId((prev) => (prev !== null && present.has(prev) ? prev : null))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
@@ -199,14 +277,36 @@ export default function FilesPage() {
     void reload()
   }, [])
 
+  /** FILTER then SORT — over the whole library, never over a page. See the module note. */
   const shown = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return (items ?? []).filter((item) => {
-      if (filter !== 'all' && artifactFamilyOf(item) !== filter) return false
-      if (q.length === 0) return true
-      return (item.label ?? item.id).toLowerCase().includes(q)
-    })
-  }, [items, filter, query])
+    const matched = filterFiles(items ?? [], filter, query)
+    return matched.sort(compareFiles(sort, sortDir))
+  }, [items, filter, query, sort, sortDir])
+
+  const pages = pageCount(shown.length, pageSize)
+  /*
+   * The page number is CLAMPED on read rather than corrected in an effect.
+   *
+   * Narrowing the search from page 7 down to two pages of results, or deleting
+   * the last file on the last page, both leave `page` past the end — and an
+   * effect that fixed it would render one empty frame first. Reading it
+   * clamped means the screen is never on a page that does not exist; the state
+   * catches up on the next click.
+   */
+  const currentPage = Math.min(Math.max(1, page), pages)
+  const pageItems = useMemo(() => pageSlice(shown, currentPage, pageSize), [shown, currentPage, pageSize])
+
+  // Anything that changes WHICH files are listed sends the pager back to the
+  // first page: staying on page 5 of a fresh search is how an operator ends up
+  // looking at an empty screen and concluding the search found nothing.
+  useEffect(() => {
+    setPage(1)
+  }, [filter, query, sort, sortDir, pageSize])
+
+  const shownSelected = pageItems.filter((item) => selected.has(item.id))
+  const allShownSelected = pageItems.length > 0 && shownSelected.length === pageItems.length
+  const selectedItems = (items ?? []).filter((item) => selected.has(item.id))
+  const selectedBytes = selectedItems.reduce((sum, item) => sum + (item.sizeBytes ?? 0), 0)
 
   /**
    * One file or forty — same path. Uploads run ONE AT A TIME (`for` loop, not
@@ -217,13 +317,13 @@ export default function FilesPage() {
    */
   const startBatch = (files: File[]) => {
     if (batchRunning || files.length === 0) return
-    const items: QueueItem[] = files.map((file) => ({ id: newId(), file, status: 'pending', pct: 0, error: null }))
-    setQueue(items)
+    const queued: QueueItem[] = files.map((file) => ({ id: newId(), file, status: 'pending', pct: 0, error: null }))
+    setQueue(queued)
     setBatchRunning(true)
     void (async () => {
       let ok = 0
       let failed = 0
-      for (const item of items) {
+      for (const item of queued) {
         setQueue((q) => (q ?? []).map((i) => (i.id === item.id ? { ...i, status: 'uploading' } : i)))
         try {
           await uploadFile(item.file, (pct) => setQueue((q) => (q ?? []).map((i) => (i.id === item.id ? { ...i, pct } : i))))
@@ -237,30 +337,26 @@ export default function FilesPage() {
       }
       setBatchRunning(false)
       void reload()
-      if (failed === 0) toast.success(items.length === 1 ? `${items[0]?.file.name} uploaded` : `${ok} uploaded`)
-      else if (ok === 0) toast.error(items.length === 1 ? `Could not upload ${items[0]?.file.name}` : `${failed} failed to upload`)
+      if (failed === 0) toast.success(queued.length === 1 ? `${queued[0]?.file.name} uploaded` : `${ok} uploaded`)
+      else if (ok === 0) toast.error(queued.length === 1 ? `Could not upload ${queued[0]?.file.name}` : `${failed} failed to upload`)
       else toast.warning(`${ok} uploaded, ${failed} failed`)
     })()
   }
 
-  const shownSelected = shown.filter((item) => selected.has(item.id))
-  const allShownSelected = shown.length > 0 && shownSelected.length === shown.length
-  const selectedItems = (items ?? []).filter((item) => selected.has(item.id))
-  const selectedBytes = selectedItems.reduce((sum, item) => sum + (item.sizeBytes ?? 0), 0)
-
-  const toggleSelected = (id: string) =>
+  const toggleSelected = (item: FileItem) =>
     setSelected((prev) => {
       const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
+      if (next.has(item.id)) next.delete(item.id)
+      else next.add(item.id)
       return next
     })
 
+  /** Select-all is per PAGE, which is what the checkbox sits above. The "select every match" escape hatch is the button beside it. */
   const toggleAllShown = () =>
     setSelected((prev) => {
       const next = new Set(prev)
-      if (allShownSelected) for (const item of shown) next.delete(item.id)
-      else for (const item of shown) next.add(item.id)
+      if (allShownSelected) for (const item of pageItems) next.delete(item.id)
+      else for (const item of pageItems) next.add(item.id)
       return next
     })
 
@@ -301,6 +397,41 @@ export default function FilesPage() {
       failure: 'Could not delete the file',
       onSuccess: () => void reload(),
     })
+
+  /** Picking a column sorts by it; picking the SAME column again reverses it — the one gesture every file manager shares. */
+  const applySort = (next: FilesSort) => {
+    const dir = next === sort ? (sortDir === 'asc' ? 'desc' : 'asc') : defaultDirectionFor(next)
+    setSort(next)
+    setSortDir(dir)
+    writeLocalPrefs({ filesSort: next, filesSortDir: dir })
+  }
+
+  const applyView = (next: FilesView) => {
+    setView(next)
+    writeLocalPrefs({ filesView: next })
+  }
+
+  const goToPage = (next: number) => {
+    setPage(Math.min(Math.max(1, next), pages))
+    // The list starts at the top of a new page. Without this, paging from the
+    // bottom of page 2 lands halfway down page 3 with no visible change.
+    scrollRef.current?.scrollTo({ top: 0 })
+  }
+
+  const actions: FileActions = {
+    selected: (item) => selected.has(item.id),
+    onToggleSelect: toggleSelected,
+    onOpen: (item) => setPreviewId(item.id),
+    references: (item) => references[item.id] ?? [],
+    renaming: (item) => (renaming?.id === item.id ? renaming.value : null),
+    onStartRename: (item) => setRenaming({ id: item.id, value: item.label ?? '' }),
+    onRenameChange: (value) => setRenaming((prev) => (prev === null ? prev : { ...prev, value })),
+    onRenameCommit: commitRename,
+    onRenameCancel: () => setRenaming(null),
+    onTogglePin: (item) => void togglePin(item),
+    onDelete: (item) => void remove(item),
+    busy: (item) => pending === `pin-${item.id}` || pending === `del-${item.id}` || pending === `rename-${item.id}`,
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -344,6 +475,7 @@ export default function FilesPage() {
       )}
 
       <div
+        ref={scrollRef}
         className={`relative min-h-0 flex-1 overflow-y-auto ${dragOver ? 'outline outline-2 -outline-offset-2 outline-accent' : ''}`}
         onDragOver={(e) => {
           // Only files (not e.g. a dragged text selection) count as a drop target.
@@ -367,7 +499,7 @@ export default function FilesPage() {
           </div>
         )}
         <div className="space-y-4 px-5 py-4">
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             <Tabs value={filter} onValueChange={(v) => setFilter(v as FileFilter)}>
               <TabsList>
                 {FILTERS.map((f) => (
@@ -377,31 +509,146 @@ export default function FilesPage() {
                 ))}
               </TabsList>
             </Tabs>
+
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search by name"
-              className="h-8 max-w-64"
+              className="h-8 max-w-56"
               aria-label="Search files"
             />
+
+            {/* Sort. The menu is the only sort control in the tiles and list
+                lenses; the details table's headers do the same thing through
+                the same `applySort`, so the two can never disagree. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="outline" title="Sort files">
+                  <CaretUpDownIcon className="size-3.5" aria-hidden />
+                  {SORT_LABELS[sort]}
+                  <span className="text-faint">· {SORT_DIRECTION_LABELS[sort][sortDir]}</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-52">
+                <DropdownMenuLabel>Sort by</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={sort} onValueChange={(v) => applySort(v as FilesSort)}>
+                  {SORTS.map((key) => (
+                    <DropdownMenuRadioItem key={key} value={key}>
+                      {SORT_LABELS[key]}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>Order</DropdownMenuLabel>
+                <DropdownMenuRadioGroup
+                  value={sortDir}
+                  onValueChange={(v) => {
+                    const dir = v as SortDir
+                    setSortDir(dir)
+                    writeLocalPrefs({ filesSortDir: dir })
+                  }}
+                >
+                  {(['asc', 'desc'] as const).map((dir) => (
+                    <DropdownMenuRadioItem key={dir} value={dir}>
+                      {SORT_DIRECTION_LABELS[sort][dir]}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* View: the lens, the tile size and the page size. One menu
+                because all three answer "how do I want to look at this", and
+                three separate controls in the toolbar would crowd out the
+                search box at 1280 px. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="outline" title="Change the view">
+                  {(() => {
+                    const Icon = (VIEWS.find((v) => v.value === view) ?? VIEWS[0]).icon
+                    return <Icon className="size-3.5" aria-hidden />
+                  })()}
+                  View
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-48">
+                <DropdownMenuLabel>Show as</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={view} onValueChange={(v) => applyView(v as FilesView)}>
+                  {VIEWS.map((v) => (
+                    <DropdownMenuRadioItem key={v.value} value={v.value}>
+                      {v.label}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+                {view === 'grid' && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel>Tile size</DropdownMenuLabel>
+                    <DropdownMenuRadioGroup
+                      value={tileSize}
+                      onValueChange={(v) => {
+                        const next = v as TileSize
+                        setTileSize(next)
+                        writeLocalPrefs({ filesTileSize: next })
+                      }}
+                    >
+                      {(Object.keys(TILE_WIDTHS) as TileSize[]).map((size) => (
+                        <DropdownMenuRadioItem key={size} value={size}>
+                          {{ s: 'Small', m: 'Medium', l: 'Large' }[size]}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>Files per page</DropdownMenuLabel>
+                <DropdownMenuRadioGroup
+                  value={String(pageSize)}
+                  onValueChange={(v) => {
+                    const next = Number(v) as PageSize
+                    setPageSize(next)
+                    writeLocalPrefs({ filesPageSize: next })
+                  }}
+                >
+                  {PAGE_SIZES.map((size) => (
+                    <DropdownMenuRadioItem key={size} value={String(size)}>
+                      {size}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
             <span className="text-[12px] text-faint">
               {items === null ? '' : `${shown.length} of ${items.length}`}
             </span>
-            {shown.length > 0 && (
+
+            {/* The details table carries its own select-all in the header row,
+                the way a table does; the other two lenses need it out here. */}
+            {pageItems.length > 0 && view !== 'details' && (
               <label className="flex items-center gap-1.5 text-[12px] text-dim">
                 <Checkbox
                   checked={allShownSelected ? true : shownSelected.length > 0 ? 'indeterminate' : false}
                   onCheckedChange={toggleAllShown}
-                  aria-label="Select every file shown"
+                  aria-label="Select every file on this page"
                 />
-                Select all shown
+                Select page
               </label>
             )}
+
             {selected.size > 0 && (
               <div className="ml-auto flex items-center gap-2">
                 <span className="text-[12px] text-dim">
                   {selected.size} selected · {fileSize(selectedBytes)}
                 </span>
+                {/* Selection spans pages, so "select every match" has to be
+                    its own action — ticking the page checkbox on each of nine
+                    pages is not a workflow. */}
+                {shown.length > pageItems.length && selected.size < shown.length && (
+                  <Button size="sm" variant="ghost" onClick={() => setSelected(new Set(shown.map((i) => i.id)))}>
+                    Select all {shown.length}
+                  </Button>
+                )}
                 <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
                   Clear
                 </Button>
@@ -422,28 +669,48 @@ export default function FilesPage() {
               {items.length === 0 ? 'Nothing uploaded yet. Upload a video or an image to get started.' : 'No file matches this filter.'}
             </p>
           ) : (
-            <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-              {shown.map((item) => (
-                <FileTile
-                  key={item.id}
-                  item={item}
-                  selected={selected.has(item.id)}
-                  onToggleSelect={() => toggleSelected(item.id)}
-                  references={references[item.id] ?? []}
-                  renaming={renaming?.id === item.id ? renaming.value : null}
-                  onStartRename={() => setRenaming({ id: item.id, value: item.label ?? '' })}
-                  onRenameChange={(value) => setRenaming({ id: item.id, value })}
-                  onRenameCommit={commitRename}
-                  onRenameCancel={() => setRenaming(null)}
-                  onTogglePin={() => void togglePin(item)}
-                  onDelete={() => void remove(item)}
-                  disabled={pending === `pin-${item.id}` || pending === `del-${item.id}` || pending === `rename-${item.id}`}
+            <>
+              {view === 'grid' ? (
+                <FilesGrid items={pageItems} actions={actions} tileSize={tileSize} />
+              ) : view === 'list' ? (
+                <FilesList items={pageItems} actions={actions} />
+              ) : (
+                <FilesTable
+                  items={pageItems}
+                  actions={actions}
+                  sort={sort}
+                  sortDir={sortDir}
+                  onSort={applySort}
+                  allShownSelected={allShownSelected}
+                  someShownSelected={shownSelected.length > 0}
+                  onToggleAllShown={toggleAllShown}
                 />
-              ))}
-            </ul>
+              )}
+              <FilesPager
+                page={currentPage}
+                pages={pages}
+                total={shown.length}
+                shownFrom={(currentPage - 1) * pageSize + 1}
+                shownTo={(currentPage - 1) * pageSize + pageItems.length}
+                onPage={goToPage}
+              />
+            </>
           )}
         </div>
       </div>
+
+      <FilePreviewDialog
+        items={shown}
+        openId={previewId}
+        onOpenChange={(open) => {
+          if (!open) setPreviewId(null)
+        }}
+        onNavigate={setPreviewId}
+        references={references}
+        onTogglePin={(item) => void togglePin(item)}
+        onDelete={(item) => void remove(item)}
+        busy={previewId !== null && (pending === `pin-${previewId}` || pending === `del-${previewId}`)}
+      />
 
       <BulkDeleteDialog target={bulkTarget} onClose={() => setBulkTarget(null)} onDone={onBulkDone} />
     </div>
@@ -504,182 +771,5 @@ function UploadQueuePanel({ queue, onDismiss, disabled }: { queue: QueueItem[]; 
         ))}
       </ul>
     </div>
-  )
-}
-
-/** One card. The preview is whatever the browser can decode; everything else is what the probe read at upload. */
-function FileTile({
-  item,
-  selected,
-  onToggleSelect,
-  references,
-  renaming,
-  onStartRename,
-  onRenameChange,
-  onRenameCommit,
-  onRenameCancel,
-  onTogglePin,
-  onDelete,
-  disabled,
-}: {
-  item: FileItem
-  selected: boolean
-  onToggleSelect: () => void
-  references: ArtifactReference[]
-  renaming: string | null
-  onStartRename: () => void
-  onRenameChange: (value: string) => void
-  onRenameCommit: () => void
-  onRenameCancel: () => void
-  onTogglePin: () => void
-  onDelete: () => void
-  disabled: boolean
-}) {
-  const family = artifactFamilyOf(item)
-  const blocking = references.filter((r) => r.blocking)
-  const usedBy = references.length === 0 ? null : `${describeReference(references[0] as ArtifactReference)}${references.length > 1 ? ` +${references.length - 1} more` : ''}`
-  const duration = formatDuration(item.durationMs)
-  const name = item.label ?? item.id
-  const url = uploadContentUrl(item.id)
-
-  return (
-    <li className={`flex flex-col overflow-hidden rounded-lg border bg-panel ${selected ? 'outline outline-2 -outline-offset-1 outline-accent' : ''}`}>
-      <div className="relative flex aspect-video items-center justify-center bg-panel-2">
-        {family === 'image' ? (
-          <img src={url} alt="" loading="lazy" className="size-full object-contain" />
-        ) : family === 'video' ? (
-          /*
-           * `#t=0.1` asks the browser to seek a tenth of a second in, which is
-           * what makes it paint a frame — `preload="metadata"` alone leaves
-           * many browsers showing a blank element. No canvas, no stored poster.
-           */
-          /*
-           * `controls` matters more than it looks. This library exists so an
-           * operator can pick the RIGHT clip to post, and a poster frame alone
-           * cannot tell two similar videos apart — they often share a first
-           * frame. Being able to scrub is the difference between recognising a
-           * video and guessing at it.
-           */
-          <video src={`${url}#t=0.1`} preload="metadata" controls muted playsInline className="size-full object-contain" />
-        ) : (
-          <FileIcon className="size-8 text-faint" aria-hidden />
-        )}
-
-        <span className="absolute left-1.5 top-1.5 rounded bg-panel/90 p-1 text-faint">
-          {family === 'image' ? (
-            <ImageIcon className="size-3.5" aria-hidden />
-          ) : family === 'video' ? (
-            <FilmSlateIcon className="size-3.5" aria-hidden />
-          ) : (
-            <FileIcon className="size-3.5" aria-hidden />
-          )}
-        </span>
-
-        {duration !== null && (
-          <span className="absolute bottom-1.5 right-1.5 rounded bg-panel/90 px-1.5 py-0.5 text-[11px] tabular-nums text-dim">{duration}</span>
-        )}
-        {item.pinned && (
-          <span className="absolute right-1.5 top-1.5 rounded bg-panel/90 p-1 text-accent" title="Pinned — retention will never delete this">
-            <FloppyDiskIcon className="size-3.5" aria-hidden />
-          </span>
-        )}
-      </div>
-
-      <div className="flex min-w-0 flex-col gap-1 p-2.5">
-        {renaming !== null ? (
-          <Input
-            autoFocus
-            value={renaming}
-            onChange={(e) => onRenameChange(e.target.value)}
-            onBlur={onRenameCommit}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') onRenameCommit()
-              if (e.key === 'Escape') onRenameCancel()
-            }}
-            className="h-7 text-[12.5px]"
-            aria-label={`Rename ${name}`}
-          />
-        ) : (
-          <button
-            type="button"
-            onClick={onStartRename}
-            disabled={disabled}
-            title={`${name} — click to rename`}
-            className="truncate text-left text-[12.5px] hover:underline disabled:opacity-50"
-          >
-            {name}
-          </button>
-        )}
-
-        <p className="truncate text-[11.5px] text-faint">
-          {[
-            item.sizeBytes !== null ? fileSize(item.sizeBytes) : null,
-            item.width !== null && item.height !== null ? `${item.width}×${item.height}` : null,
-            relativeTime(item.createdAt),
-          ]
-            .filter((part): part is string => part !== null)
-            .join(' · ')}
-        </p>
-
-        {usedBy !== null && (
-          <p
-            className={`truncate text-[11.5px] ${blocking.length > 0 ? 'text-danger' : 'text-warn'}`}
-            title={references.map(describeReference).join('\n')}
-          >
-            Used by {usedBy}
-          </p>
-        )}
-
-        <div className="mt-0.5 flex items-center justify-end gap-0.5">
-          <label className="mr-auto flex items-center gap-1.5 text-[11.5px] text-faint">
-            <Checkbox checked={selected} onCheckedChange={onToggleSelect} aria-label={`Select ${name}`} />
-            Select
-          </label>
-          <button
-            type="button"
-            onClick={onTogglePin}
-            disabled={disabled}
-            aria-label={item.pinned ? `Unpin ${name}` : `Pin ${name}`}
-            title={item.pinned ? 'Unpin — retention can delete this again' : 'Pin — retention will never delete this'}
-            className={`rounded p-1 hover:bg-panel-2 disabled:opacity-50 ${item.pinned ? 'text-accent' : 'text-faint'}`}
-          >
-            <FloppyDiskIcon className="size-3.5" aria-hidden />
-          </button>
-          <ConfirmDialog
-            trigger={
-              <button
-                type="button"
-                // A pinned file cannot be deleted: the server refuses it, and
-                // the pin means "never delete this automatically" — so the
-                // button says so here rather than letting the click fail.
-                disabled={disabled || item.pinned || blocking.length > 0}
-                aria-label={`Delete ${name}`}
-                title={item.pinned ? 'Unpin it first' : blocking.length > 0 ? 'A queued or running job still uses this file' : 'Delete'}
-                className="rounded p-1 text-faint hover:bg-panel-2 hover:text-danger disabled:opacity-50"
-              >
-                <TrashIcon className="size-3.5" aria-hidden />
-              </button>
-            }
-            title={`Delete ${name}?`}
-            description={
-              references.length === 0 ? (
-                'The file is removed from the farm and its bytes deleted. The farm found nothing that still uses it, but it cannot see a file a plugin keeps outside its stored data.'
-              ) : (
-                <div className="space-y-2">
-                  <p className="text-danger">This file is still referenced. Deleting it makes whatever uses it fail — a post, a retry, a scheduled run.</p>
-                  <ul className="list-disc pl-5">
-                    {references.map((ref, i) => (
-                      <li key={i}>{describeReference(ref)}</li>
-                    ))}
-                  </ul>
-                </div>
-              )
-            }
-            confirmLabel={references.length > 0 ? 'Delete anyway' : 'Delete'}
-            onConfirm={onDelete}
-          />
-        </div>
-      </div>
-    </li>
   )
 }

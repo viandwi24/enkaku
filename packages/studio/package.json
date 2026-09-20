@@ -23,6 +23,7 @@
     "@xyflow/react": "^12.11.3",
     "ai": "^7.0.7",
     "lucide-react": "^1.28.0",
+    "media-chrome": "^4.19.2",
     "motion": "^12.42.1",
     "nanoid": "^5.1.16",
     "next": "^15.1.0",

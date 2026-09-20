@@ -100,6 +100,45 @@ const LocalPrefsSchema = z.object({
    * every other key in here — never a farm setting.
    */
   deviceControlHeight: z.number().int().min(320).max(1600).default(640),
+  /**
+   * The Files screen's lens: tiles, a compact list, or the sortable details
+   * table (owner, 2026-09-20 — "kaya file manager/finder beneran"). A file
+   * manager that forgets which way you look at it is not one, and this is a
+   * property of the screen someone is sitting in front of exactly like
+   * `cardWidth` above — never a farm setting, never `sessionStorage`: unlike
+   * the Devices Table/Screens toggle there is no landing view a new tab must
+   * unconditionally start in.
+   */
+  filesView: z.enum(['grid', 'list', 'details']).default('grid'),
+  /**
+   * What the library is ordered by, and which way. Two keys rather than one
+   * `name-asc` string so the details table's column headers can flip the
+   * direction without having to re-parse the key they are flipping.
+   *
+   * `added` descending is the default because it is what the screen already
+   * did before it could be changed, and it is what an operator who has just
+   * uploaded forty clips is looking for.
+   */
+  filesSort: z.enum(['name', 'added', 'size', 'duration', 'kind']).default('added'),
+  filesSortDir: z.enum(['asc', 'desc']).default('desc'),
+  /**
+   * How many files one page holds. A choice and not a constant because the
+   * right number depends on the lens: 48 tiles fill a 1600 px grid, and 48
+   * rows of the details table is a third of that screen.
+   *
+   * It is a CLIENT-side page over the whole library (`listUploads` walks the
+   * core's keyset to the end), not a window onto the core's own pages — the
+   * core can only key a page on `createdAt`, so a page numbered by name or by
+   * size could not be asked of it. See `listUploads` for why that walk is
+   * bounded and what it costs.
+   */
+  filesPageSize: z.union([z.literal(24), z.literal(48), z.literal(96), z.literal(192)]).default(48),
+  /**
+   * How big a tile is in the Files grid. The same idea as `cardWidth` on the
+   * Devices wall and for the same reason — how much of one file you want to
+   * see at once is a property of the screen and the job, not of the farm.
+   */
+  filesTileSize: z.enum(['s', 'm', 'l']).default('m'),
 })
 export type LocalPrefs = z.infer<typeof LocalPrefsSchema>
 

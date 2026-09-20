@@ -274,3 +274,80 @@
 [data-testid='flow-canvas'] .react-flow__node:focus-visible {
   outline: none;
 }
+
+/*
+ * ---- media-chrome: the Files screen's video player ----
+ *
+ * `media-chrome` ships its controls as custom elements with NO opinion about
+ * colour — every knob below is one of its documented `--media-*` custom
+ * properties, set once here (owner, 2026-09-20: a real player on the Files
+ * screen). Unlayered, like the react-flow rules above and for the same
+ * reason: these style a third party's shadow DOM, they are not vocabulary
+ * Studio's own components or a plugin's utilities can name, and a `@layer`
+ * would only lower them beneath rules that were never going to touch them.
+ *
+ * The chrome is DARK in both themes, deliberately. A player's controls sit on
+ * top of the picture, not on the page, and every player an operator already
+ * knows — QuickTime, Quick Look, YouTube, the phone's own gallery — is dark
+ * over the frame for the one reason that matters: light chrome over a light
+ * frame disappears, and a scrubber you cannot find is not a scrubber. The one
+ * thing that follows the palette is the played portion of the bar, which is
+ * the farm's accent, so the player still reads as part of this product.
+ */
+.enkaku-player {
+  --media-font-family: var(--font-ui);
+  --media-font-size: 12px;
+  --media-primary-color: #f4f4f5;
+  --media-secondary-color: transparent;
+  --media-icon-color: #f4f4f5;
+  --media-control-background: transparent;
+  --media-control-hover-background: #ffffff26;
+  --media-control-padding: 8px;
+  --media-control-height: 20px;
+  --media-focus-box-shadow: 0 0 0 2px var(--accent);
+
+  /* The bar: the accent for what has played, a bright neutral for what the
+     browser has buffered ahead, and a dim one for the rest. Three shades,
+     because "how much is loaded" is the question a scrubber over a 600 MB
+     upload is actually asked. */
+  --media-range-bar-color: var(--accent);
+  --media-time-range-buffered-color: #ffffff59;
+  --media-range-track-background: #ffffff2e;
+  --media-range-track-height: 4px;
+  --media-range-track-border-radius: 999px;
+  --media-range-thumb-background: #ffffff;
+  --media-range-thumb-width: 12px;
+  --media-range-thumb-height: 12px;
+  --media-range-thumb-border-radius: 999px;
+  --media-range-thumb-box-shadow: 0 1px 3px #00000066;
+  /* The bar grows under the pointer — the usual affordance, and the reason a
+     4 px track is enough to look at and still easy to grab. */
+  --media-time-range-hover-height: 10px;
+
+  --media-tooltip-background: #101014e6;
+  --media-tooltip-color: #f4f4f5;
+  --media-tooltip-border: 1px solid #ffffff1f;
+  --media-tooltip-border-radius: 6px;
+  --media-tooltip-arrow-color: #101014e6;
+
+  --media-preview-time-background: #101014e6;
+  --media-preview-time-border-radius: 6px;
+  --media-preview-time-padding: 2px 6px;
+
+  --media-loading-indicator-icon-width: 56px;
+  --media-loading-indicator-icon-height: 56px;
+
+  /* The picture is letterboxed, never cropped: an operator opens this to tell
+     two similar clips apart, and `cover` would hide the edge that differs. */
+  --media-object-fit: contain;
+
+  background-color: #000;
+}
+
+/* The control bar's own backing — a gradient rather than a bar, so the frame
+   stays visible behind it and the controls still have something to sit on
+   when the bottom of the video is white. */
+.enkaku-player media-control-bar {
+  background: linear-gradient(to top, #000000d9, #00000000);
+  padding: 22px 6px 6px;
+}
