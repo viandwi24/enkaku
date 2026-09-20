@@ -174,7 +174,7 @@ const result = z.object({
 const script: PluginMemberScript<typeof params, typeof result> = {
   id: 'add-warmup',
   title: 'New warm-up session',
-  description: 'Plans a warm-up across the fleet: each phone gets one platform it carries, one activity style, and its own jittered schedule.',
+  description: 'Makes a warm-up session and starts its first run: every phone you choose takes each platform in turn, with its own style, its own shuffled activities and its own jittered schedule.',
   icon: 'activity',
   params,
   result,

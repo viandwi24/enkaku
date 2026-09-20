@@ -206,7 +206,7 @@ export function WarmupPanel({ refreshKey, onOpen, onNew }: { refreshKey: number;
     return (
       <EmptyState
         title="No warm-up sessions yet"
-        description="A warm-up gives each phone one platform it carries and a few activities on it, spread out so the fleet does not move in lockstep."
+        description="A warm-up takes every phone you choose through each platform in turn, a few activities on each, spread out so the fleet never moves in lockstep. Start it again whenever you like — every run keeps its own history."
         action={
           <Button size="sm" onClick={onNew}>
             <PlusIcon aria-hidden />
@@ -373,7 +373,7 @@ export function NewWarmupForm({ onCreated }: { onCreated: (groupId: string | nul
 
   /*
     Counted from the SAME rule the planner uses — a phone is only sent to a
-    platform it carries a label for. Shown before Create because "eighty phones"
+    platform this session covers. Shown before Create because "eighty phones"
     and "eighty phones that can actually do this" are different numbers, and the
     operator should meet the difference here rather than in a session where a
     third of the rows say "no label".
