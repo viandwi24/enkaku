@@ -23,6 +23,19 @@ const SETTLE_MIN_ROWS = 5
 /** How long one video is watched when a minimum was asked for — a long-video range, not the Shorts dwell table. */
 const LONG_WATCH_MIN_MS = 35_000
 const LONG_WATCH_MAX_MS = 95_000
+/**
+ * How much of the job's own timeout a run may spend before it stops opening
+ * new videos, and what one more round is assumed to cost.
+ *
+ * A round is a search, a settle, a player wait, possibly a minute of advert,
+ * the watch itself and a relaunch — up to about three and a half minutes at
+ * its worst. Six of those is over twenty minutes inside a member whose
+ * `timeout` is fifteen, and a run killed at the timeout reports a bare failure
+ * that throws away everything it watched. So the run watches the clock itself
+ * and stops while it can still report.
+ */
+const RUN_BUDGET_MS = 11 * 60_000
+const ROUND_COST_MS = 3.5 * 60_000
 
 const paramsSchema = z.object({
   query: z
@@ -109,7 +122,19 @@ const resultSchema = z.object({
 })
 
 /** Toolbar and filter-chip labels that `resultRowsOf` also matches. Not results, in any locale this pack has met. */
-const CHROME_LABELS = /^(more options|more actions|navigate up|clear|voice search|search|filters|shorts|unwatched|watched|videos|recently uploaded)$/i
+const CHROME_LABELS = /^(more options|more actions|navigate up|clear|voice search|search|filters|shorts|unwatched|watched|videos|recently uploaded|view channel|community|subscribe)$/i
+
+/*
+  A video result says how long it is, how many times it was watched, or how
+  long ago it went up. Each pattern is anchored on a DIGIT, and that is not
+  fussiness: an unanchored `views?` matched "View Channel", so a run picked a
+  channel card, tapped it, and opened the channel instead of a player
+  (moto g06 power, 2026-09-20). The words around the number are localised and
+  the number is not.
+*/
+const HAS_DURATION = /\b\d{1,2}:\d{2}\b/
+const HAS_VIEWS = /\d[\d.,]*\s*(?:k|m|b|rb|jt|thousand|million|billion)?\s+views?\b/i
+const HAS_AGE = /\d+\s*\w*\s+ago\b/i
 
 /** Every readable string inside a row, in tree order. */
 function readableOf(row: UiNode): string[] {
@@ -150,7 +175,9 @@ function looksPlayable(row: UiNode): boolean {
   if (readable.length === 0) return false
   if (readable.every((value) => CHROME_LABELS.test(value.trim()))) return false
   if (readable.some((value) => /^sponsored\b/i.test(value.trim()))) return false
-  return readable.some((value) => /\d+:\d{2}/.test(value) || /\bviews?\b/i.test(value) || /\bago\b/i.test(value))
+  /* A subscriber count means a CHANNEL card. Tapping one opens the channel, which is a different script's job. */
+  if (readable.some((value) => /\bsubscribers?\b/i.test(value))) return false
+  return readable.some((value) => HAS_DURATION.test(value) || HAS_VIEWS.test(value) || HAS_AGE.test(value))
 }
 
 /**
@@ -301,7 +328,16 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
         playable = resultRowsOf(page).filter(looksPlayable)
       }
       if (playable.length < resultRowsOf(page).length) steps.push(`${playable.length} of ${resultRowsOf(page).length} rows are videos`)
-      if (playable.length === 0) fail('pick-row', `the results page carried no playable video — see artifact ${tag('results')}`)
+      /*
+        A page of channels and adverts carries no video, and that is an answer
+        about THIS QUERY, not about the run. Recovered rather than failed, so
+        the next round searches for something else — which is what the operator
+        asked for when a video does not work out.
+      */
+      if (playable.length === 0) {
+        steps.push(`no video on the results for "${query}" — trying another search`)
+        return 0
+      }
       const fresh = playable.filter((row) => !seen.has(titleFromRow(row)))
       const pickFrom = fresh.length > 0 ? fresh : playable
       const chosen = (ctx.params.pick === 'top' ? pickFrom[0] : pickFrom[Math.floor(rng() * pickFrom.length)]) as UiNode
@@ -481,6 +517,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
       one, with a fresh query and a row it has not seen. `minWatchMs: 0` (the
       default) is one video, exactly as before.
     */
+    const startedAt = Date.now()
     while (true) {
       try {
         total += await watchOne(maxMs - total)
@@ -512,6 +549,15 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
         steps.push(`stopped after ${round} attempts with ${Math.round(total / 1000)}s watched`)
         break
       }
+      /*
+        Stop while there is still time to REPORT. A run killed at the member's
+        timeout loses everything it watched and reads as a broken script; one
+        that stops short says how far it got and why.
+      */
+      if (Date.now() - startedAt + ROUND_COST_MS > RUN_BUDGET_MS) {
+        steps.push(`stopped with ${Math.round(total / 1000)}s watched — no time for another video inside this job`)
+        break
+      }
       if (total >= maxMs) break
       // Back to a clean home screen for the next search. A force-stop plus
       // relaunch is what `prepare` already does, and it is the one way back
@@ -522,6 +568,14 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     }
 
     await ctx.device.app.forceStop(YOUTUBE_PACKAGE, { clearRecents: true })
+    /*
+      Nothing watched at all is a failure, whatever recovered along the way.
+      There is no outcome to report, and a `success` with `videosWatched: 0`
+      would be the run claiming it did its job.
+    */
+    if (watched.length === 0) {
+      throw new Error(`no video was watched in ${round} attempt(s) (steps: ${steps.join(' → ')})`)
+    }
     return {
       query: first.pick?.query ?? ctx.params.query,
       resultCount: first.pick?.results ?? 0,

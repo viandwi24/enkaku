@@ -224,6 +224,23 @@ captured tree rather than guessed:
    toolbar button and an advertiser's name carry none. Verified offline against
    both captured trees before it went near a phone again.
 
+4. Then the row test itself was too loose in the other direction. A bare
+   `views?` matched **"View Channel"**, so a run picked a channel card and
+   opened the channel. Every pattern is anchored on a DIGIT now — a duration, a
+   view count and an age all carry a number, and the words around it are
+   localised while the number is not. A page of channel results reports zero
+   playable rows, which is the honest answer, and the run searches for
+   something else rather than failing: that is an answer about the QUERY, not
+   about the run.
+5. And the numbers this catalog asked for were wrong in a way reading them
+   would not show. `scaled(base, spread)` is base PLUS a draw over spread, not
+   a range, so `scaled(d, 240_000, 420_000)` meant up to eleven minutes of
+   watching inside a member whose job timeout is fifteen — before the searches,
+   ad waits and relaunches between videos are counted. Caught by asking the
+   catalog what it SENDS rather than by reading the arithmetic, which is now
+   the habit: `bun scripts/check-warmup-params.ts` proves the names, and a
+   three-line script proves the values.
+
 Plus the two guards that came out of it: a round that cannot open a video no
 longer throws away the ones that did (`reachedMinimum` says so), and a phone
 that ends up outside YouTube is brought back rather than failing the run.

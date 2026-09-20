@@ -122,6 +122,15 @@ export default definePlugin({
    *   says which round gave up and why; `reachedMinimum` is the flag for it.
    *   Nothing watched at all is still a failure.
    *
+   *   The row test that came out of that is anchored on a DIGIT, and the
+   *   reason is its own small lesson: a bare `views?` matched **"View
+   *   Channel"**, so a run picked a channel card and opened the channel
+   *   instead of a player. A duration, a view count and an age all carry a
+   *   number; the words around it are localised and the number is not. A page
+   *   of channel results now reports zero playable rows — the honest answer —
+   *   and the run searches for something else rather than failing, because
+   *   that is an answer about the query, not about the run.
+   *
    *   Defaults are unchanged: `minWatchMs: 0` is one video, exactly as before.
    *
    * **0.47.0 — the title is aimed at the title field again, and two theories about the frozen

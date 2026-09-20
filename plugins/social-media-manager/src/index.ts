@@ -82,6 +82,17 @@ import {
  *
  * ## Changelog
  *
+ * - **0.57.2 — the long-watch activity asks for a length it can finish in.**
+ *   `youtube/watch-video` gained a minimum watch time (youtube 0.48.0) and
+ *   this catalog started asking for one. The numbers were wrong in a way
+ *   reading them would not show: `scaled(base, spread)` is base PLUS a draw
+ *   over spread, not a range, so `scaled(d, 240_000, 420_000)` meant up to
+ *   ELEVEN minutes of watching — inside a member whose job timeout is fifteen,
+ *   and before the searches, ad waits and relaunches between videos are
+ *   counted. It would have been killed mid-watch and reported as a broken
+ *   script. Now 90-150 s minimum, 180-300 s maximum, 3-6 videos. Caught by
+ *   asking the catalog what it sends rather than by reading the arithmetic.
+ *
  * - **0.57.1 — Stop needs no phone, and the session list counts phones.**
  *   Two things the owner found in one look at 0.57.0.
  *
@@ -2127,7 +2138,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.57.1',
+  version: '0.57.2',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

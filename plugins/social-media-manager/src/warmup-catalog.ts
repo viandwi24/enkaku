@@ -240,9 +240,21 @@ export const WARMUP_STYLES: readonly WarmupStyle[] = [
       activity('yt-c-watch', 'Search and watch', 'youtube/watch-video@latest', (d) => ({
         query: keyword(d),
         queries: [...d.keywords],
-        minWatchMs: scaled(d, 90_000, 180_000),
-        maxWatchMs: scaled(d, 240_000, 420_000),
-        maxVideos: scaledAtLeast(d, 2, 4, 6),
+        /*
+          `scaled(base, spread)` is base PLUS a draw over spread, not a range —
+          so these read 90-150s, 180-300s and 3-6 videos.
+
+          The ceiling matters more than it looks: `watch-video` has a 15 minute
+          job timeout, and the run has to fit searches, ad waits and a relaunch
+          between every video as well as the watching itself. A first attempt
+          here read `scaled(d, 240_000, 420_000)` — up to eleven minutes of
+          watching alone — which would have been killed mid-watch and reported
+          as a script failure. Caught by asking the catalog what it actually
+          sends rather than by reading the numbers.
+        */
+        minWatchMs: scaled(d, 90_000, 60_000),
+        maxWatchMs: scaled(d, 180_000, 120_000),
+        maxVideos: scaledAtLeast(d, 2, 3, 3),
         keywords: [...d.keywords],
         ...likesAndComments(d),
       })),
