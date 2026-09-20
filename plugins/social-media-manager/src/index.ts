@@ -81,6 +81,28 @@ import {
  *
  * ## Changelog
  *
+ * - **0.53.0 — Warm-up is its own screen** (plan 900 D5, plan 904).
+ *   A SECOND menu entry, in a plugin whose last redesign deliberately removed
+ *   two. That decision is not undone: it was about three entries for one JOB
+ *   — the owner's words, *"jangan dibedakan"* — and warming up is a different
+ *   job. No videos, no posts, and the question it answers is "what did this
+ *   phone do today" rather than "where did this video get to". The brief for
+ *   this screen said so directly: *"ada sesi auto post dan sesi warmup, jadi
+ *   biar ga ketukar usernya"*.
+ *
+ *   So the two lists are separated at the source: Social posts shows only
+ *   `kind: 'post'` sessions and Warm-up only `kind: 'warmup'`. A mixed list
+ *   would put a Retry that re-sends videos on a session that has none.
+ *
+ *   The form counts the fleet the way the PLANNER does — how many phones the
+ *   label picks, and how many of those carry one of the chosen platforms.
+ *   Those are different numbers, and an operator should meet the difference
+ *   before pressing Create rather than in a session where a third of the rows
+ *   say "no label".
+ *
+ *   One bundle, two registrations: a second entry file would be a second build
+ *   for one screen's worth of code.
+ *
  * - **0.52.0 — a warm-up session actually runs** (plan 900 D1, plan 903).
  *   `add-warmup` plans one, `runWarmupPass` sends it. The plan is drawn ONCE,
  *   when the session is made, because every count and style comes from
@@ -1867,7 +1889,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.52.0',
+  version: '0.53.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
@@ -1908,7 +1930,17 @@ export default definePlugin({
       single sequence (upload a folder, spread it over the phones, watch it),
       so the screen is a single page; see `ui/index.tsx`.
     */
-    nav: [{ id: 'posts', label: 'Social posts', icon: 'upload', view: 'posts' }],
+    nav: [
+      { id: 'posts', label: 'Social posts', icon: 'upload', view: 'posts' },
+      /*
+        A SECOND entry, which the note above says this plugin removed two of.
+        That decision stands and this does not undo it: it was about three
+        entries for one JOB. Warming up is a different job — no videos, no
+        posts, and the question it answers is "what did this phone do today"
+        rather than "where did this video get to". Two jobs, two entries.
+      */
+      { id: 'warmup', label: 'Warm-up', icon: 'activity', view: 'warmup' },
+    ],
     views: {
       posts: {
         title: 'Social posts',
@@ -1921,6 +1953,12 @@ export default definePlugin({
           as the numbers move, captions generated from file names. Those are
           answers the screen computes WHILE the operator decides.
         */
+        react: { entry: 'index.js', apiVersion: PLUGIN_UI_API_VERSION },
+      },
+      warmup: {
+        title: 'Warm-up',
+        description: 'Give each phone one platform it carries and a few activities on it, spread out so the fleet never moves in lockstep.',
+        /* The same bundle: one entry module registers both views, so there is one build and one shared chunk. */
         react: { entry: 'index.js', apiVersion: PLUGIN_UI_API_VERSION },
       },
     },

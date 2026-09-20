@@ -164,10 +164,82 @@ export const GroupSchema = z.object({
       groups: z.array(z.object({ group: z.string(), platforms: z.array(z.string()) })).default([]),
     })
     .default({ devices: {}, labels: [], groups: [] }),
+  /**
+   * Which KIND of session this is (plan 900 D4). Defaulted to `post`, which is
+   * what every session stored before warm-up existed is — and the reason it is
+   * defaulted rather than required is that a row failing to parse is SKIPPED by
+   * every reader here, so a required discriminator would have emptied this list
+   * on upgrade with nothing on screen saying why.
+   */
+  kind: z.enum(['post', 'warmup']).default('post'),
+  /** A warm-up session's settings; `null` on a post session. */
+  warmup: z
+    .object({
+      keywords: z.array(z.string()).default([]),
+      amount: z.number().default(1),
+      gapSec: z.tuple([z.number(), z.number()]).default([8, 20]),
+      startJitterSec: z.number().default(120),
+      slot: z.number().default(0),
+      phases: z.number().default(1),
+      like: z.object({ chance: z.number().default(0.1), keywordBoost: z.number().default(3) }).default({ chance: 0.1, keywordBoost: 3 }),
+      styleWeights: z.record(z.string(), z.number()).default({}),
+    })
+    .nullable()
+    .default(null),
   progress: GroupProgressSchema.nullable().default(null),
   summary: z.string().nullable().default(null),
 })
 export type Group = z.infer<typeof GroupSchema>
+
+/** A warm-up session is one an operator reaches from the Warm-up menu, never from Social posts. */
+export function isWarmupGroup(group: Group): boolean {
+  return group.kind === 'warmup'
+}
+
+export const WarmupStepSchema = z.object({
+  activityId: z.string(),
+  title: z.string(),
+  script: z.string(),
+  atSec: z.number(),
+  notBeforeAt: z.number(),
+  state: z.enum(['pending', 'queued', 'success', 'failed', 'skipped']).default('pending'),
+  jobId: z.string().nullable().default(null),
+  error: z.string().nullable().default(null),
+  startedAt: z.number().nullable().default(null),
+  settledAt: z.number().nullable().default(null),
+})
+export type WarmupStep = z.infer<typeof WarmupStepSchema>
+
+export const WarmupRunSchema = z.object({
+  version: z.literal(1),
+  groupId: z.string(),
+  deviceId: z.string(),
+  deviceName: z.string().nullable().default(null),
+  phase: z.number().default(0),
+  platform: z.string().nullable(),
+  styleId: z.string().nullable().default(null),
+  styleTitle: z.string().nullable().default(null),
+  note: z.string().nullable().default(null),
+  steps: z.array(WarmupStepSchema),
+  state: z.enum(['pending', 'running', 'done', 'partial', 'failed', 'skipped']).default('pending'),
+  summary: z.string().nullable().default(null),
+})
+export type WarmupRun = z.infer<typeof WarmupRunSchema>
+
+/**
+ * Every phone's row in one warm-up session, ordered by phase and then by the
+ * phone's own name — so a fleet of eighty reads as a list somebody can scan
+ * rather than in whatever order the store happened to answer.
+ */
+export async function listWarmupRuns(groupId: string): Promise<WarmupRun[]> {
+  const rows = await readAll(`warmup:${groupId}:`)
+  const runs: WarmupRun[] = []
+  for (const row of rows) {
+    const parsed = WarmupRunSchema.safeParse(row.value)
+    if (parsed.success) runs.push(parsed.data)
+  }
+  return runs.sort((a, b) => a.phase - b.phase || (a.deviceName ?? a.deviceId).localeCompare(b.deviceName ?? b.deviceId))
+}
 
 /** Does this session carry any skip rule at all? What decides whether the page says anything about them. */
 export function hasSkipRules(group: Group): boolean {

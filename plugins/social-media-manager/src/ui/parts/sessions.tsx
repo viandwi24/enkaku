@@ -205,7 +205,7 @@ interface Loaded {
  * for.
  */
 async function loadAll(): Promise<Loaded> {
-  const [groups, posts, videoRead, devices] = await Promise.all([
+  const [allGroups, posts, videoRead, devices] = await Promise.all([
     listGroups(),
     listPosts(),
     listVideos()
@@ -220,6 +220,14 @@ async function loadAll(): Promise<Loaded> {
   }
   const phones = new Map<string, string>()
   for (const device of devices) phones.set(device.id, deviceName(device))
+  /*
+    POST sessions only (plan 900 D4, D5). A warm-up session lives on its own
+    menu entry with its own rows and its own buttons, and a list that mixed the
+    two would offer an operator a Retry that re-sends videos on a session that
+    has none. `kind` defaults to `post`, so every session made before warm-up
+    existed is still here.
+  */
+  const groups = allGroups.filter((group) => group.kind !== 'warmup')
   return { groups, posts, videos: names, videosRead: videoRead.ok, devices: phones, fleet: devices }
 }
 

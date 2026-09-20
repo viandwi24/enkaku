@@ -5,6 +5,7 @@ import { ComposePanel } from './parts/compose'
 import { SessionDetail, SessionsPanel } from './parts/sessions'
 import { OpenSpeechContext, SpeechPanel } from './parts/speech'
 import { DraftsPanel } from './parts/drafts'
+import { NewWarmupForm, WarmupDetail, WarmupPanel } from './parts/warmup'
 
 /**
  * One screen for the whole job: upload the videos, say where they go, name the
@@ -197,3 +198,73 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
  * under the same id the manifest gives the view.
  */
 window.__enkaku__.register('posts', SocialPostsView)
+
+/**
+ * The Warm-up screen — a SECOND menu entry, which the last redesign of this
+ * plugin deliberately removed two of.
+ *
+ * That decision is not undone: it was about three entries for ONE job, and
+ * warming up is a different job. It takes no videos, makes no posts, and asks
+ * "what did this phone do today" rather than "where did this video get to".
+ * The owner's brief for it was exactly that — *"ada sesi auto post dan sesi
+ * warmup, jadi biar ga ketukar usernya"*.
+ *
+ * Same three places as Social posts and the same URL discipline, so a link to
+ * one warm-up session is a link somebody can send: `?warmup=<id>` opens a
+ * session, `?tab=new` opens the form.
+ */
+function WarmupView({ params, setParams }: PluginViewProps): React.ReactElement {
+  const [refreshKey, setRefreshKey] = useState(0)
+  const openId = params.warmup ?? null
+  const composing = params.tab === 'new'
+
+  const openSession = useCallback((groupId: string) => setParams({ warmup: groupId, tab: null }), [setParams])
+  const backToList = useCallback(() => setParams({ warmup: null, tab: null }), [setParams])
+  const openNew = useCallback(() => setParams({ warmup: null, tab: 'new' }), [setParams])
+  const refresh = useCallback(() => setRefreshKey((n) => n + 1), [])
+
+  /* A new session lands the operator ON it: they have just decided how the fleet spends the next hour. */
+  const onCreated = useCallback(
+    (groupId: string | null) => {
+      setRefreshKey((n) => n + 1)
+      setParams(groupId === null ? { tab: null } : { tab: null, warmup: groupId })
+    },
+    [setParams],
+  )
+
+  if (openId !== null) return <WarmupDetail groupId={openId} refreshKey={refreshKey} onBack={backToList} />
+
+  if (composing) {
+    return (
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={backToList}>
+            <CaretLeftIcon aria-hidden />
+            All warm-ups
+          </Button>
+          <span className="text-[12px] text-dim">New warm-up</span>
+        </div>
+        <NewWarmupForm onCreated={onCreated} />
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="grow" />
+        <Button variant="outline" size="sm" onClick={refresh}>
+          <ArrowsClockwiseIcon aria-hidden />
+          Refresh
+        </Button>
+        <Button size="sm" onClick={openNew}>
+          <PlusIcon aria-hidden />
+          New warm-up
+        </Button>
+      </div>
+      <WarmupPanel refreshKey={refreshKey} onOpen={openSession} onNew={openNew} />
+    </div>
+  )
+}
+
+window.__enkaku__.register('warmup', WarmupView)
