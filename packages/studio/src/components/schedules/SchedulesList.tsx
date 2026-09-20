@@ -165,6 +165,25 @@ export function SchedulesList({
               <Link href={`/scripts/schedule?id=${s.id}`} className="truncate text-body font-medium text-text hover:text-accent">
                 {s.name}
               </Link>
+              {/*
+                The workflow (or other work target) this schedule needs is gone.
+                A SCRIPT target has said this through `resolvesTo` since plan 95;
+                a workflow target said nothing at all, because `resolvesTo` is
+                null for it meaning "not applicable" — so a schedule pointing at
+                a deleted workflow looked exactly like a healthy one, and a
+                DISABLED schedule never fires to find out. Warned rather than
+                hidden or auto-removed: the schedule is the operator's, and the
+                fix (re-create the workflow, or point it somewhere else) is
+                theirs to choose.
+              */}
+              {s.targetMissing && (
+                <span
+                  className="shrink-0 rounded-chip bg-danger-soft px-1.5 py-0.5 text-[10.5px] text-danger"
+                  title="What this schedule runs no longer exists on this farm — the workflow it points at has been removed. It will not run, and firing it now would fail. Edit it to point somewhere else, or delete it."
+                >
+                  missing
+                </span>
+              )}
               {duplicateOf.has(s.id) && (
                 <span
                   className="shrink-0 rounded-chip bg-warn-soft px-1.5 py-0.5 text-[10.5px] text-warn"

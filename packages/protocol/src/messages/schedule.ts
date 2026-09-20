@@ -143,6 +143,27 @@ export const ScheduleInfoSchema = z.object({
    */
   paramsCompatible: z.boolean().default(true),
   paramsFindingCount: z.number().int().default(0),
+  /**
+   * The schedule's work target no longer exists — today, only a workflow
+   * target whose document has gone.
+   *
+   * A SCRIPT target already had this: `resolvesTo: null` on the response says
+   * the reference does not resolve. A workflow target had nothing, because
+   * `resolvesTo` is deliberately null for it meaning "not applicable" — so a
+   * schedule pointing at a deleted workflow looked exactly like a healthy one
+   * until it next fired, and a DISABLED schedule never fires at all. The
+   * owner's production farm holds exactly that: a warm-up schedule kept,
+   * disabled, pointing at a workflow about to be retired.
+   *
+   * Computed on every read, never stored, for the same reason
+   * `paramsCompatible` is: a schedule that WILL fail should be visible the
+   * moment the thing it needs goes away, not the morning after it did not run.
+   *
+   * Defaulted `false` so every existing caller and fixture keeps compiling,
+   * and so a core that cannot answer the question says "fine" rather than
+   * marking every schedule broken.
+   */
+  targetMissing: z.boolean().default(false),
 })
 export type ScheduleInfo = z.infer<typeof ScheduleInfoSchema>
 

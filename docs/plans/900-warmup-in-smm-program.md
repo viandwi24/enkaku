@@ -164,7 +164,8 @@ exist in the rebuilt feature:
 | 2 | 902 | The warm-up engine in plugin code: rotation, phases, style draw, shuffle, gaps, jitter. `warmup-rotation.ts` is marked superseded but NOT deleted — §6 Q1 is unanswered and a farm may have a schedule pointing at it, so wave 5 removes it |
 | 3 | 903 | Dispatch and session rows: per-device, per-platform results; Retry failed; the notes vocabulary that auto-post already has |
 | 4 | 904 | Studio surface: the second nav item, the warm-up session page, the settings form — **done**; per-style weighting deferred, see 904 §2 |
-| 5 | 905 | Scheduling, docs, and the retirement notice — **done** except the removal itself, which waits on §6 Q1 |
+| 5 | 905 | Scheduling, docs, and the retirement notice — **done**. The removal itself is unblocked (§6 Q1 answered) and left as the owner's call |
+| 6 | 906 | A schedule whose work target has gone says so, instead of looking healthy until it fires |
 
 Waves 1–3 are backend and testable without a device. Wave 4 is Studio, verified
 by `bun run typecheck` and an owner smoke (Studio has no tests, plan 200 §8.3).
@@ -189,10 +190,19 @@ by `bun run typecheck` and an owner smoke (Studio has no tests, plan 200 §8.3).
 
 ## 6. Open questions
 
-1. **Do any farms run `smm/warmup-rotation` on a schedule today?** Decides
-   whether wave 5 needs a migration path or only a notice. The owner answers
-   from the farms they operate; production access was lost on 2026-09-19, so
-   this cannot be read from a database.
+1. ~~Do any farms run `smm/warmup-rotation` on a schedule today?~~ **Answered
+   2026-09-20: yes — production holds one, kept but DISABLED.**
+
+   That answer is why the schedule warning in plan 906 exists rather than a
+   migration. A disabled schedule never fires, so nothing breaks on the day the
+   workflow goes; what breaks is the operator's ability to FIND OUT, because a
+   workflow target had no "this no longer exists" signal at all. With the
+   warning in place, retiring the workflow leaves that schedule visibly marked
+   rather than quietly wrong.
+
+   The removal itself is still not done, and is not blocked — see 905 §4. It is
+   left as the owner's call because it is one-way: their disabled schedule
+   cannot be re-enabled afterwards.
 2. ~~Should warm-up sessions be resumable like post sessions?~~ **Answered in
    the brief, 2026-09-20**: "pas dijalanin juga ada sesinya, bisa mantau semua
    devices, setiap platform result nya juga jadi mirip kaya auto post juga." So

@@ -329,6 +329,26 @@ function workTargetFor(row: ScheduleRow, agentTarget: ScheduleAgentTargetRow | n
   return { kind: 'script', ref: row.scriptRef as ScriptRef, params: row.params ?? undefined }
 }
 
+/**
+ * Has the thing this schedule runs gone away?
+ *
+ * Only a workflow target can answer anything but "no". A script target says it
+ * through `resolvesTo` (plan 95); an agent target has nothing to resolve.
+ *
+ * Exported and pure so the rule can be tested without a database: it is one
+ * boolean, and the cost of getting it wrong is either a healthy schedule marked
+ * broken or — the case this exists for — a broken one that looks healthy until
+ * it fires, which a DISABLED schedule never does.
+ *
+ * A core with no workflow store cannot answer, and answers "no". Marking every
+ * workflow schedule missing because this core was wired without a store would
+ * be a louder lie than saying nothing.
+ */
+export function workTargetMissing(workflowTarget: { workflowName: string } | null, workflows: { get(name: string): unknown } | undefined): boolean {
+  if (workflowTarget === null || workflows === undefined) return false
+  return workflows.get(workflowTarget.workflowName) === null
+}
+
 function rowToScheduleInfo(
   deps: ScheduleRoutesDeps,
   row: ScheduleRow,
@@ -339,7 +359,19 @@ function rowToScheduleInfo(
   // as an agent one has none — its params are checked at dispatch against the
   // document's own declared params instead.
   const { paramsCompatible, paramsFindingCount } = paramsCompatibility(deps.db, row, agentTarget !== null || workflowTarget !== null, deps.scriptRegistry)
+  /*
+    Does the thing this schedule needs still exist? Only a workflow target can
+    answer anything but "yes" here: a script target says it through
+    `resolvesTo`, and an agent target has nothing to resolve.
+
+    `deps.workflows` absent means this core cannot answer, and a core that
+    cannot answer must say "fine" rather than mark every workflow schedule
+    broken — the same choice `paramsCompatible` makes for a reference it cannot
+    resolve.
+  */
+  const targetMissing = workTargetMissing(workflowTarget, deps.workflows)
   return {
+    targetMissing,
     id: row.id,
     name: row.name,
     enabled: row.enabled ?? true,

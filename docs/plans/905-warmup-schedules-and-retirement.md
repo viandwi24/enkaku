@@ -51,9 +51,17 @@ three scheduled repetitions.
 `smm/warmup-rotation` still ships, titled **"superseded"**, and nothing
 dispatches it. It is not deleted because a farm may hold a schedule pointing at
 it and removing the document would break that schedule with nothing to explain
-it — plan 900 §6 Q1, asked three times and still unanswered. The cost of
-keeping it is one row in a list that says what it is; the cost of deleting it
-wrongly is a silent broken schedule on someone's farm.
+it.
+
+**Plan 900 §6 Q1 is now answered (2026-09-20): production holds exactly such a
+schedule, kept but DISABLED.** A disabled schedule never fires, so the workflow
+could go today without anything failing — but until plan 906 there was no way
+for the operator to SEE that its target had gone. With that warning in place,
+removal is unblocked.
+
+It is still left as the owner's call, because it is one-way: once the workflow
+is gone that schedule cannot be re-enabled. The cost of keeping it is one row
+in a list that says what it is.
 
 **When Q1 is answered "no farm runs it":** delete `src/workflows/`, drop
 `workflows: [warmupRotation]` from the manifest, and bump a minor. The tests to
@@ -80,6 +88,5 @@ update are `index.test.ts`'s workflow assertions.
 
 ## 7. Open questions
 
-Plan 900 §6 Q1 remains, and is now the ONLY thing between this series and
-deleting `smm/warmup-rotation`. It is recorded here rather than asked a fourth
-time.
+None. Plan 900 §6 Q1 is answered, and the removal it gated is now a decision
+rather than a blocker — §4 says what to do when it is taken.
