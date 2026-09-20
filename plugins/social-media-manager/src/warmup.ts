@@ -199,8 +199,31 @@ export function planWarmup(input: {
   const draw: WarmupDraw = { keywords: settings.keywords, amount: settings.amount, like: settings.like, random }
 
   return devices.map((device) => {
-    // What this phone can do, inside what the session covers — see `WarmupDevice.platforms`.
-    const available = device.platforms === undefined ? platforms : platforms.filter((id) => device.platforms?.includes(id))
+    /*
+      Every platform the SESSION covers — the phone's labels order them, they
+      do not narrow them.
+
+      This used to filter: a phone carrying only `tiktok` was given TikTok and
+      nothing else, and a phone carrying no platform label was given nothing at
+      all. The owner overruled it (2026-09-20): *"user bisa running warmup
+      banyak metode, bisa spesifik choose devices, bisa per labels atau per
+      grup atau all devices langsung"* — the operator already said which phones
+      this session covers, and a second, invisible filter on top of that choice
+      is how one Start quietly does a third of the job. Their farm is 73 phones
+      that all carry all three accounts; the labels are how they FIND phones,
+      not a statement about what is installed.
+
+      The posting side made the same move for the same reason and wrote down
+      the trade (`planDispatch`, 0.11.0): a phone nobody signed in fails its own
+      activity by name, which is a visible, one-activity loss — against a whole
+      session silently sending nothing, which is not.
+
+      The labels still earn their place: a phone's OWN platforms come first, so
+      a session with fewer phases than platforms still covers what the phone is
+      known for.
+    */
+    const carried = device.platforms === undefined ? platforms : platforms.filter((id) => device.platforms?.includes(id))
+    const available = [...carried, ...platforms.filter((id) => !carried.includes(id))]
     if (available.length === 0) {
       return {
         deviceId: device.deviceId,
@@ -208,7 +231,7 @@ export function planWarmup(input: {
         styleId: null,
         styleTitle: null,
         steps: [],
-        note: `This phone carries no label for any of this session's platforms (${platforms.join(', ')}), so it was given nothing. Add a platform label on the Devices page.`,
+        note: 'This session covers no platform, so this phone was given nothing.',
       }
     }
     /*
@@ -228,7 +251,7 @@ export function planWarmup(input: {
         styleId: null,
         styleTitle: null,
         steps: [],
-        note: `This phone carries ${available.length} of this session's platforms (${available.join(', ')}), and they were covered in the earlier phases. Nothing is repeated.`,
+        note: `This session covers ${available.length} platform${available.length === 1 ? '' : 's'} (${available.join(', ')}), and this phone covered them in the earlier phases. Nothing is repeated.`,
       }
     }
     const platform = platformFor({ device, platforms: available, slot: settings.slot, phase, nowMs })

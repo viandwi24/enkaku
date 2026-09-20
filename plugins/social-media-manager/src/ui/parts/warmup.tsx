@@ -107,17 +107,16 @@ function WarmupControls({ group, busy, onStop }: { group: Group; busy: boolean; 
 /**
  * What the pick means HERE — the picker's own lines are about posting.
  *
- * The difference is real and matters: posting an explicit list of phones stops
- * the platform's label being checked, so a phone nobody signed in fails by
- * name. A warm-up always checks it, because there is nothing to gain by
- * sending a phone to an account it does not have — so the phone is given
- * nothing on that platform and its row says so.
+ * Since 0.57.3 the two say the same thing, and that is the point: the
+ * operator's choice of phones IS the choice, and the platform label does not
+ * narrow it afterwards. These lines exist because the wording still differs —
+ * a warm-up has no video to post twice — not because the rule does.
  */
 const WARMUP_CONSEQUENCE = {
-  all: 'Every phone in the farm. Each one is warmed up only on the platforms it carries a label for; a phone carrying none is listed as given nothing.',
-  devices: 'Exactly the phones ticked, each on the platforms it carries a label for.',
-  labels: 'Every phone carrying one of these labels, each warmed up on the platforms it carries a label for.',
-  groups: 'Every phone in these groups, each warmed up on the platforms it carries a label for.',
+  all: 'Every phone in the farm, each warmed up on every platform this session covers. A phone not signed in to one fails that activity by name rather than being skipped in silence.',
+  devices: 'Exactly the phones ticked, each warmed up on every platform this session covers.',
+  labels: 'Every phone carrying one of these labels, each warmed up on every platform this session covers.',
+  groups: 'Every phone in these groups, each warmed up on every platform this session covers.',
 } as const
 
 /** The colour a state reads as, in the same vocabulary the Posts table uses. */
@@ -363,14 +362,16 @@ export function NewWarmupForm({ onCreated }: { onCreated: (groupId: string | nul
     third of the rows say "no label".
   */
   const reach = useMemo(() => {
+    /*
+      Every chosen phone does the work now — the labels no longer decide who is
+      "able" (0.57.3). What is still worth showing is how many phones carry a
+      label for none of the chosen platforms, because those are the ones whose
+      activities are most likely to fail on a signed-out app.
+    */
     const chosen = resolvePick(pick, fleet)
-    const able = chosen.filter((device) => draft.platforms.some((id) => device.labels.some((l) => l.name.trim().toLowerCase() === id)))
-    /* Activities across the fleet: each able phone does `activities` per platform it carries, capped by the platforms per phone. */
-    const total = able.reduce((sum, device) => {
-      const carried = draft.platforms.filter((id) => device.labels.some((l) => l.name.trim().toLowerCase() === id)).length
-      return sum + draft.activities * Math.min(carried, draft.phases)
-    }, 0)
-    return { chosen: chosen.length, able: able.length, total }
+    const unlabelled = chosen.filter((device) => !draft.platforms.some((id) => device.labels.some((l) => l.name.trim().toLowerCase() === id)))
+    const perPhone = draft.activities * Math.min(draft.platforms.length, draft.phases)
+    return { chosen: chosen.length, unlabelled: unlabelled.length, total: chosen.length * perPhone, perPhone }
   }, [fleet, pick, draft.platforms, draft.activities, draft.phases])
 
   const refusal = useMemo(() => pickRefusal(pick), [pick])
@@ -446,7 +447,9 @@ export function NewWarmupForm({ onCreated }: { onCreated: (groupId: string | nul
               )
             })}
           </div>
-          <span className="text-[11px] text-faint">A phone is only sent to a platform it carries a label for.</span>
+          <span className="text-[11px] text-faint">
+            Every phone this session covers warms up all of these, one after another. A phone's own labels only decide which it does first.
+          </span>
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -465,14 +468,16 @@ export function NewWarmupForm({ onCreated }: { onCreated: (groupId: string | nul
             consequence={WARMUP_CONSEQUENCE}
           />
           <span className="text-[11px] text-faint">
-            {reach.chosen} phone{reach.chosen === 1 ? '' : 's'} chosen, {reach.able} of them carry one of these platforms — about {reach.total}{' '}
-            activities in all.
+            {reach.chosen} phone{reach.chosen === 1 ? '' : 's'} chosen — {reach.perPhone} activities each, about {reach.total} in all.
+            {reach.unlabelled > 0
+              ? ` ${reach.unlabelled} of them carry a label for none of these platforms; they are still warmed up, and an account they are not signed in to fails that activity by name.`
+              : ''}
           </span>
         </div>
 
         <NumberField
           label="Activities per phone"
-          hint="on each platform it carries"
+          hint="on each platform this session covers"
           value={draft.activities}
           onChange={(n) => set('activities', n)}
           min={1}

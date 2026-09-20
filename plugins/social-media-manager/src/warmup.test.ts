@@ -128,17 +128,21 @@ describe('a phone is only sent to a platform it carries', () => {
     ignores that sends a third of the fleet to fail on a signed-out app one day
     in three.
   */
-  test('a phone with one platform gets that one, never the others, and is not sent to it again', () => {
-    // It used to get `tiktok` in every phase, which was harmless while a
-    // session ran ONE phase. With three the same phone would warm up the same
-    // account three times in an hour, which is the tell this plugin exists to
-    // avoid. A phase past what a phone carries gives it nothing, and says so.
+  test("a phone's own label comes FIRST, and the rest of the session follows it", () => {
+    /*
+      The labels order the platforms; they no longer narrow them (0.57.3). The
+      owner's instruction was that the operator's choice of phones is the
+      choice — *"bisa spesifik choose devices, bisa per labels atau per grup
+      atau all devices langsung"* — and a second, invisible filter on top of it
+      is how one Start quietly does a third of the job.
+
+      What the label still buys is this: a session with fewer phases than
+      platforms covers what the phone is KNOWN for first.
+    */
     const device: WarmupDevice = { deviceId: 'd', number: 5, platforms: ['tiktok'] }
     const got = [0, 1, 2].map((phase) => planWarmup({ devices: [device], settings: settings(), platforms: PLATFORMS, phase, nowMs: NOW, random: rng(phase) })[0])
     expect(got[0]?.platform).toBe('tiktok')
-    expect(got[1]?.platform).toBeNull()
-    expect(got[2]?.platform).toBeNull()
-    expect(got[1]?.note).toContain('covered in the earlier phases')
+    expect(new Set(got.map((g) => g?.platform))).toEqual(new Set(PLATFORMS))
   })
 
   test('a phone with two platforms still alternates between them', () => {
@@ -147,12 +151,14 @@ describe('a phone is only sent to a platform it carries', () => {
     expect(seen).toEqual(new Set(['tiktok', 'youtube']))
   })
 
-  test('a phone carrying none of the session\'s platforms is told so, not sent anyway', () => {
+  test('a phone carrying no platform label is still warmed up', () => {
+    // It used to be given nothing and a sentence telling the operator to add a
+    // label. On a farm whose phones all carry all three accounts that was the
+    // whole fleet doing nothing, for a reason the operator did not agree with.
     const device: WarmupDevice = { deviceId: 'd', number: 5, platforms: [] }
     const [plan] = planWarmup({ devices: [device], settings: settings(), platforms: PLATFORMS, phase: 0, nowMs: NOW, random: rng(1) })
-    expect(plan?.platform).toBeNull()
-    expect(plan?.steps).toEqual([])
-    expect(plan?.note).toContain('no label')
+    expect(plan?.platform).not.toBeNull()
+    expect(plan?.steps.length).toBeGreaterThan(0)
   })
 
   test('a phone with no platforms listed at all is taken as able to do them all, as before', () => {
@@ -363,9 +369,18 @@ describe('the plan itself', () => {
     // boost at all — it never reads a caption — and sending one would be
     // refused at dispatch. `scripts/check-warmup-params.ts` is what holds that
     // pairing right; this only refuses to assume it.
+    /*
+      Asserted per MEMBER, because `keywordBoostFactor` means two different
+      things. Every pack but TikTok reads it as a multiplier in 1 to 10;
+      `tiktok/keyword-videos` reads it as a watch-time TILT in 0 to 1, and
+      sending the multiplier there had the farm refuse the job outright.
+    */
     const withBoost = steps.filter((s) => 'keywordBoostFactor' in s.params)
     expect(withBoost.length).toBeGreaterThan(0)
-    for (const step of withBoost) expect(step.params.keywordBoostFactor).toBe(7)
+    for (const step of withBoost) {
+      const tilt = step.script.startsWith('tiktok/keyword-videos')
+      expect(step.params.keywordBoostFactor).toBe(tilt ? 0.667 : 7)
+    }
   })
 
   test("and the comment chance reaches every member that accepts one", () => {
@@ -409,7 +424,8 @@ describe('the catalog', () => {
       .filter((s) => s.script.startsWith('tiktok/keyword-videos'))
     expect(steps.length).toBeGreaterThan(0)
     for (const step of steps) {
-      expect(step.params.keywordBoostFactor).toBe(6)
+      // The operator's 1-to-10 multiplier, MAPPED onto this member's 0-to-1 tilt: 1 becomes 0, 10 becomes 1.
+      expect(step.params.keywordBoostFactor).toBe(0.556)
       expect('likeProbability' in step.params).toBe(false)
     }
   })
@@ -435,20 +451,22 @@ describe('a phone is never sent to the same platform twice in one session', () =
       (phase) => planWarmup({ devices: fleet, settings: settings({ phases: 3 }), platforms: [...PLATFORMS], phase, nowMs: 0, random: Math.random }).find((a) => a.deviceId === device)?.platform ?? null,
     )
 
-  test('a phone carrying two of three platforms covers both, and gets nothing in the third phase', () => {
+  test('three phases cover the three platforms once each, never one of them twice', () => {
     const fleet = twoLabelFleet(6)
     for (const device of fleet) {
-      const got = phasesOf(device.deviceId, fleet)
-      const covered = got.filter((p): p is PlatformId => p !== null)
-      expect(new Set(covered).size).toBe(covered.length)
-      expect(covered.length).toBe(2)
-      expect(got[2]).toBeNull()
+      const got = phasesOf(device.deviceId, fleet).filter((p): p is PlatformId => p !== null)
+      expect(new Set(got).size).toBe(got.length)
+      expect(new Set(got)).toEqual(new Set(PLATFORMS))
     }
   })
 
-  test('and the empty phase says why, rather than looking like a broken row', () => {
+  test('a fourth phase would repeat, so it gives nothing and says why', () => {
+    // `phaseCount` bounds a session to the platforms it covers, so this is the
+    // belt to that braces — the guard that makes the no-repeat rule true even
+    // if a stored row ever asks for more phases than there are platforms.
     const fleet = twoLabelFleet(2)
-    const third = planWarmup({ devices: fleet, settings: settings({ phases: 3 }), platforms: [...PLATFORMS], phase: 2, nowMs: 0, random: Math.random })
-    expect(third[0]?.note).toContain('covered in the earlier phases')
+    const fourth = planWarmup({ devices: fleet, settings: settings({ phases: 3 }), platforms: ['tiktok', 'youtube'], phase: 2, nowMs: 0, random: Math.random })
+    expect(fourth[0]?.platform).toBeNull()
+    expect(fourth[0]?.note).toContain('covered them in the earlier phases')
   })
 })

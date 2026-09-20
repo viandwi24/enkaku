@@ -19,7 +19,7 @@ import { GROUP_PREFIX, GroupSchema, groupKeyFor, isRowDue, roomInFlight, withPro
 import retryFailed from './retry-failed'
 import addWarmup from './add-warmup'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
-import { WARMUP_PREFIX, WarmupRunSchema, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRun } from './warmup-runs'
+import { WARMUP_PREFIX, WarmupRunSchema, isPermanentDispatchFailure, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRun } from './warmup-runs'
 import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
 import { warmupSequenceDoc } from './warmup-workflow'
 import {
@@ -81,6 +81,39 @@ import {
  * memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.57.3 — one Start really does cover every platform, and one bad
+ *   activity no longer freezes a phone.** Three findings from running a
+ *   warm-up on the owner's own farm and watching it stop.
+ *
+ *   **The platform labels stopped being a filter.** A phone carrying only
+ *   `tiktok` was given TikTok and nothing else; a phone carrying no platform
+ *   label was given nothing at all. The owner overruled it — *"user bisa
+ *   running warmup banyak metode, bisa spesifik choose devices, bisa per
+ *   labels atau per grup atau all devices langsung"* — because the operator
+ *   already said which phones the session covers, and a second invisible
+ *   filter on top of that choice is how one Start quietly does a third of the
+ *   job. Their farm is 73 phones that all carry all three accounts. The labels
+ *   now ORDER the platforms (a phone's own come first) and never narrow them,
+ *   which is the trade `planDispatch` made on the posting side in 0.11.0.
+ *
+ *   **`tiktok/keyword-videos` means something else by `keywordBoostFactor`** —
+ *   a watch-time tilt in 0 to 1, where every other member means a multiplier
+ *   in 1 to 10. This sent 3, the farm refused the job with
+ *   `invalid_job_params`, and because a dispatch that throws leaves its step
+ *   pending on purpose, the phone re-sent the same activity every fifteen
+ *   seconds. Its whole warm-up sat behind that one step with a green session
+ *   and nothing anywhere an operator looks. The operator's multiplier is
+ *   mapped onto the tilt now.
+ *
+ *   **And a refusal the farm will repeat now FAILS the step**
+ *   (`isPermanentDispatchFailure`) instead of retrying for ever. Being one
+ *   activity short is a smaller loss than being stopped, and the row says
+ *   which one and why.
+ *
+ *   `scripts/check-warmup-params.ts` parses every activity's params through
+ *   the member's own schema now, not just its names — which is what a
+ *   name-only check could never have seen.
  *
  * - **0.57.2 — the long-watch activity asks for a length it can finish in.**
  *   `youtube/watch-video` gained a minimum watch time (youtube 0.48.0) and
@@ -1595,7 +1628,24 @@ async function runWarmupPass(
         thing that must not happen is a row claiming a job that does not exist,
         which would wait for an answer for ever.
       */
-      ctx.log.warn('could not send a warm-up activity', { key: entry.key, as: dispatch.as, error: messageOf(err) })
+      const why = messageOf(err)
+      ctx.log.warn('could not send a warm-up activity', { key: entry.key, as: dispatch.as, error: why })
+      /*
+        Unless the farm will refuse it again — see `isPermanentDispatchFailure`.
+        Then the step FAILS by name and the phone carries on with the rest of
+        its sequence, instead of re-sending the same bad request for ever
+        behind a session that still reads as healthy.
+      */
+      if (isPermanentDispatchFailure(why)) {
+        let stuck = entry.run
+        for (const step of dispatch.steps) stuck = withStepState(stuck, step.activityId, { state: 'failed', error: `The farm refused this activity and would refuse it again: ${why}`, settledAt: input.now })
+        entry.run = withRunSummary(stuck)
+        try {
+          await ctx.storage.global.setIfVersion(entry.key, entry.run, entry.version)
+        } catch (writeErr) {
+          ctx.log.warn('could not write back a refused warm-up activity', { key: entry.key, error: messageOf(writeErr) })
+        }
+      }
       continue
     }
     /*
@@ -2138,7 +2188,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.57.2',
+  version: '0.57.3',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

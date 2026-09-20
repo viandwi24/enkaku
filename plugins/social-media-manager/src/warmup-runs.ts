@@ -390,6 +390,32 @@ export function warmupSummary(progress: WarmupProgress): string {
 }
 
 /**
+ * Codes the farm answers with when the request itself is wrong, and will be
+ * wrong again in fifteen seconds.
+ *
+ * `invalid_job_params` is the one this exists for. A dispatch that throws
+ * leaves its step PENDING on purpose — a row claiming a job that does not
+ * exist would wait for an answer for ever — and for a transient fault that is
+ * exactly right: the next tick tries again.
+ *
+ * For a permanent one it is a trap. The owner's own farm hit it: one activity
+ * sent a param outside the member's range, the farm refused it, and the phone
+ * re-sent the same activity every fifteen seconds. Its whole warm-up sat
+ * behind that one step, with a green session, no failed row, and nothing
+ * anywhere an operator looks that could say why the phone had stopped.
+ *
+ * So a refusal the farm will repeat FAILS the step by name and the sequence
+ * moves on. Being one activity short is a smaller loss than being stopped, and
+ * the row says which one and why.
+ */
+const PERMANENT_DISPATCH_CODES = ['invalid_job_params', 'E_PARAMS_INVALID', 'E_SCRIPT_NOT_FOUND', 'script_not_found', 'E_NOT_SUPPORTED']
+
+/** Will the farm refuse this dispatch again, however long we wait? */
+export function isPermanentDispatchFailure(message: string): boolean {
+  return PERMANENT_DISPATCH_CODES.some((code) => message.includes(code))
+}
+
+/**
  * Re-queue the failed activities of a run, so "Retry failed" means the same
  * thing it does on the Posts page.
  *

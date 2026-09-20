@@ -52,7 +52,7 @@ const settingsParams = {
     .min(1)
     .max(12)
     .default(4)
-    .describe('How many activities each phone does on each platform. The system picks which ones, and shuffles them per phone.')
+    .describe('How many activities each phone does on each platform this session covers. The system picks which ones, and shuffles them per phone.')
     .meta(ui({ title: 'Activities per phone' })),
   /**
    * Left in the params because a stored schedule may still send it, and
@@ -101,7 +101,7 @@ const params = z.object({
     .array(PlatformIdSchema)
     .min(1)
     .default([...PLATFORM_IDS])
-    .describe('Which platforms this session covers. A phone is only sent to one it carries a label for.')
+    .describe('Which platforms this session covers. Every phone covers all of them, one after another; its own labels only decide which it does first.')
     .meta(ui({ title: 'Platforms' })),
   /**
    * The legacy one-label shorthand, kept because a stored SCHEDULE may still

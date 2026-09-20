@@ -112,18 +112,33 @@ export function likesAndComments(draw: WarmupDraw): { likeProbability: number; c
 }
 
 /**
- * The keyword boost alone, for a member that tilts watch time by keyword but
- * has no like of its own.
+ * The keyword boost for `tiktok/keyword-videos`, which means something else by
+ * the same name.
  *
- * `tiktok/keyword-videos` is the one: it declares `keywordBoostFactor` and
- * does NOT declare `likeProbability`. Found by checking every param in this
- * file against the packs' schemas (2026-09-20) rather than on a phone —
- * `likes()` was being spread onto it, and an undeclared param is refused at
- * dispatch, so every TikTok phone drawn into `tt-b` or `tt-c` would have
- * failed with a validation error that named the plugin and not this line.
+ * Two traps here, one after the other, and the second is the interesting one.
+ *
+ * **The first**: that member declares `keywordBoostFactor` and does NOT declare
+ * `likeProbability`, so `likes()` could not be spread onto it — an undeclared
+ * param is refused at dispatch, and every TikTok phone drawn into `tt-b` or
+ * `tt-c` would have failed with a validation error naming the plugin and not
+ * this line.
+ *
+ * **The second**, which the name-only check could not see: its
+ * `keywordBoostFactor` is a **tilt in 0 to 1**, not a multiplier in 1 to 10.
+ * Every other member means the multiplier. So this sent 3, the farm refused
+ * the job, and — because a dispatch that throws leaves the step pending on
+ * purpose — the phone retried the same activity every fifteen seconds and its
+ * whole warm-up stalled behind it. Found on the owner's own farm
+ * (2026-09-20), which is exactly the shape of failure that has no error
+ * anywhere an operator looks.
+ *
+ * So the operator's 1-to-10 multiplier is MAPPED onto the tilt rather than
+ * passed through: 1 (no boost) becomes 0, 10 becomes the full tilt. Same
+ * intent, in the units this member actually speaks.
  */
 export function boost(draw: WarmupDraw): { keywordBoostFactor: number } {
-  return { keywordBoostFactor: draw.like.keywordBoost }
+  const tilt = (draw.like.keywordBoost - 1) / 9
+  return { keywordBoostFactor: Math.min(1, Math.max(0, Number(tilt.toFixed(3)))) }
 }
 
 const activity = (id: string, title: string, script: string, params: WarmupActivity['params'] = () => ({})): WarmupActivity => ({ id, title, script, params })
