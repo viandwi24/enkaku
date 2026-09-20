@@ -175,6 +175,12 @@ function parseDevicesLongBlock(raw: string): TrackedDevice[] {
       const value = field.slice(colon + 1)
       if (!value) continue
       if (key === 'usb') device.usb = value
+      else if (key === 'product') device.product = value
+      else if (key === 'model') device.model = value
+      // adb's own field is `device:` — the board name (e.g. `sunfish`), not
+      // the device row this farm keeps. Renamed on the way in so a reader of
+      // `TrackedDevice` cannot mistake it for one.
+      else if (key === 'device') device.deviceCode = value
       else if (key === 'transport_id') {
         const transportId = Number(value)
         if (Number.isFinite(transportId)) device.transportId = transportId

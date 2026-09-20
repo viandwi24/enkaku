@@ -64,9 +64,22 @@ import { NewWarmupForm, WarmupDetail, WarmupPanel } from './parts/warmup'
  * back, and it is on screen rather than assumed.
  */
 
-/** The four places to stand. `new` is a PAGE reached from Sessions, never a tab. */
-type Tab = 'sessions' | 'speech' | 'drafts' | 'accounts'
-const TABS: readonly string[] = ['sessions', 'speech', 'drafts', 'accounts']
+/**
+ * The five places to stand. `new` is a PAGE reached from a list, never a tab.
+ *
+ * `warmup` joined them in 0.56.0, after briefly being a second SIDEBAR entry in
+ * 0.53.0. The owner's verdict on that was the same one that produced this page
+ * in the first place — *"saya mau anda jadikan satu, jadi Social Media Manager
+ * page, ini isinya semuanya mencangkup warmup dan auto post"* — so warming up
+ * is a TAB here, beside posting, and the sidebar is one entry again.
+ *
+ * What that settles, and it is worth writing down because it was argued both
+ * ways: the rule is not "one entry per job". It is one entry per PRODUCT. A
+ * farm's social work is one thing to the person doing it, whether this hour's
+ * job is posting or warming up.
+ */
+type Tab = 'sessions' | 'warmup' | 'speech' | 'drafts' | 'accounts'
+const TABS: readonly string[] = ['sessions', 'warmup', 'speech', 'drafts', 'accounts']
 const isTab = (value: unknown): value is Tab => typeof value === 'string' && TABS.includes(value)
 
 function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactElement {
@@ -79,13 +92,18 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
   const [refreshKey, setRefreshKey] = useState(0)
 
   const openSessionId = params.session ?? null
+  const openWarmupId = params.warmup ?? null
   /* `tab=new` is kept as the compose flow's address: every old link still lands on it. */
   const composing = params.tab === 'new'
   const tab: Tab = isTab(params.tab) ? params.tab : 'sessions'
 
-  const openSession = useCallback((groupId: string) => setParams({ session: groupId }), [setParams])
-  const backToSessions = useCallback(() => setParams({ session: null, tab: null }), [setParams])
-  const openNew = useCallback(() => setParams({ session: null, tab: 'new' }), [setParams])
+  const openSession = useCallback((groupId: string) => setParams({ session: groupId, warmup: null }), [setParams])
+  const backToSessions = useCallback(() => setParams({ session: null, warmup: null, tab: null }), [setParams])
+  const openNew = useCallback(() => setParams({ session: null, warmup: null, tab: 'new' }), [setParams])
+  /* The warm-up half of the same three moves. Its own query key, so a link to either kind still opens the right one. */
+  const openWarmup = useCallback((groupId: string) => setParams({ warmup: groupId, session: null }), [setParams])
+  const backToWarmups = useCallback(() => setParams({ warmup: null, session: null, tab: 'warmup' }), [setParams])
+  const openNewWarmup = useCallback(() => setParams({ warmup: null, session: null, tab: 'new-warmup' }), [setParams])
   /*
     Auto-Caption (0.20.0 as "Speech") is a tab, not a second sidebar entry, for the reason this whole page is one entry:
     Whisper exists here for auto captions, and the operator reaches it from the note beside those buttons. That note
@@ -115,6 +133,30 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
   */
   const [refreshing, setRefreshing] = useState(false)
   const refresh = useCallback(() => setRefreshKey((n) => n + 1), [])
+
+  if (openWarmupId !== null) {
+    return <WarmupDetail groupId={openWarmupId} refreshKey={refreshKey} onBack={backToWarmups} />
+  }
+
+  if (params.tab === 'new-warmup') {
+    return (
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={backToWarmups}>
+            <CaretLeftIcon aria-hidden />
+            All warm-ups
+          </Button>
+          <span className="text-[12px] text-dim">New warm-up</span>
+        </div>
+        <NewWarmupForm
+          onCreated={(groupId) => {
+            setRefreshKey((n) => n + 1)
+            setParams(groupId === null ? { tab: 'warmup' } : { tab: null, warmup: groupId })
+          }}
+        />
+      </div>
+    )
+  }
 
   if (openSessionId !== null) {
     return (
@@ -151,13 +193,14 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
         <div className="flex flex-wrap items-center gap-2">
           {/* `compact` (0.37.0): the owner asked for a tighter row, and four names in chips read as one row on a narrow window. */}
           <TabsList variant="compact">
-            <TabsTrigger value="sessions">Sessions</TabsTrigger>
+            <TabsTrigger value="sessions">Posts</TabsTrigger>
+            <TabsTrigger value="warmup">Warm-up</TabsTrigger>
             <TabsTrigger value="speech">Auto-Caption</TabsTrigger>
             <TabsTrigger value="drafts">Cleanup</TabsTrigger>
             <TabsTrigger value="accounts">Accounts</TabsTrigger>
           </TabsList>
           <div className="grow" />
-          {tab === 'sessions' || tab === 'speech' ? (
+          {tab === 'sessions' || tab === 'warmup' || tab === 'speech' ? (
             <>
               {refreshing ? <Spinner className="size-3.5 text-faint" /> : null}
               <Button variant="outline" size="sm" onClick={refresh}>
@@ -169,13 +212,22 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
           {tab === 'sessions' ? (
             <Button size="sm" onClick={openNew}>
               <PlusIcon aria-hidden />
-              New session
+              New post session
+            </Button>
+          ) : null}
+          {tab === 'warmup' ? (
+            <Button size="sm" onClick={openNewWarmup}>
+              <PlusIcon aria-hidden />
+              New warm-up
             </Button>
           ) : null}
         </div>
 
         <TabsContent value="sessions">
           <SessionsPanel refreshKey={refreshKey} onOpen={openSession} onRefreshingChange={setRefreshing} onNew={openNew} />
+        </TabsContent>
+        <TabsContent value="warmup">
+          <WarmupPanel refreshKey={refreshKey} onOpen={openWarmup} onNew={openNewWarmup} />
         </TabsContent>
         <TabsContent value="speech">
           <SpeechPanel refreshKey={refreshKey} onRefreshingChange={setRefreshing} />
@@ -198,73 +250,3 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
  * under the same id the manifest gives the view.
  */
 window.__enkaku__.register('posts', SocialPostsView)
-
-/**
- * The Warm-up screen — a SECOND menu entry, which the last redesign of this
- * plugin deliberately removed two of.
- *
- * That decision is not undone: it was about three entries for ONE job, and
- * warming up is a different job. It takes no videos, makes no posts, and asks
- * "what did this phone do today" rather than "where did this video get to".
- * The owner's brief for it was exactly that — *"ada sesi auto post dan sesi
- * warmup, jadi biar ga ketukar usernya"*.
- *
- * Same three places as Social posts and the same URL discipline, so a link to
- * one warm-up session is a link somebody can send: `?warmup=<id>` opens a
- * session, `?tab=new` opens the form.
- */
-function WarmupView({ params, setParams }: PluginViewProps): React.ReactElement {
-  const [refreshKey, setRefreshKey] = useState(0)
-  const openId = params.warmup ?? null
-  const composing = params.tab === 'new'
-
-  const openSession = useCallback((groupId: string) => setParams({ warmup: groupId, tab: null }), [setParams])
-  const backToList = useCallback(() => setParams({ warmup: null, tab: null }), [setParams])
-  const openNew = useCallback(() => setParams({ warmup: null, tab: 'new' }), [setParams])
-  const refresh = useCallback(() => setRefreshKey((n) => n + 1), [])
-
-  /* A new session lands the operator ON it: they have just decided how the fleet spends the next hour. */
-  const onCreated = useCallback(
-    (groupId: string | null) => {
-      setRefreshKey((n) => n + 1)
-      setParams(groupId === null ? { tab: null } : { tab: null, warmup: groupId })
-    },
-    [setParams],
-  )
-
-  if (openId !== null) return <WarmupDetail groupId={openId} refreshKey={refreshKey} onBack={backToList} />
-
-  if (composing) {
-    return (
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={backToList}>
-            <CaretLeftIcon aria-hidden />
-            All warm-ups
-          </Button>
-          <span className="text-[12px] text-dim">New warm-up</span>
-        </div>
-        <NewWarmupForm onCreated={onCreated} />
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="grow" />
-        <Button variant="outline" size="sm" onClick={refresh}>
-          <ArrowsClockwiseIcon aria-hidden />
-          Refresh
-        </Button>
-        <Button size="sm" onClick={openNew}>
-          <PlusIcon aria-hidden />
-          New warm-up
-        </Button>
-      </div>
-      <WarmupPanel refreshKey={refreshKey} onOpen={openSession} onNew={openNew} />
-    </div>
-  )
-}
-
-window.__enkaku__.register('warmup', WarmupView)

@@ -196,6 +196,13 @@ describe('retryFailedSteps — Retry failed means the same thing it does on the 
     expect(again?.steps[0]).toMatchObject({ state: 'pending', jobId: null, error: null, settledAt: null })
   })
 
+  /* A sequence that stopped leaves everything after it `skipped` — never run. */
+  test('activities a stopped sequence never reached go again too', () => {
+    const again = retryFailedSteps(withStates(oneRun(), ['success', 'failed', 'skipped']), STARTED + 9_000)
+    expect(again?.steps.map((s) => s.state)).toEqual(['success', 'pending', 'pending'])
+    expect(again?.steps[2]?.notBeforeAt).toBe(STARTED + 9_000)
+  })
+
   test('a run with nothing failed is left exactly as it was', () => {
     expect(retryFailedSteps(withStates(oneRun(), ['success', 'success', 'success']), STARTED)).toBeNull()
     expect(retryFailedSteps(oneRun(), STARTED)).toBeNull()

@@ -35,7 +35,7 @@ describe('social-media-manager manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.55.1')
+    expect(plugin.version).toBe('0.56.0')
     expect(plugin.version).toBe(pkg.version)
   })
 
@@ -104,21 +104,20 @@ describe('the surface', () => {
   const surface = plugin.surface!
 
   /*
-    TWO entries now (plan 900 D5), and the earlier decision that removed two is
-    not undone by it: that one was about three entries for one JOB. Warming up
-    is a different job — no videos, no posts, and it answers "what did this
-    phone do today" rather than "where did this video get to".
-  */
-  test('one entry per job, and each names its own view', () => {
-    expect(surface.nav).toHaveLength(2)
-    expect(Object.keys(surface.views).sort()).toEqual(['posts', 'warmup'])
-    expect(surface.nav.map((entry) => entry.view)).toEqual(['posts', 'warmup'])
-  })
+    ONE entry again (0.56.0). 0.53.0 split warm-up out on the argument that it
+    is a different JOB from posting; the owner looked at the result and said to
+    merge them — one Social Media Manager page, warm-up as a tab. The rule that
+    survives is one entry per PRODUCT, not one per job.
 
-  /* One bundle, two registrations: a second entry file would be a second build for one screen's worth of code. */
-  test('both views are drawn by the same entry module', () => {
-    expect(surface.views.posts?.react?.entry).toBe('index.js')
-    expect(surface.views.warmup?.react?.entry).toBe('index.js')
+    This test is the guard for it: a future change that gives warm-up (or
+    captions, or accounts) its own menu entry has to come here and argue with
+    the paragraph above first.
+  */
+  test('one entry, for the whole product', () => {
+    expect(surface.nav).toHaveLength(1)
+    expect(Object.keys(surface.views)).toEqual(['posts'])
+    expect(surface.nav[0]?.view).toBe('posts')
+    expect(surface.nav[0]?.label).toBe('Social Media Manager')
   })
 
   test('the view is drawn by this plugin, not declared as a table', () => {

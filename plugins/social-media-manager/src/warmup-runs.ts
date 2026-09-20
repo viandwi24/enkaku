@@ -354,9 +354,23 @@ export function warmupSummary(progress: WarmupProgress): string {
  * caller does not write a row it did not change.
  */
 export function retryFailedSteps(run: WarmupRun, now: number): WarmupRun | null {
-  if (!run.steps.some((step) => step.state === 'failed')) return null
+  /*
+    `skipped` goes again too, and that is not a generalisation — it is what a
+    stopped sequence leaves behind.
+
+    A workflow row's failure stops the engine, so every activity after it is
+    marked `skipped`: it never ran. Retrying only the failed one would send a
+    three-activity sequence back as a one-activity sequence and quietly drop the
+    two the operator is still waiting for. Found on hardware (2026-09-20), on
+    the very run that proved `sequenceOutcome` right.
+
+    A `skipped` step on a job-per-activity row carries the same fact — nothing
+    was sent for it — so this is one rule rather than a mode-dependent one.
+  */
+  const again = (state: WarmupStepState): boolean => state === 'failed' || state === 'skipped'
+  if (!run.steps.some((step) => again(step.state))) return null
   const steps = run.steps.map((step) =>
-    step.state === 'failed' ? { ...step, state: 'pending' as const, jobId: null, error: null, startedAt: null, settledAt: null, notBeforeAt: now } : step,
+    again(step.state) ? { ...step, state: 'pending' as const, jobId: null, error: null, startedAt: null, settledAt: null, notBeforeAt: now } : step,
   )
   return withRunSummary({ ...run, steps })
 }

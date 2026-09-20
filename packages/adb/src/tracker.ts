@@ -15,6 +15,17 @@ export interface TrackedDevice {
   usb?: string
   /** The `transport_id:` field `host:devices-l` carries (plan 88 §3.1, fixes F6). Undefined from `host:track-devices` (see `parseSnapshot`). */
   transportId?: number
+  /**
+   * The three descriptive `host:devices-l` fields — `product:`, `model:`,
+   * `device:` — kept verbatim (owner, 2026-09-20, for the raw adb page).
+   * adb itself omits all three for a transport that has not reached the
+   * `device` state, so `undefined` is normal and means "adb did not say",
+   * never "the phone has no model". Undefined from `host:track-devices`
+   * for the same reason `usb`/`transportId` are (see `parseSnapshot`).
+   */
+  product?: string
+  model?: string
+  deviceCode?: string
 }
 
 export type TrackerEvent =

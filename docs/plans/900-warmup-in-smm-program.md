@@ -129,15 +129,39 @@ So the session gains a `kind`, and the two kinds carry their own settings. This
 is also what the owner asked for in plain terms: the operator must never wonder
 which kind of session they are looking at.
 
-### D5 — SMM's surface becomes multi-view, and the navigation says which is which
+### D5 — SMM's surface is ONE view, named for the product — *reversed 2026-09-20*
 
-`surface.nav` currently declares one item (`Social posts`). It becomes at least
-two, so the two session kinds are separate destinations rather than a mode
-toggle inside one page.
+**This decision was made the other way and is now overturned by the owner.** The
+original text, kept because a reader of plan 904 needs to know what it built:
 
-This is a product decision, not a layout one: the farm is sold on scaling,
-sharing and being pluggable, so a plugin's own navigation is part of what a
-buyer sees.
+> `surface.nav` currently declares one item (`Social posts`). It becomes at
+> least two, so the two session kinds are separate destinations rather than a
+> mode toggle inside one page. This is a product decision, not a layout one: the
+> farm is sold on scaling, sharing and being pluggable, so a plugin's own
+> navigation is part of what a buyer sees.
+
+904 built that: two nav entries, `posts` and `warmup`, shipped in smm 0.53.0.
+The owner used it and rejected it — *"kenapa halaman ui nya beda warmup sama
+Social posts? saya mau anda jadikan satu, jadi Social Media Manager page, ini
+isinya semuanya mencangkup warmup dan auto post"*.
+
+**The decision now is one nav entry, `Social Media Manager`, with warm-up as a
+tab beside Posts, Auto-Caption, Cleanup and Accounts.** Landed in smm 0.56.0.
+
+What was wrong with the reasoning above is worth keeping, because it is the
+mistake and not the outcome that generalises. It argued from the SESSION MODEL
+— two kinds of session, therefore two destinations — and a menu is not a mirror
+of a schema. The operator does not arrive thinking "I have a warm-up kind of
+session"; they arrive thinking "I manage these accounts". The unit of navigation
+is the PRODUCT, not the job, and certainly not the row type. The same argument
+had already been made and won once inside this plugin, when three entries
+(posts, sessions, platforms) collapsed into one; D5 broke it again without
+noticing, which is why `surface.nav` in `index.ts` now carries the rule in
+prose rather than leaving it to be rediscovered a third time.
+
+The buyer-facing point survives intact and in fact reads better: a plugin whose
+menu entry is named for what it MANAGES is what a pluggable farm should look
+like.
 
 ### D6 — What carries over from the rotation, by name
 
@@ -163,7 +187,7 @@ exist in the rebuilt feature:
 | 1 | 901 | The session model: `kind` on `GroupSchema`, a `WarmupSettingsSchema`, migration of existing rows, and the reader that keeps old sessions readable |
 | 2 | 902 | The warm-up engine in plugin code: rotation, phases, style draw, shuffle, gaps, jitter. `warmup-rotation.ts` is marked superseded but NOT deleted — §6 Q1 is unanswered and a farm may have a schedule pointing at it, so wave 5 removes it |
 | 3 | 903 | Dispatch and session rows: per-device, per-platform results; Retry failed; the notes vocabulary that auto-post already has |
-| 4 | 904 | Studio surface: the second nav item, the warm-up session page, the settings form — **done**; per-style weighting deferred, see 904 §2 |
+| 4 | 904 | Studio surface: the warm-up session page and the settings form — **done**. Its second nav item was **reverted in 0.56.0**, see D5 |
 | 5 | 905 | Scheduling, docs, and the retirement notice — **done**. The removal itself is unblocked (§6 Q1 answered) and left as the owner's call |
 | 6 | 906 | A schedule whose work target has gone says so, instead of looking healthy until it fires |
 

@@ -59,7 +59,7 @@ one screen's worth of code.
 
 | # | criterion | how |
 |---|---|---|
-| 1 | Two nav entries, two views, each naming its own | `index.test.ts` — "one entry per job…" |
+| 1 | ~~Two nav entries, two views, each naming its own~~ **Reverted 2026-09-20** (smm 0.56.0): ONE entry, `Social Media Manager`, with warm-up as a tab. The owner overruled plan 900 D5 after using it — see D5 for why the original reasoning was wrong | `index.test.ts` — "one entry, for the whole product" |
 | 2 | Both views come from `index.js` | same file |
 | 3 | Social posts shows no warm-up session | `loadAll`'s filter; smoke §6 |
 | 4 | Warm-up shows no post session | `WarmupPanel`'s filter; smoke §6 |

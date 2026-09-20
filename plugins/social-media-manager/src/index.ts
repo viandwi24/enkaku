@@ -82,6 +82,21 @@ import {
  *
  * ## Changelog
  *
+ * - **0.56.0 — one page, for one product.** Warm-up arrived in 0.53.0 with its
+ *   own menu entry, on the argument that warming up is a different job from
+ *   posting. The owner used it and disagreed: *"kenapa halaman ui nya beda
+ *   warmup sama Social posts? saya mau anda jadikan satu"*. So the sidebar
+ *   names the product — **Social Media Manager** — and warm-up is a tab beside
+ *   Posts, Auto-Caption, Cleanup and Accounts. The rule that came out of both
+ *   rounds of this argument is written at `surface.nav`: one entry per PRODUCT,
+ *   never one per job.
+ *
+ *   Carried in the same bump, because it was found by the run that proved
+ *   0.55.1: a retry re-queued only the steps that FAILED, so a sequence stopped
+ *   at its second activity went back out as a one-activity sequence and the two
+ *   the operator was still waiting for were silently dropped. `skipped` now
+ *   goes again for the same reason `failed` does — neither one ran.
+ *
  * - **0.55.1 — a failed sequence no longer says every activity failed.**
  *   Found by running 0.55.0 on a phone: four activities went out as one
  *   workflow, three went green as the engine walked them, the fourth met a bad
@@ -2022,7 +2037,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.55.1',
+  version: '0.56.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
@@ -2065,27 +2080,26 @@ export default definePlugin({
 
   surface: {
     /*
-      ONE entry, for one screen. The plugin used to carry three — posts,
-      sessions, platforms — and the owner's verdict after using it was that
-      three menus for one job is three places to get lost. The work is a
-      single sequence (upload a folder, spread it over the phones, watch it),
-      so the screen is a single page; see `ui/index.tsx`.
+      ONE entry, for one screen — and in 0.56.0 that is true again.
+
+      The plugin used to carry three (posts, sessions, platforms) and the
+      owner's verdict after using it was that three menus for one job is three
+      places to get lost. 0.53.0 then added a second entry for warm-up, on the
+      argument that warming up is a different JOB from posting. The owner
+      overruled it after seeing it: *"kenapa halaman ui nya beda warmup sama
+      Social posts? saya mau anda jadikan satu, jadi Social Media Manager
+      page"*.
+
+      The rule that survives both rounds is not "one entry per job" — it is one
+      entry per PRODUCT. Managing a farm's social accounts is one product, and
+      posting and warming up are two tabs of it. So the menu names the product
+      and `ui/index.tsx` carries the tabs.
     */
-    nav: [
-      { id: 'posts', label: 'Social posts', icon: 'upload', view: 'posts' },
-      /*
-        A SECOND entry, which the note above says this plugin removed two of.
-        That decision stands and this does not undo it: it was about three
-        entries for one JOB. Warming up is a different job — no videos, no
-        posts, and the question it answers is "what did this phone do today"
-        rather than "where did this video get to". Two jobs, two entries.
-      */
-      { id: 'warmup', label: 'Warm-up', icon: 'activity', view: 'warmup' },
-    ],
+    nav: [{ id: 'posts', label: 'Social Media Manager', icon: 'upload', view: 'posts' }],
     views: {
       posts: {
-        title: 'Social posts',
-        description: 'Upload the videos, choose where they go and how fast, then start the session — all on this page.',
+        title: 'Social Media Manager',
+        description: 'Post to the fleet and warm it up: sessions, captions, cleanup and accounts, all on this page.',
         /*
           Tier C. A declared table can render stored rows and fire an action
           per row, which is right for a list and cannot express this flow:
@@ -2094,12 +2108,6 @@ export default definePlugin({
           as the numbers move, captions generated from file names. Those are
           answers the screen computes WHILE the operator decides.
         */
-        react: { entry: 'index.js', apiVersion: PLUGIN_UI_API_VERSION },
-      },
-      warmup: {
-        title: 'Warm-up',
-        description: 'Give each phone one platform it carries and a few activities on it, spread out so the fleet never moves in lockstep.',
-        /* The same bundle: one entry module registers both views, so there is one build and one shared chunk. */
         react: { entry: 'index.js', apiVersion: PLUGIN_UI_API_VERSION },
       },
     },
