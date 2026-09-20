@@ -78,6 +78,23 @@ import {
  *
  * ## Changelog
  *
+ * - **0.51.1 — the row a warm-up writes** (plan 900 D4, plan 903).
+ *   `warmup-runs.ts` — one row per PHONE per session, carrying the activities
+ *   it drew and what each one did. A post row is per VIDEO with platforms as
+ *   its columns, because that is the question a post session answers; a warm-up
+ *   session answers "what did this phone do", so the row follows the job rather
+ *   than being forced into the other one's shape.
+ *
+ *   Two differences from `posts.ts` that are decisions, not omissions. There is
+ *   no `unverified`: a post can be one because pressing Upload and knowing it
+ *   landed are different things, and re-sending one that landed duplicates it on
+ *   a real account — scrolling a feed twice is a phone using an app twice, so a
+ *   warm-up retry is always safe. And a phone runs ONE activity at a time, in
+ *   order, on the clock: two warm-up jobs on one phone would fight over the same
+ *   screen.
+ *
+ *   Model only; nothing dispatches it yet. Invisible to an operator, so a patch.
+ *
  * - **0.51.0 — the warm-up rotation is plugin code, not a graph** (plan 900 D1,
  *   plan 902).
  *
@@ -1690,7 +1707,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.51.0',
+  version: '0.51.1',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
