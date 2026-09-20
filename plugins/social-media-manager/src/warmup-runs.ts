@@ -96,6 +96,15 @@ export const WarmupRunSchema = z.object({
   styleTitle: z.string().max(120).nullable().default(null),
   note: z.string().max(ATTEMPT_ERROR_MAX).nullable().default(null),
   steps: z.array(WarmupStepRowSchema),
+  /**
+   * How this row's activities go out — copied from the session's settings at
+   * plan time, not read from the group each tick.
+   *
+   * A session whose mode changed half way through would otherwise have rows
+   * that were dispatched one way being settled another, and the row is the
+   * record of what the phone actually did.
+   */
+  sequence: z.enum(['jobs', 'workflow']).default('jobs'),
   state: z.enum(WARMUP_RUN_STATES).default('pending'),
   summary: z.string().max(200).nullable().default(null),
 })
@@ -109,7 +118,14 @@ export type WarmupRun = z.infer<typeof WarmupRunSchema>
  * drifts by however long the farm was busy, and a warm-up whose gaps stretch
  * because the queue was full is not the pacing the operator chose.
  */
-export function runsFromPlan(input: { groupId: string; assignments: readonly WarmupAssignment[]; phase: number; startedAt: number; names?: ReadonlyMap<string, string> }): WarmupRun[] {
+export function runsFromPlan(input: {
+  groupId: string
+  assignments: readonly WarmupAssignment[]
+  phase: number
+  startedAt: number
+  names?: ReadonlyMap<string, string>
+  sequence?: 'jobs' | 'workflow'
+}): WarmupRun[] {
   const { groupId, assignments, phase, startedAt, names } = input
   return assignments.map((assignment) => {
     const steps: WarmupStepRow[] = assignment.steps.map((step) => ({
@@ -136,6 +152,7 @@ export function runsFromPlan(input: { groupId: string; assignments: readonly War
       styleTitle: assignment.styleTitle,
       note: assignment.note,
       steps,
+      sequence: input.sequence ?? 'jobs',
       state: steps.length === 0 ? 'skipped' : 'pending',
       summary: null,
     }
@@ -152,10 +169,29 @@ export function runsFromPlan(input: { groupId: string; assignments: readonly War
  * burst it exists to avoid.
  */
 export function nextStep(run: WarmupRun, now: number): WarmupStepRow | null {
+  // A workflow row goes out whole, through `dueSequence` — never one step at a time.
+  if (run.sequence === 'workflow') return null
   if (run.steps.some((step) => step.state === 'queued')) return null
   const next = run.steps.find((step) => step.state === 'pending')
   if (!next) return null
   return next.notBeforeAt <= now ? next : null
+}
+
+/**
+ * The whole sequence, when this row goes out as ONE workflow job — or `null`.
+ *
+ * All-or-nothing on purpose. A workflow job carries its own delays, so the
+ * steps after the first are not separately "due"; dispatching a second one
+ * while the first is still walking the phone is the very thing `nextStep`
+ * refuses for the job-per-activity path.
+ */
+export function dueSequence(run: WarmupRun, now: number): WarmupStepRow[] | null {
+  if (run.sequence !== 'workflow') return null
+  if (run.steps.some((step) => step.state === 'queued')) return null
+  const pending = run.steps.filter((step) => step.state === 'pending')
+  const first = pending[0]
+  if (!first || first.notBeforeAt > now) return null
+  return pending
 }
 
 /** Is this run finished — nothing pending, nothing out? */
@@ -238,6 +274,36 @@ export function settleWarmupStep(job: SettleableJob): { state: WarmupStepState; 
     default:
       return null
   }
+}
+
+/**
+ * Which activities a failed WORKFLOW sequence actually got through.
+ *
+ * A workflow row has every activity against one job, so a failed job first read
+ * as "all of them failed" — and on the run that found this, three of four had
+ * gone green as the workflow's own child jobs before the fourth met a bad
+ * screen. "All 4 failed" is not a rounding error; it is the opposite of what
+ * happened, and an operator reading it would go looking for four broken
+ * activities.
+ *
+ * The engine walks the document in order and stops at the first failure, and
+ * the failure message names the node (`step "s2" failed: …`). `warmupSequenceDoc`
+ * numbers its script nodes `s0, s1, …` in the order of `steps`, so that name is
+ * the index: everything before it ran, everything after it never did.
+ *
+ * Reading an index out of a message is fragile, and this is deliberately the
+ * only thing that depends on it: when the name is not there, every activity is
+ * marked failed exactly as before, with the job's own error. A wrong guess here
+ * would be worse than the crude answer.
+ */
+export function sequenceOutcome(steps: readonly WarmupStepRow[], error: string | null): { activityId: string; state: WarmupStepState }[] | null {
+  const named = /step "s(\d+)" failed/.exec(error ?? '')
+  const at = named ? Number(named[1]) : Number.NaN
+  if (!Number.isInteger(at) || at < 0 || at >= steps.length) return null
+  return steps.map((step, index) => ({
+    activityId: step.activityId,
+    state: index < at ? ('success' as const) : index === at ? ('failed' as const) : ('skipped' as const),
+  }))
 }
 
 export interface WarmupProgress {

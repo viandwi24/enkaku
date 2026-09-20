@@ -1,5 +1,5 @@
 import { isDeviceFree, type RouterDevice } from './posts'
-import { nextStep, type WarmupRun, type WarmupStepRow } from './warmup-runs'
+import { dueSequence, nextStep, type WarmupRun, type WarmupStepRow } from './warmup-runs'
 
 /**
  * The decisions a warm-up tick makes, separated from the calls it makes
@@ -11,11 +11,19 @@ import { nextStep, type WarmupRun, type WarmupStepRow } from './warmup-runs'
  * that is hardest to reproduce by hand and easiest to get subtly wrong.
  */
 
-/** What a tick decided to send. */
+/**
+ * What a tick decided to send.
+ *
+ * `steps` is one activity on a job-per-activity row and the WHOLE remaining
+ * sequence on a workflow one (plan 908) — the caller sends one job either way,
+ * and marks exactly these steps as queued against it.
+ */
 export interface WarmupDispatch {
   run: WarmupRun
-  step: WarmupStepRow
+  steps: WarmupStepRow[]
   deviceId: string
+  /** How to send it: one script job, or one workflow job carrying the lot. */
+  as: 'job' | 'workflow'
 }
 
 /**
@@ -50,8 +58,9 @@ export function planWarmupTick(input: {
   const out: WarmupDispatch[] = []
   for (const run of runs) {
     if (taken.has(run.deviceId)) continue
-    const step = nextStep(run, now)
-    if (step === null) continue
+    const sequence = dueSequence(run, now)
+    const step = sequence === null ? nextStep(run, now) : null
+    if (sequence === null && step === null) continue
     const device = devices.get(run.deviceId)
     // A phone that has left the farm is not a failure of this step: the session
     // keeps it, and it runs if the phone comes back. `planDispatch` gives a row
@@ -59,7 +68,7 @@ export function planWarmupTick(input: {
     // deadline to miss, so it simply waits.
     if (!device || !isDeviceFree(device)) continue
     taken.add(run.deviceId)
-    out.push({ run, step, deviceId: run.deviceId })
+    out.push(sequence !== null ? { run, steps: sequence, deviceId: run.deviceId, as: 'workflow' } : { run, steps: [step as WarmupStepRow], deviceId: run.deviceId, as: 'job' })
   }
   return out
 }

@@ -19,8 +19,9 @@ import { GROUP_PREFIX, GroupSchema, groupKeyFor, isRowDue, roomInFlight, withPro
 import retryFailed from './retry-failed'
 import addWarmup from './add-warmup'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
-import { WARMUP_PREFIX, WarmupRunSchema, isRunOver, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRun } from './warmup-runs'
+import { WARMUP_PREFIX, WarmupRunSchema, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRun } from './warmup-runs'
 import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
+import { warmupSequenceDoc } from './warmup-workflow'
 import {
   POST_PREFIX,
   PostSchema,
@@ -80,6 +81,44 @@ import {
  * memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.55.1 — a failed sequence no longer says every activity failed.**
+ *   Found by running 0.55.0 on a phone: four activities went out as one
+ *   workflow, three went green as the engine walked them, the fourth met a bad
+ *   YouTube screen — and the row read "all 4 failed". That is not a rounding
+ *   error, it is the opposite of what happened, and an operator reading it goes
+ *   looking for four broken activities.
+ *
+ *   The engine stops at the first failure and names the node in its message, so
+ *   `sequenceOutcome` reads the index out of it: everything before ran,
+ *   everything after never did. Reading an index out of a message is fragile
+ *   and this is deliberately the only thing that depends on it — an
+ *   unparseable message falls back to the blunt answer rather than guessing,
+ *   because a wrong guess is worse than a crude one.
+ *
+ * - **0.55.0 — a warm-up phone can go out as ONE job** (plan 907, plan 908).
+ *   `sequenceMode: 'workflow'` sends a phone's whole sequence as a single
+ *   workflow, with `delay` nodes between the scripts, through the direct-run
+ *   path plan 907 added. The gaps are then exact rather than as fine as the
+ *   router's fifteen second tick, and the phone is claimed once instead of four
+ *   times.
+ *
+ *   A CHOICE, defaulting to the old path, because the trade is real in both
+ *   directions. This plugin holds `job.get` and deliberately not `job.list`, so
+ *   in workflow mode it sees ONE outcome for the sequence instead of one per
+ *   activity — the per-activity detail still exists, in Studio's own run view,
+ *   but it is a click away instead of a column. The form says so in a sentence
+ *   rather than leaving an operator to find out.
+ *
+ *   Nothing about who AUTHORS the composition changed (plan 900 D1): the
+ *   document is generated from the plan `warmup.ts` already drew, in
+ *   TypeScript, and its gaps are read off the row rather than re-drawn — a
+ *   settings change made after a row was planned must not silently re-pace work
+ *   already scheduled.
+ *
+ *   `actions.run` joins the permission list, and is declared even though only
+ *   this mode uses it: a permission that appears the first time somebody turns
+ *   a setting on is a permission nobody agreed to.
  *
  * - **0.54.0 — a scheduled warm-up cannot make one session per phone**
  *   (plan 900 wave 5, plan 905).
@@ -1300,6 +1339,27 @@ async function reconcilePost(ctx: PluginServiceContext, post: Post): Promise<Pos
   return any ? { ...post, dispatch } : null
 }
 
+/** What `actions.run` answers with — only the part a dispatch needs to record. */
+const ActionsRunOutput = z.object({
+  operationId: z.string().optional(),
+  results: z
+    .array(z.object({ deviceId: z.string(), status: z.string(), jobId: z.string().nullable().default(null), message: z.string().nullable().default(null) }))
+    .default([]),
+})
+
+/**
+ * The gaps a workflow document should put between this row's activities.
+ *
+ * Read off the row's own steps rather than the session's settings: the row is
+ * what the phone is doing, and a settings change made after it was planned must
+ * not silently re-pace work already scheduled.
+ */
+function warmupGapsFor(run: WarmupRun): [number, number] {
+  const gaps: number[] = []
+  for (let i = 1; i < run.steps.length; i++) gaps.push(Math.max(0, (run.steps[i]?.atSec ?? 0) - (run.steps[i - 1]?.atSec ?? 0)))
+  return gaps.length === 0 ? [0, 0] : [Math.min(...gaps), Math.max(...gaps)]
+}
+
 /**
  * The warm-up half of a router tick (plan 900 D1, wave 3).
  *
@@ -1340,7 +1400,12 @@ async function runWarmupPass(
   for (const entry of entries) {
     let run = entry.run
     let changed = false
-    for (const step of queuedSteps(run)) {
+    /*
+      One ask per distinct job, not per step. A workflow row has every step
+      against the SAME job id, and asking four times for one answer would be
+      three wasted round trips and a chance for the four to disagree.
+    */
+    for (const step of queuedSteps(run).filter((candidate, index, all) => all.findIndex((other) => other.jobId === candidate.jobId) === index)) {
       let job: unknown
       try {
         job = await ctx.farm.call('job.get', { jobId: step.jobId as string }, JobGetOutput)
@@ -1351,13 +1416,31 @@ async function runWarmupPass(
           farm no longer HAS the job, which is the one answer that settles it.
         */
         if (!isJobGone(err)) continue
-        run = withStepState(run, step.activityId, { state: 'failed', error: 'The farm no longer has this job, so what the phone did cannot be read.', settledAt: input.now })
+        for (const sibling of run.steps.filter((candidate) => candidate.state === 'queued' && candidate.jobId === step.jobId)) {
+          run = withStepState(run, sibling.activityId, { state: 'failed', error: 'The farm no longer has this job, so what the phone did cannot be read.', settledAt: input.now })
+        }
         changed = true
         continue
       }
       const settled = settleWarmupStep(job as { status: string; error?: string | null })
       if (settled === null) continue
-      run = withStepState(run, step.activityId, { state: settled.state, error: settled.error, settledAt: input.now })
+      const sharing = run.steps.filter((candidate) => candidate.state === 'queued' && candidate.jobId === step.jobId)
+      /*
+        A workflow sequence gives ONE answer for several activities, and a
+        failure is not "they all failed" — the engine stops at the first bad
+        step, so everything before it ran. `sequenceOutcome` reads which one
+        from the failure's own message and falls back to the crude answer when
+        it cannot.
+      */
+      const perActivity = settled.state === 'failed' && sharing.length > 1 ? sequenceOutcome(sharing, settled.error) : null
+      for (const sibling of sharing) {
+        const own = perActivity?.find((entry) => entry.activityId === sibling.activityId)
+        run = withStepState(run, sibling.activityId, {
+          state: own?.state ?? settled.state,
+          error: own === undefined || own.state === 'failed' ? settled.error : null,
+          settledAt: input.now,
+        })
+      }
       changed = true
     }
     if (!changed) continue
@@ -1381,19 +1464,51 @@ async function runWarmupPass(
     if (!entry) continue
     let jobId: string
     try {
-      const job = await ctx.farm.call('job.run', { scriptRef: dispatch.step.script, deviceId: dispatch.deviceId, params: dispatch.step.params }, JobRunOutput)
-      jobId = job.jobId
+      if (dispatch.as === 'workflow') {
+        /*
+          The whole sequence as ONE job (plan 907, plan 908). `actions.run` is
+          the door that already exists for this: it carries the document, the
+          target, the pacing and the audit that every other workflow run uses,
+          so nothing here needs a capability of its own.
+        */
+        const doc = warmupSequenceDoc({ ...dispatch.run, steps: dispatch.steps.map((step) => ({ activityId: step.activityId, title: step.title, script: step.script, params: step.params, atSec: step.atSec })) }, { gapSec: warmupGapsFor(entry.run) })
+        if (doc === null) continue
+        const answer = await ctx.farm.call(
+          'actions.run',
+          { verb: 'run-workflow', target: { deviceIds: [dispatch.deviceId] }, force: true, params: { workflowName: doc.name, workflowDoc: doc, concurrency: 1 } },
+          ActionsRunOutput,
+        )
+        const sent = answer.results.find((r) => r.deviceId === dispatch.deviceId && r.jobId)
+        if (!sent?.jobId) {
+          ctx.log.warn('a warm-up sequence was not dispatched', { key: entry.key, detail: answer.results[0]?.message ?? 'no job id returned' })
+          continue
+        }
+        jobId = sent.jobId
+      } else {
+        const step = dispatch.steps[0]
+        if (!step) continue
+        const job = await ctx.farm.call('job.run', { scriptRef: step.script, deviceId: dispatch.deviceId, params: step.params }, JobRunOutput)
+        jobId = job.jobId
+      }
     } catch (err) {
       /*
-        A dispatch that threw never reached a phone, so the step is NOT marked
-        queued — it keeps its place and the next tick tries again. The one thing
-        that must not happen is a row claiming a job that does not exist, which
-        would wait for an answer for ever.
+        A dispatch that threw never reached a phone, so the steps are NOT marked
+        queued — they keep their place and the next tick tries again. The one
+        thing that must not happen is a row claiming a job that does not exist,
+        which would wait for an answer for ever.
       */
-      ctx.log.warn('could not send a warm-up activity', { key: entry.key, script: dispatch.step.script, error: messageOf(err) })
+      ctx.log.warn('could not send a warm-up activity', { key: entry.key, as: dispatch.as, error: messageOf(err) })
       continue
     }
-    entry.run = withRunSummary(withStepState(entry.run, dispatch.step.activityId, { state: 'queued', jobId, startedAt: input.now }))
+    /*
+      Every step this dispatch covers shares the job. On the workflow path that
+      is the whole sequence against one job id, which is exactly what settling
+      later reads: one answer for the lot, because this plugin holds `job.get`
+      and deliberately not `job.list`.
+    */
+    let next = entry.run
+    for (const step of dispatch.steps) next = withStepState(next, step.activityId, { state: 'queued', jobId, startedAt: input.now })
+    entry.run = withRunSummary(next)
     try {
       const written = await ctx.storage.global.setIfVersion(entry.key, entry.run, entry.version)
       if (written === null) ctx.log.info('a warm-up row changed while this tick was sending it — the job is out and the next tick will reconcile it', { key: entry.key, jobId })
@@ -1907,7 +2022,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.54.0',
+  version: '0.55.1',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
@@ -1930,8 +2045,16 @@ export default definePlugin({
      * `activities` already answers "is this phone busy", and the reconciler
      * asks about jobs it holds ids for, one at a time — a permission asked for
      * and not needed is one an operator granted for nothing.
+     *
+     * `actions.run` (plan 908) is the door a warm-up session in `workflow`
+     * sequence mode sends through: it carries the document, the target and the
+     * pacing that every other workflow run uses, so the alternative was a
+     * capability of our own that reached the same place. It is declared here
+     * rather than only when that mode is on, because the list is what an
+     * operator consents to at install and a permission that appears later is a
+     * permission nobody agreed to.
      */
-    permissions: ['device.list', 'job.run', 'job.get', 'artifact.get'],
+    permissions: ['device.list', 'job.run', 'job.get', 'artifact.get', 'actions.run'],
     setup: (ctx) => {
       const timer = setInterval(() => {
         void maybeRunTick(ctx).catch((err) => ctx.log.warn('router tick failed', { error: messageOf(err) }))

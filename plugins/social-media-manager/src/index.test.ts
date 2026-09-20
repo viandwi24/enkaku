@@ -35,7 +35,7 @@ describe('social-media-manager manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.54.0')
+    expect(plugin.version).toBe('0.55.1')
     expect(plugin.version).toBe(pkg.version)
   })
 
@@ -80,7 +80,11 @@ describe('the service declaration', () => {
     // Exhaustive by design: this list is what the operator is shown and
     // consents to at install, so a permission asked for and never used is one
     // they granted for nothing.
-    expect(plugin.service?.permissions).toEqual(['device.list', 'job.run', 'job.get', 'artifact.get'])
+    //
+    // `actions.run` (plan 908) is used only by a session in `workflow`
+    // sequence mode, and is declared anyway: a permission that appears the
+    // first time somebody turns a setting on is a permission nobody agreed to.
+    expect(plugin.service?.permissions).toEqual(['device.list', 'job.run', 'job.get', 'artifact.get', 'actions.run'])
   })
 
   test('a service exists — the router is a timer and cannot run without one', () => {

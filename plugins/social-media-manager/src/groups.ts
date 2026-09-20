@@ -130,6 +130,24 @@ export const WarmupSettingsSchema = z.object({
     })
     .default({ chance: 0.1, keywordBoost: 3 }),
   /**
+   * How a phone's activities are dispatched (plan 908).
+   *
+   * `jobs` — one job per activity, the gaps kept as `notBeforeAt` stamps the
+   * router honours on its own tick. The default, and the path verified on
+   * hardware: the operator sees a state and an error PER ACTIVITY.
+   *
+   * `workflow` — the whole sequence as ONE job, with `delay` nodes between the
+   * scripts (plan 907's direct-run). The gaps are then exact rather than as
+   * fine as a fifteen second tick, and the phone is claimed once instead of
+   * four times. The cost is the per-activity column: this plugin holds
+   * `job.get` and deliberately not `job.list`, so it sees one outcome for the
+   * sequence and Studio's run view is where the steps are.
+   *
+   * A choice rather than a replacement, because those are real trade-offs in
+   * both directions and neither answer is right for every farm.
+   */
+  sequenceMode: z.enum(['jobs', 'workflow']).default('jobs'),
+  /**
    * Relative weight per activity style, for the weighted draw that decides
    * what a phone does inside its platform (plan 900 D6.4).
    *

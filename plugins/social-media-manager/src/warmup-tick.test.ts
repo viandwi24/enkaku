@@ -29,7 +29,7 @@ const devicesFor = (...devices: RouterDevice[]): Map<string, RouterDevice> => ne
 describe('planWarmupTick — what goes out this tick', () => {
   test('a due step on a free phone goes out', () => {
     const plan = planWarmupTick({ runs: runsFor('d1'), devices: devicesFor(free('d1')), claimed: new Set(), now: NOW })
-    expect(plan.map((p) => p.step.activityId)).toEqual(['a1'])
+    expect(plan.map((p) => p.steps[0]?.activityId)).toEqual(['a1'])
   })
 
   test('one phone takes one job, never two', () => {

@@ -6,7 +6,9 @@ import {
   nextStep,
   platformsCovered,
   retryFailedSteps,
+  dueSequence,
   runsFromPlan,
+  sequenceOutcome,
   settleWarmupStep,
   warmupProgress,
   warmupRunKey,
@@ -258,5 +260,88 @@ describe('the stored shape survives a version that adds a field', () => {
     expect(parsed.steps[0]).toMatchObject({ state: 'pending', jobId: null, params: {} } as Partial<WarmupStepRow>)
     expect(parsed.phase).toBe(0)
     expect(parsed.deviceName).toBeNull()
+  })
+})
+
+/*
+  A workflow row is dispatched whole (plan 908): the delays live INSIDE the job,
+  so the steps after the first are not separately due, and sending a second job
+  while the first is still walking the phone is the thing `nextStep` refuses for
+  the other path.
+*/
+describe('dueSequence — a row that goes out as one workflow job', () => {
+  const workflowRun = (): WarmupRun =>
+    runsFromPlan({ groupId: 'g1', assignments: [assignment()], phase: 0, startedAt: STARTED, sequence: 'workflow' })[0] as WarmupRun
+
+  test('a job-per-activity row offers nothing here', () => {
+    expect(dueSequence(oneRun(), STARTED + 10_000)).toBeNull()
+  })
+
+  test('a workflow row offers nothing to `nextStep`, so the two paths cannot both fire', () => {
+    expect(nextStep(workflowRun(), STARTED + 10_000)).toBeNull()
+  })
+
+  test('the whole sequence goes out once the first step is due', () => {
+    const run = workflowRun()
+    expect(dueSequence(run, STARTED + 29)).toBeNull()
+    expect(dueSequence(run, STARTED + 30)?.map((s) => s.activityId)).toEqual(['tt-a-fyp', 'tt-a-notif', 'tt-a-shop'])
+  })
+
+  test('nothing else goes out while the sequence is on the phone', () => {
+    const run = withStates(workflowRun(), ['queued', 'queued', 'queued'])
+    expect(dueSequence(run, STARTED + 10_000)).toBeNull()
+  })
+
+  test('a finished sequence offers nothing', () => {
+    expect(dueSequence(withStates(workflowRun(), ['success', 'success', 'success']), STARTED + 10_000)).toBeNull()
+  })
+
+  /* A retry re-queues the failed ones, and they go out together as a shorter sequence. */
+  test('after a retry only the failed activities go out again', () => {
+    const run = retryFailedSteps(withStates(workflowRun(), ['success', 'failed', 'failed']), STARTED + 5_000)
+    expect(dueSequence(run as WarmupRun, STARTED + 5_000)?.map((s) => s.activityId)).toEqual(['tt-a-notif', 'tt-a-shop'])
+  })
+
+  test('the row remembers the mode it was planned in', () => {
+    expect(workflowRun().sequence).toBe('workflow')
+    expect(oneRun().sequence).toBe('jobs')
+  })
+})
+
+/*
+  Found by running it. A workflow row has every activity against one job, so a
+  failed job first read as "all 4 failed" — while three of the four had gone
+  green as the workflow's own child jobs before the fourth met a bad screen.
+  That is not a rounding error; it is the opposite of what happened.
+*/
+describe('sequenceOutcome — which activity in a sequence actually failed', () => {
+  const steps = (): WarmupStepRow[] => (oneRun().steps as WarmupStepRow[])
+
+  test('everything before the named step ran, everything after it never did', () => {
+    const out = sequenceOutcome(steps(), 'step "s1" failed: the feed did not load')
+    expect(out?.map((s) => s.state)).toEqual(['success', 'failed', 'skipped'])
+  })
+
+  test('a failure on the first step blames only the first', () => {
+    expect(sequenceOutcome(steps(), 'step "s0" failed: boom')?.map((s) => s.state)).toEqual(['failed', 'skipped', 'skipped'])
+  })
+
+  test('a failure on the last blames only the last, and the rest are credited', () => {
+    expect(sequenceOutcome(steps(), 'step "s2" failed: boom')?.map((s) => s.state)).toEqual(['success', 'success', 'failed'])
+  })
+
+  /*
+    Reading an index out of a message is fragile, and this is the only thing
+    that depends on it: an unparseable message falls back to the crude answer
+    rather than guessing, because a wrong guess is worse than a blunt one.
+  */
+  test('a message with no step name gives no answer at all', () => {
+    expect(sequenceOutcome(steps(), 'the phone went offline')).toBeNull()
+    expect(sequenceOutcome(steps(), null)).toBeNull()
+  })
+
+  test('a step name outside the sequence is refused, not clamped', () => {
+    expect(sequenceOutcome(steps(), 'step "s9" failed: boom')).toBeNull()
+    expect(sequenceOutcome(steps(), 'step "s-1" failed: boom')).toBeNull()
   })
 })

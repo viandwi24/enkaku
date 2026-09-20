@@ -49,6 +49,11 @@ const settingsParams = {
   phases: z.number().int().min(1).max(3).default(1).describe('How many platform phases to run. With three platforms and three phases every phone warms up every platform.').meta(ui({ title: 'Phases' })),
   likeChance: z.number().min(0).max(1).default(0.1).describe('How often a phone presses like, on the activities that can.').meta(ui({ title: 'Like chance' })),
   keywordBoost: z.number().min(1).max(10).default(3).describe('How much a keyword match raises the like and watch chance.').meta(ui({ title: 'Keyword boost' })),
+  sequenceMode: z
+    .enum(['jobs', 'workflow'])
+    .default('jobs')
+    .describe('How a phone\'s activities go out. "jobs" sends one per activity and shows a result for each. "workflow" sends the whole sequence as one job with exact gaps, and shows one result — the steps are then in the job\'s own run view.')
+    .meta(ui({ title: 'Send activities as', labels: { jobs: 'One job per activity', workflow: 'One workflow per phone' } })),
 }
 
 const params = z.object({
@@ -132,6 +137,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       slot: ctx.params.slot,
       phases: ctx.params.phases,
       like: { chance: ctx.params.likeChance, keywordBoost: ctx.params.keywordBoost },
+      sequenceMode: ctx.params.sequenceMode,
     })
 
     const now = Math.floor(Date.now() / 1000)
@@ -200,7 +206,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     const allRuns = []
     for (let phase = 0; phase < phases; phase++) {
       const assignments = planWarmup({ devices, settings, platforms, phase, nowMs: Date.now(), random: Math.random })
-      const runs = runsFromPlan({ groupId, assignments, phase, startedAt: phaseStart, names })
+      const runs = runsFromPlan({ groupId, assignments, phase, startedAt: phaseStart, names, sequence: settings.sequenceMode })
       let longest = 0
       for (const run of runs) {
         await ctx.storage.global.set(warmupRunKey(groupId, phase, run.deviceId), run)

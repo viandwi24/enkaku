@@ -285,6 +285,9 @@ import { createActivityRegistry, type ActivityRegistry } from './activity/regist
 import { createOperationRegistry } from './actions/operations'
 import type { ActionsDeps } from './actions/run'
 import { createActionRoutes } from './api/actions'
+import { runAction } from './actions/run'
+import type { ActionRequest, ActionResponse } from '@enkaku/protocol'
+import type { Role } from './auth/service'
 import { createJobStore } from './queue/job-store'
 import { createRunStore } from './jobs/runs/store'
 import { createRunWatcher } from './jobs/runs/watcher'
@@ -2924,9 +2927,27 @@ let blobGc: BlobGc | null = null
       // a second toolchain.
       // Plan 318 — the CLI path and model come from `farm_settings.ai`, read fresh per call.
       const transcribeService = createTranscribeService({ db, dataDir: cfg.dataDir, toolchain, settings: () => settingsStore.get().ai })
+      /*
+        `actions.run` needs `runAction`, and `actionsDeps` is built two hundred
+        lines below this — it needs half of what is still being wired here. So
+        the capability gets a holder that is filled in once that exists, the
+        same shape the thunks around it use for the same reason.
+
+        Until 2026-09-20 nothing filled it in at all. `actionsRun` was declared
+        on `CapabilityContextDeps`, the capability was in the registry, the ACL
+        and the docs — and no host ever supplied it, so every `actions.run`
+        answered `E_NOT_SUPPORTED`. It was found by a plugin calling it and the
+        audit log saying exactly that, which is the one witness that sees a
+        capability nobody has ever successfully used.
+      */
+      let runActionFn: ((request: ActionRequest, actor: { id: string; role: Role }) => Promise<ActionResponse>) | null = null
       const capContextDeps: CapabilityContextDeps = {
         db,
         activities,
+        actionsRun: (request, actor) => {
+          if (!runActionFn) throw new EnkakuError('E_NOT_SUPPORTED', 'actions.run is not available yet on this host')
+          return runActionFn(request, actor)
+        },
         controlSettings: () => ({ overControl: settingsStore.get().privacy.overControl, idleSec: CONTROL_IDLE_SEC }),
         states,
         sessions: () => sessions,
@@ -3172,6 +3193,9 @@ let blobGc: BlobGc | null = null
         // live binding rather than capturing the client.
         adbConcurrency: () => adb?.stats().maxConcurrent ?? 0,
       }
+      // The holder above, filled in now that `actionsDeps` exists — this is what
+      // makes `actions.run` work for a plugin or an agent, not only over HTTP.
+      runActionFn = (request, actor) => runAction(actionsDeps, request, actor)
       const actionRoutesHandle = createActionRoutes(actionsDeps)
 
       // Plan 400/401/402 — the VM subsystem: a virtual device (an Android

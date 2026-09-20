@@ -170,6 +170,7 @@ interface Draft {
   phases: number
   likeChance: number
   keywordBoost: number
+  sequenceMode: 'jobs' | 'workflow'
 }
 
 const DEFAULT_DRAFT: Draft = {
@@ -185,6 +186,7 @@ const DEFAULT_DRAFT: Draft = {
   phases: 1,
   likeChance: 0.1,
   keywordBoost: 3,
+  sequenceMode: 'jobs',
 }
 
 function NumberField({ label, hint, value, onChange, step = 1, min, max }: { label: string; hint?: string; value: number; onChange: (n: number) => void; step?: number; min?: number; max?: number }): ReactElement {
@@ -275,6 +277,7 @@ export function NewWarmupForm({ onCreated }: { onCreated: (groupId: string | nul
           phases: draft.phases,
           likeChance: draft.likeChance,
           keywordBoost: draft.keywordBoost,
+          sequenceMode: draft.sequenceMode,
         },
         host.id,
         AddWarmupResultSchema,
@@ -339,6 +342,23 @@ export function NewWarmupForm({ onCreated }: { onCreated: (groupId: string | nul
         <NumberField label="Start jitter (s)" hint="so the fleet does not start at once" value={draft.startJitterSec} onChange={(n) => set('startJitterSec', n)} min={0} max={1800} />
         <NumberField label="Like chance" hint="0 never likes" value={draft.likeChance} onChange={(n) => set('likeChance', n)} step={0.05} min={0} max={1} />
         <NumberField label="Keyword boost" value={draft.keywordBoost} onChange={(n) => set('keywordBoost', n)} step={0.5} min={1} max={10} />
+      </Card>
+
+      <Card className="flex flex-col gap-1 p-3">
+        <span className="text-[12px] text-dim">Send activities as</span>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant={draft.sequenceMode === 'jobs' ? 'default' : 'outline'} onClick={() => set('sequenceMode', 'jobs')}>
+            One job per activity
+          </Button>
+          <Button size="sm" variant={draft.sequenceMode === 'workflow' ? 'default' : 'outline'} onClick={() => set('sequenceMode', 'workflow')}>
+            One workflow per phone
+          </Button>
+        </div>
+        <span className="text-[11px] text-faint">
+          {draft.sequenceMode === 'jobs'
+            ? 'A result for every activity, and the gaps are honoured on the router\'s own tick.'
+            : 'Exact gaps and one job per phone — but one result for the whole sequence, with the steps in its own run view.'}
+        </span>
       </Card>
 
       {error === null ? null : <ErrorState message={`Could not create the session: ${error}`} />}
