@@ -276,6 +276,11 @@ The word **run** had to be taken back first: it meant one phone's work, which
 is now a **row**. Two things called a run in one plugin is how a reader ends up
 fixing the wrong one.
 
+**Verified on the owner's farm** (2026-09-21): a session started a second time
+from its own page, and the detail screen offered both runs. The older one kept
+its progress — 5 activities answered, 100%, elapsed 21m 55s — while the newer
+one read 0 answered and not started. Neither number moved the other's.
+
 ## 5. Still open
 
 - **Cadence** (*"sehari bisa sekali, atau sehari bisa 2 kali"*) is the farm's
