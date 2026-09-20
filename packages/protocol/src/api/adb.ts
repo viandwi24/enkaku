@@ -333,3 +333,178 @@ export const AdbEndpointCreateResponseSchema = z.object({
   expiresAt: z.number(),
   command: z.string(),
 })
+
+/* ------------------------------------------------------------------------ *
+ * The raw adb surface (`GET/POST /api/adb/...`, owner 2026-09-20).
+ *
+ * Everything above this line describes the FARM's view of adb: pool stats,
+ * health, saved commands, a lent endpoint. What follows describes ADB's OWN
+ * view — `adb devices -l` and the host services beside it — for serials the
+ * farm has never admitted and may never admit.
+ *
+ * The distinction matters because the two lists genuinely disagree, and that
+ * disagreement is the whole reason this surface exists: a phone plugged in
+ * and `unauthorized` is invisible on the Devices page (it has no row yet),
+ * a phone whose adb-tcp link dropped is `offline` here but still a device
+ * row there, and a serial the operator blocked is in both with opposite
+ * meanings. A raw row therefore carries `farm`, which says which of those
+ * it is, rather than leaving the reader to guess from the serial.
+ * ------------------------------------------------------------------------ */
+
+/**
+ * How the farm sees a serial adb is reporting.
+ *
+ * - `enrolled`: a `devices` row exists — `deviceId`/`name`/`number` are set.
+ * - `discovered`: probed and waiting in the discovery tray, not admitted.
+ * - `blocked`: explicitly refused by an operator; the reconciler will not
+ *   admit it however often adb re-offers it.
+ * - `unknown`: adb has it and the farm has never seen it. Normal for a
+ *   phone still `unauthorized` (no `stableId` can be read until the RSA
+ *   prompt is accepted, so it cannot be probed, let alone admitted).
+ */
+export const AdbRawFarmKindSchema = z.enum(['enrolled', 'discovered', 'blocked', 'unknown'])
+export type AdbRawFarmKind = z.infer<typeof AdbRawFarmKindSchema>
+
+/** One line of `adb devices -l`, plus what the farm knows about it. */
+export const AdbRawDeviceSchema = z.object({
+  /** adb's transport address, not an identity — see CLAUDE.md on `stableId`. */
+  serial: z.string(),
+  /**
+   * adb's own word: `device`, `offline`, `unauthorized`, `authorizing`,
+   * `bootloader`, `recovery`, `sideload`, `rescue`, `connecting`… A plain
+   * string, not an enum: adb adds states, and a farm that refuses to render
+   * one it has not heard of is worse than one that prints the word.
+   */
+  state: z.string(),
+  /** The `usb:` path (e.g. `3-1.4.3`); null for a TCP transport. */
+  usb: z.string().nullable(),
+  transportId: z.number().int().nullable(),
+  product: z.string().nullable(),
+  model: z.string().nullable(),
+  /** adb's `device:` field — the board name, never a device row's id. */
+  deviceCode: z.string().nullable(),
+  /** Parsed out of `serial` when it is a `host:port` TCP transport, else null. */
+  endpoint: z.object({ host: z.string(), port: z.number().int() }).nullable(),
+  farm: z.object({
+    kind: AdbRawFarmKindSchema,
+    deviceId: z.string().nullable(),
+    name: z.string().nullable(),
+    /** The durable `#` on the phone's own label (`device_numbers.number`). */
+    number: z.number().int().nullable(),
+    /** The farm's `DeviceInfo.status`, which is NOT adb's `state` above. */
+    status: z.string().nullable(),
+  }),
+  /** Queued adb work for this serial right now (`AdbClient.pending`). */
+  pending: z.number().int(),
+})
+export type AdbRawDevice = z.infer<typeof AdbRawDeviceSchema>
+
+/** One active forward, as `host:list-forward` reports it. */
+export const AdbRawForwardSchema = z.object({ serial: z.string(), local: z.string(), remote: z.string() })
+export type AdbRawForward = z.infer<typeof AdbRawForwardSchema>
+
+/** `GET /api/adb/devices`. */
+export const AdbRawListResponseSchema = z.object({
+  /** `host:version`, or null when the server did not answer in time. */
+  serverVersion: z.string().nullable(),
+  devices: z.array(AdbRawDeviceSchema),
+  forwards: z.array(AdbRawForwardSchema),
+  /**
+   * Whether this caller may run `POST /api/adb/shell`. The route is
+   * authoritative; this only lets the page hide a box it would be refused
+   * on, exactly as `shell.mode` already does for the device terminal.
+   */
+  shellAllowed: z.boolean(),
+})
+
+/**
+ * What every mutating route here answers: adb's own reply text, verbatim.
+ *
+ * `ok` is NOT read off that text. `host:connect` answers 200 OKAY with a
+ * body reading `failed to connect to 10.0.0.4:5555` — the request was
+ * accepted, the connection was not — so the route decides `ok` from the
+ * wording adb uses for its own failures and hands the sentence through
+ * either way. A surface renders `message`; it never re-parses it.
+ */
+export const AdbRawResultSchema = z.object({
+  ok: z.boolean(),
+  message: z.string(),
+})
+export type AdbRawResult = z.infer<typeof AdbRawResultSchema>
+
+/** `POST /api/adb/connect`. */
+export const AdbConnectRequestSchema = z.object({
+  host: z.string().min(1),
+  /** adb's own default when the operator leaves it blank. */
+  port: z.number().int().min(1).max(65535).default(5555),
+})
+
+/** `POST /api/adb/disconnect`. An absent `target` disconnects every TCP transport, exactly as bare `adb disconnect` does. */
+export const AdbDisconnectRequestSchema = z.object({ target: z.string().min(1).optional() })
+
+/**
+ * `POST /api/adb/tcpip` — `adb -s <serial> tcpip <port>`, the first half of
+ * a USB→Wi-Fi cutover. `verify` reads `service.adb.tcp.port` back afterwards
+ * (spec's "verify by read-back" rule), which is the only thing that
+ * distinguishes an accepted request from a working listener.
+ */
+export const AdbTcpipRequestSchema = z.object({
+  serial: z.string().min(1),
+  port: z.number().int().min(1).max(65535).default(5555),
+  verify: z.boolean().default(true),
+})
+
+/** `POST /api/adb/tcpip`. */
+export const AdbTcpipResponseSchema = z.object({
+  ok: z.boolean(),
+  message: z.string(),
+  /**
+   * `service.adb.tcp.port` as the phone reports it after the switch, or
+   * null when `verify` was off or the read-back itself failed. A number
+   * that differs from the requested port is a real answer, not an error —
+   * it means adbd kept a listener it already had.
+   */
+  listeningPort: z.number().int().nullable(),
+  /** The address to `connect` to, when the device has one adb can see. */
+  suggestedEndpoint: z.string().nullable(),
+})
+
+/** `POST /api/adb/probe` — a plain TCP dial, no adb involved. */
+export const AdbProbeRequestSchema = z.object({
+  host: z.string().min(1),
+  port: z.number().int().min(1).max(65535).default(5555),
+})
+
+/** `POST /api/adb/probe`. `open: false` with no `error` never happens — one of the two always says why. */
+export const AdbProbeResponseSchema = z.object({
+  open: z.boolean(),
+  rttMs: z.number().int().nullable(),
+  error: z.string().nullable(),
+})
+
+/** `POST /api/adb/shell` — one command on one serial, no device row required. */
+export const AdbRawShellRequestSchema = z.object({
+  serial: z.string().min(1),
+  /** The bare shell line. `adb shell ` and a leading `adb ` are stripped by the route, the way a saved shortcut already is. */
+  command: z.string().min(1),
+})
+
+/** `POST /api/adb/shell`. */
+export const AdbRawShellResponseSchema = z.object({
+  /** adbd's exit status. `null` when the shell protocol did not carry one (a very old adbd). */
+  code: z.number().int().nullable(),
+  stdout: z.string(),
+  stderr: z.string(),
+  durationMs: z.number().int(),
+})
+
+/** `POST /api/adb/forwards`. */
+export const AdbForwardCreateRequestSchema = z.object({
+  serial: z.string().min(1),
+  /** adb's own spec strings, e.g. `tcp:9000`. */
+  local: z.string().min(1),
+  remote: z.string().min(1),
+})
+
+/** `DELETE /api/adb/forwards`. */
+export const AdbForwardKillRequestSchema = z.object({ serial: z.string().min(1), local: z.string().min(1) })

@@ -434,6 +434,34 @@ export const ActionResultSchema = z.object({
 })
 export type ActionResult = z.infer<typeof ActionResultSchema>
 
+/**
+ * The `adb` (and `clear-cache`) verb's `detail` — `runShellCommand`'s own
+ * return, as a schema so a surface can read the output instead of only the
+ * status chip (owner, 2026-09-20: "shell command is not always just sending
+ * a command, sometimes you want to see the output").
+ *
+ * Declared here rather than in the core because it crosses the boundary:
+ * `ActionResult.detail` is `unknown` on purpose — one field for fifteen
+ * verbs' outcomes — and the rule that comes with it is that the caller
+ * parses it with the verb's own schema. This is that schema.
+ */
+export const ShellRunDetailSchema = z.object({
+  /** null when the device could not report one — never fabricated. */
+  exitCode: z.number().int().nullable(),
+  stdout: z.string(),
+  stderr: z.string(),
+  /** The output hit `shell.maxOutputBytes` and what is here is the start of it. */
+  truncated: z.boolean(),
+  durationMs: z.number().int(),
+})
+export type ShellRunDetail = z.infer<typeof ShellRunDetailSchema>
+
+/** `detail` as a shell outcome, or null when this result is not one. */
+export function shellDetailOf(detail: unknown): ShellRunDetail | null {
+  const parsed = ShellRunDetailSchema.safeParse(detail)
+  return parsed.success ? parsed.data : null
+}
+
 export const ActionResponseSchema = z.object({
   operationId: z.string(),
   verb: ActionVerbSchema,

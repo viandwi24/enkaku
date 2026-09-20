@@ -165,6 +165,8 @@ export interface HttpDeps {
   adbStatsRoutes: Hono<AuthEnv>
   /** `GET/POST/PATCH/DELETE /api/adb/shortcuts` — the farm's saved adb commands. */
   adbShortcutRoutes: Hono<AuthEnv>
+  /** adb's own device list and the host services beside it (`api/adb-devices.ts`). */
+  adbDeviceRoutes: Hono<AuthEnv>
   /** `POST /api/video/reprofile` (plan 92 §3.8, §4.5, §5 step 92.2). */
   videoRoutes: Hono<AuthEnv>
   /** `enkaku doctor`'s checks, rendered as JSON for the Tools page's diagnostics view (plan 41 §4.5). */
@@ -443,6 +445,11 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   // The farm's saved adb commands — read by every device action list, written
   // by whoever may run an adb command (`api/adb-shortcuts.ts`).
   app.route('/api/adb/shortcuts', deps.adbShortcutRoutes)
+
+  // adb's OWN view — `adb devices -l` plus connect/disconnect/tcpip/shell.
+  // Mounted AFTER the two more specific prefixes above so neither can be
+  // shadowed by a future path of the same name added here.
+  app.route('/api/adb', deps.adbDeviceRoutes)
 
   // `POST /api/video/reprofile` (plan 92 §3.8, §4.5, §5 step 92.2).
   app.route('/api/video', deps.videoRoutes)

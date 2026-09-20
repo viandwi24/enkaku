@@ -132,7 +132,12 @@ export function ActionDialog<P>({
       }
       const grouped = groupResults(final)
       spec.onDone?.(res, grouped, value)
-      if (grouped.failed.length === 0 && grouped.forbidden.length === 0 && grouped.warned.length === 0) onClose()
+      // A clean run normally closes: the act itself was the point. A verb
+      // whose OUTPUT is the point (`keepOpenOnSuccess` — the adb command
+      // box) stays open instead, or it throws away the one thing it was
+      // asked for (owner, 2026-09-20).
+      const clean = grouped.failed.length === 0 && grouped.forbidden.length === 0 && grouped.warned.length === 0
+      if (clean && !spec.keepOpenOnSuccess) onClose()
     } catch (err) {
       toast.error(describeApiError(err))
     } finally {
@@ -205,7 +210,10 @@ export function ActionDialog<P>({
               carries on and moves to the tray in the corner (CEO,
               2026-09-05). */}
           <Button variant="outline" onClick={onClose}>
-            {opId ? 'Minimise' : 'Cancel'}
+            {/* Cancel while nothing has run, Minimise while the core is
+                working, Close once an answer is on screen — "Cancel" beside
+                an output an operator is reading says the wrong thing. */}
+            {opId ? 'Minimise' : results ? 'Close' : 'Cancel'}
           </Button>
           <Button
             variant={spec.destructive ? 'destructive' : 'default'}

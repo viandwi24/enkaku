@@ -183,8 +183,16 @@ export function GroupTabs({
       setDraft('')
     }
     const r = containerRef.current?.getBoundingClientRect()
-    // Right-aligned to the `+` button, then clamped into the window.
-    const left = r ? clampMenuLeft(r, r.width - FORM_WIDTH_PX, FORM_WIDTH_PX) : 0
+    /*
+      Right-aligned under the `+` button — but never past the strip's own
+      left edge. A farm with one group makes the container narrower than the
+      224px form, and a plain right-align then took the form off the screen
+      entirely (owner, 2026-09-20). `Math.max(0, …)` is what turns that into
+      a left-align under the first tab instead: still inside the page panel,
+      rather than hanging over the rail, which is where clamping to the
+      WINDOW alone would have left it.
+    */
+    const left = r ? clampMenuLeft(r, Math.max(0, r.width - FORM_WIDTH_PX), FORM_WIDTH_PX) : 0
     setForm({ ...next, left })
     setTabMenu(null)
   }

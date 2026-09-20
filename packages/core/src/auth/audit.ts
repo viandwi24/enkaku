@@ -25,6 +25,19 @@ export type AuditAction =
    * audited separately, by the `adb` verb itself.
    */
   | 'adb.shortcut'
+  /**
+   * A raw adb-server operation from the ADB page (`api/adb-devices.ts`;
+   * `meta.op` is one of connect, disconnect, reconnect-offline, tcpip,
+   * shell, forward, killforward).
+   *
+   * One action rather than six, deliberately: they are all the same act —
+   * reaching past the farm's own device rows to the adb server underneath —
+   * and the question asked afterwards is "who was poking at adb", which
+   * `meta.op` then answers. Distinct from `device.disconnect`/
+   * `device.reconnect`, which name a FARM device and carry its drain; these
+   * name a bare serial and carry nothing.
+   */
+  | 'adb.raw'
   | 'device.control'
   // `PATCH /:id`'s `ownerId` transition (plan 09 §4.4's `device.owner.set`,
   // `api/devices.ts`) — separate from `device.settings` (label/settings)

@@ -306,7 +306,15 @@ function fakeHostServiceServer(handlers: { devicesL?: () => string; reconnectOff
 }
 
 describe('AdbClient.listDevices — host:devices-l (plan 85 §3.3, §4.3)', () => {
-  test('parses a mix of the long-format padding and a plain tab, ignoring the trailing product/model fields but keeping transport_id', async () => {
+  /**
+   * `product:`/`model:`/`device:` were discarded by plan 88 §3.1, which only
+   * needed `usb:`; they are kept from 2026-09-20 because the raw ADB page
+   * (`core/api/adb-devices.ts`) shows adb's own list for serials that have
+   * no farm row, and for those there is no other source of a model name.
+   * The three tests below used to assert they were dropped — that assertion
+   * was never a requirement, only a record of what the parser then did.
+   */
+  test('parses a mix of the long-format padding and a plain tab, keeping the trailing product/model fields and transport_id', async () => {
     const listener = fakeHostServiceServer({
       devicesL: () =>
         '0123456789ABCDEF       device product:sunfish model:Pixel_4a device:sunfish transport_id:1\n' +
@@ -317,8 +325,10 @@ describe('AdbClient.listDevices — host:devices-l (plan 85 §3.3, §4.3)', () =
       const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
       const devices = await client.listDevices()
       expect(devices).toEqual([
-        { serial: '0123456789ABCDEF', state: 'device', transportId: 1 },
+        { serial: '0123456789ABCDEF', state: 'device', product: 'sunfish', model: 'Pixel_4a', deviceCode: 'sunfish', transportId: 1 },
         { serial: 'ZY327K2XYZ', state: 'offline' },
+        // adb omits all three for a transport that never reached `device`,
+        // so their absence here is adb's answer, not a dropped field.
         { serial: 'ZP2222RMBS', state: 'unauthorized', transportId: 3 },
       ])
     } finally {
@@ -343,14 +353,16 @@ describe('AdbClient.listDevices — host:devices-l (plan 85 §3.3, §4.3)', () =
    * Modelled on a real `adb devices -l` line captured against the attached
    * hardware for plan 88 §5 step 88.1's H6 spike.
    */
-  test('keeps the usb: field for a USB transport and transport_id for both, ignoring product/model/device', async () => {
+  test('keeps the usb: field for a USB transport, transport_id for both, and the descriptive fields', async () => {
     const listener = fakeHostServiceServer({
       devicesL: () => 'ZP2222RMBS             device usb:3-1.4.3 product:lagos_gpn model:moto_g06_power device:lagos transport_id:10\n',
     })
     try {
       const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
       const devices = await client.listDevices()
-      expect(devices).toEqual([{ serial: 'ZP2222RMBS', state: 'device', usb: '3-1.4.3', transportId: 10 }])
+      expect(devices).toEqual([
+        { serial: 'ZP2222RMBS', state: 'device', usb: '3-1.4.3', product: 'lagos_gpn', model: 'moto_g06_power', deviceCode: 'lagos', transportId: 10 },
+      ])
     } finally {
       listener.stop(true)
     }
@@ -363,7 +375,9 @@ describe('AdbClient.listDevices — host:devices-l (plan 85 §3.3, §4.3)', () =
     try {
       const client = new AdbClient({ adbPath: 'unused', host: '127.0.0.1', port: listener.port })
       const devices = await client.listDevices()
-      expect(devices).toEqual([{ serial: '10.20.0.37:5555', state: 'device', transportId: 7 }])
+      expect(devices).toEqual([
+        { serial: '10.20.0.37:5555', state: 'device', product: 'sunfish', model: 'Pixel_4a', deviceCode: 'sunfish', transportId: 7 },
+      ])
       expect(devices[0]!.usb).toBeUndefined()
     } finally {
       listener.stop(true)

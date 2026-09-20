@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import type { ActionResult, DeviceInfo } from '@enkaku/protocol'
+import { shellDetailOf } from '@enkaku/protocol'
 import { Badge, DeviceName, StatusDot, coreBase } from '@enkaku/ui'
 import { dotStateOf } from '@/components/devices/device-state'
 import { jobHref } from '@/components/jobs/job-view'
@@ -45,6 +46,16 @@ export function ActionOutcome({ results, devices, className }: { results: readon
         {shown.map((result) => {
           const device = byId.get(result.deviceId)
           const detail = result.detail as { artifactId?: string } | undefined
+          /*
+            A shell command's output, when this result is one.
+
+            Every other verb's outcome fits in `message`; this one does not,
+            and rendering only the chip meant an operator who ran `getprop`
+            on four phones was told four times that it was "done" and never
+            once what it said (owner, 2026-09-20). Parsed with the verb's own
+            schema rather than cast, per `ActionResult.detail`'s own rule.
+          */
+          const shell = shellDetailOf(result.detail)
           return (
             <li key={result.deviceId} className="flex w-full items-start gap-2.5 rounded-button px-[10px] py-[9px] text-row">
               {device && <StatusDot state={dotStateOf(device)} />}
@@ -64,12 +75,38 @@ export function ActionOutcome({ results, devices, className }: { results: readon
                   )}
                 </div>
                 {result.message && <p className={`text-meta ${messageTone(result.status)}`}>{result.message}</p>}
+                {shell && <ShellOutput shell={shell} />}
               </div>
             </li>
           )
         })}
       </ul>
       {overflow > 0 && <p className="mt-1 text-meta text-faint">… and {overflow} more</p>}
+    </div>
+  )
+}
+
+/**
+ * One device's command output: the exit status on its own line, then
+ * whatever came back.
+ *
+ * stdout and stderr are shown TOGETHER, in that order, rather than as two
+ * panes — a phone's shell interleaves them and many commands put their one
+ * useful line on stderr, so splitting them is how half an answer goes
+ * missing. `max-h-56` bounds a `dumpsys` that returns thousands of lines
+ * without bounding the four-line answer that is the normal case.
+ */
+function ShellOutput({ shell }: { shell: NonNullable<ReturnType<typeof shellDetailOf>> }) {
+  const body = shell.stdout + (shell.stderr ? (shell.stdout ? '\n' : '') + shell.stderr : '')
+  return (
+    <div className="mt-1.5">
+      <p className="text-meta text-faint">
+        exit {shell.exitCode ?? '?'} · {shell.durationMs}ms
+        {shell.truncated && <span className="text-warn"> · output truncated</span>}
+      </p>
+      <pre className="readout mt-1 max-h-56 overflow-auto whitespace-pre-wrap rounded-button border border-line bg-panel-2/40 p-2 text-tip leading-relaxed">
+        {body.length === 0 ? '(no output)' : body}
+      </pre>
     </div>
   )
 }

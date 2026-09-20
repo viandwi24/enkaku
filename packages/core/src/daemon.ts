@@ -151,6 +151,7 @@ import { createDeviceIdentityRoutes } from './api/device-identity'
 import { createVmRoutes } from './api/vms'
 import { createGuestAgentRoutes, resolveGuestAgentApkPath } from './api/guest-agent'
 import { createAdbShortcutRoutes } from './api/adb-shortcuts'
+import { createAdbDeviceRoutes } from './api/adb-devices'
 import { createLabelRoutes } from './api/labels'
 import { createGroupRoutes } from './api/groups'
 import { createBatchRoutes, createBatchDispatchDeps } from './api/batches'
@@ -3638,6 +3639,16 @@ let blobGc: BlobGc | null = null
           audit,
           // The same `shell.mode` the `adb` verb is widened by: whoever may
           // run a command may save one under a name.
+          shellSettings: () => shellConstants(settingsStore.get()),
+        }),
+        // adb's own list and the host services beside it. Same `() => adb`
+        // forward-ref every other adb consumer here takes (it is null until
+        // the subsystem starts, and permanently null in orchestrator mode),
+        // and the same `shell.mode` door the shortcut store above uses.
+        adbDeviceRoutes: createAdbDeviceRoutes({
+          db,
+          audit,
+          client: () => adb,
           shellSettings: () => shellConstants(settingsStore.get()),
         }),
         adbStatsRoutes: createAdbStatsRoutes({

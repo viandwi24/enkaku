@@ -1,4 +1,4 @@
-import { CodeIcon, DevicesIcon, ImagesIcon, LightningIcon, PuzzlePieceIcon, RobotIcon, type Icon } from '@enkaku/ui'
+import { CodeIcon, DevicesIcon, ImagesIcon, LightningIcon, PlugsIcon, PuzzlePieceIcon, RobotIcon, type Icon } from '@enkaku/ui'
 import { z } from 'zod'
 
 /**
@@ -60,6 +60,21 @@ export const NAV: readonly NavItem[] = [
    */
   { href: '/files', label: 'Files', icon: ImagesIcon, pip: true },
   { href: '/plugins', label: 'Plugins', icon: PuzzlePieceIcon, pip: true },
+  /**
+   * ADB (owner, 2026-09-20) — a seventh entry, and the handoff drew five, so
+   * the same justification `/files` above owes is owed here.
+   *
+   * It is a different LIST, not a different view of the Devices page: adb's
+   * own transports, including the phones the farm has no row for. That is
+   * precisely why it cannot be a tab on Devices — the rows it must show are
+   * the ones the Devices page is, correctly, unable to represent — and why a
+   * Settings section would be the wrong place: this is something an operator
+   * reaches for while a phone is misbehaving, not a preference.
+   *
+   * `PlugsIcon` is already in the design-token check's pinned export set, so
+   * the icon count is unchanged.
+   */
+  { href: '/adb', label: 'ADB', icon: PlugsIcon, pip: true },
 ]
 
 /** The gear below the spacer. Kept out of `NAV` so the four-or-five count above stays readable. */

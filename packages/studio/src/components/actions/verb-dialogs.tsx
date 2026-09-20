@@ -114,6 +114,17 @@ export interface VerbDialogSpec<P> {
    * "Continue for the warned devices".
    */
   holdsOnWarn?: boolean
+  /**
+   * Keeps the dialog open after a run in which everything succeeded.
+   *
+   * Every other verb's success is the act itself — a device woke, an APK
+   * installed — so closing is the right answer and the outcome, if anyone
+   * wants it, is on the device. A shell command is the exception: its
+   * OUTPUT is the thing asked for, and closing on success threw away
+   * exactly what the operator ran it to read (owner, 2026-09-20). The
+   * footer's Cancel becomes Close, and the outcome list renders stdout.
+   */
+  keepOpenOnSuccess?: boolean
   /** Blocks submit while false. */
   canSubmit: (value: P) => boolean
   /** The plan-207 request params. May upload an artifact first, which is why it is async. */
@@ -446,6 +457,9 @@ const adb: VerbDialogSpec<AdbValue> = {
   initial: { cmd: '' },
   Fields: AdbFields,
   canSubmit: (v) => normalizeAdbCommand(v.cmd).ok,
+  // A command's answer is its output, so the dialog waits to be closed
+  // rather than closing itself — see `keepOpenOnSuccess`.
+  keepOpenOnSuccess: true,
   // The line as typed: the core runs the same normaliser on it, so what
   // actually runs is decided in one place (`normalizeAdbCommand`).
   toParams: async (v) => ({ cmd: v.cmd.trim() }),
