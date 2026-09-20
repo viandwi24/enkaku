@@ -121,6 +121,41 @@ describe('D6.2 — the platform group is keyed on the phone number, and shifts d
   })
 })
 
+describe('a phone is only sent to a platform it carries', () => {
+  /*
+    The workflow assumed every phone could do every platform. On a real farm a
+    phone labelled only `tiktok` has no YouTube account, and a rotation that
+    ignores that sends a third of the fleet to fail on a signed-out app one day
+    in three.
+  */
+  test('a phone with one platform always gets that one, and never the others', () => {
+    const device: WarmupDevice = { deviceId: 'd', number: 5, platforms: ['tiktok'] }
+    for (let phase = 0; phase < 3; phase++) {
+      const [plan] = planWarmup({ devices: [device], settings: settings(), platforms: PLATFORMS, phase, nowMs: NOW, random: rng(phase) })
+      expect(plan?.platform).toBe('tiktok')
+    }
+  })
+
+  test('a phone with two platforms still alternates between them', () => {
+    const device: WarmupDevice = { deviceId: 'd', number: 5, platforms: ['tiktok', 'youtube'] }
+    const seen = new Set([0, 1].map((phase) => planWarmup({ devices: [device], settings: settings(), platforms: PLATFORMS, phase, nowMs: NOW, random: rng(1) })[0]?.platform))
+    expect(seen).toEqual(new Set(['tiktok', 'youtube']))
+  })
+
+  test('a phone carrying none of the session\'s platforms is told so, not sent anyway', () => {
+    const device: WarmupDevice = { deviceId: 'd', number: 5, platforms: [] }
+    const [plan] = planWarmup({ devices: [device], settings: settings(), platforms: PLATFORMS, phase: 0, nowMs: NOW, random: rng(1) })
+    expect(plan?.platform).toBeNull()
+    expect(plan?.steps).toEqual([])
+    expect(plan?.note).toContain('no label')
+  })
+
+  test('a phone with no platforms listed at all is taken as able to do them all, as before', () => {
+    const [plan] = planWarmup({ devices: [{ deviceId: 'd', number: 5 }], settings: settings(), platforms: PLATFORMS, phase: 0, nowMs: NOW, random: rng(1) })
+    expect(plan?.platform).not.toBeNull()
+  })
+})
+
 describe('D6.3 — phases cover every phone on every platform', () => {
   test('three phases give one phone all three platforms', () => {
     const device = { deviceId: 'd', number: 4 }

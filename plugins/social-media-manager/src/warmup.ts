@@ -36,6 +36,18 @@ export interface WarmupDevice {
   deviceId: string
   /** `device_numbers.number` — the `#` on the phone's own label. `null` when none is reserved. */
   number: number | null
+  /**
+   * Which of the session's platforms this phone can actually do — the ones it
+   * carries a label for.
+   *
+   * Omitted means "all of them", which is what the workflow assumed for every
+   * phone. That assumption is wrong on a real farm: a phone labelled only
+   * `tiktok` has no YouTube account, and the rotation would still send it to
+   * YouTube one day in three to fail on a signed-out app. Rotating within what
+   * the phone HAS keeps the spread (it is still keyed on the number) and stops
+   * sending a third of a fleet somewhere it cannot go.
+   */
+  platforms?: readonly PlatformId[]
 }
 
 export interface WarmupStep {
@@ -133,7 +145,19 @@ export function planWarmup(input: {
   const draw: WarmupDraw = { keywords: settings.keywords, amount: settings.amount, like: settings.like, random }
 
   return devices.map((device) => {
-    const platform = platformFor({ device, platforms, slot: settings.slot, phase, nowMs })
+    // What this phone can do, inside what the session covers — see `WarmupDevice.platforms`.
+    const available = device.platforms === undefined ? platforms : platforms.filter((id) => device.platforms?.includes(id))
+    if (available.length === 0) {
+      return {
+        deviceId: device.deviceId,
+        platform: null,
+        styleId: null,
+        styleTitle: null,
+        steps: [],
+        note: `This phone carries no label for any of this session's platforms (${platforms.join(', ')}), so it was given nothing. Add a platform label on the Devices page.`,
+      }
+    }
+    const platform = platformFor({ device, platforms: available, slot: settings.slot, phase, nowMs })
     if (platform === null) {
       return {
         deviceId: device.deviceId,

@@ -78,6 +78,14 @@ import {
  *
  * ## Changelog
  *
+ * - **0.51.2 — a phone is only rotated to a platform it carries.** The
+ *   workflow assumed every phone could do every platform; on a real farm a
+ *   phone labelled only `tiktok` has no YouTube account, and the rotation sent
+ *   a third of the fleet to fail on a signed-out app one day in three. The
+ *   rotation now runs inside what the phone HAS — still keyed on its number, so
+ *   the spread survives — and a phone carrying none of the session's platforms
+ *   is told so rather than sent anyway.
+ *
  * - **0.51.1 — the row a warm-up writes** (plan 900 D4, plan 903).
  *   `warmup-runs.ts` — one row per PHONE per session, carrying the activities
  *   it drew and what each one did. A post row is per VIDEO with platforms as
@@ -1707,7 +1715,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.51.1',
+  version: '0.51.2',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
