@@ -82,6 +82,23 @@ import {
  *
  * ## Changelog
  *
+ * - **0.57.4 — a phone stops doing the same activity twice.**
+ *
+ *   The router settles answers and sends new work in ONE pass over the same
+ *   rows, and both halves wrote with `entry.version` — the version read at the
+ *   top of that pass. So a row that settled an answer and then dispatched the
+ *   next activity wrote the second time with a stale version, the write was
+ *   refused, and the job was left running with nothing tracking it. The next
+ *   tick saw the step still `pending` and sent it AGAIN: two of the same
+ *   activity on one phone, minutes apart. Wasted work, and exactly the
+ *   repetition this plugin exists to avoid.
+ *
+ *   Found on the owner's farm by noticing a `tiktok/auto-scroll` running that
+ *   no warm-up row claimed. Every write now carries the version it produced
+ *   forward, and a refused write on the DISPATCH side warns rather than
+ *   informs — nothing can un-send a job, so the one thing left to do is say
+ *   loudly that a phone is about to repeat itself.
+ *
  * - **0.57.3 — one Start really does cover every platform, and one bad
  *   activity no longer freezes a phone.** Three findings from running a
  *   warm-up on the owner's own farm and watching it stop.
@@ -1573,7 +1590,19 @@ async function runWarmupPass(
     entry.run = withRunSummary(run)
     try {
       const written = await ctx.storage.global.setIfVersion(entry.key, entry.run, entry.version)
+      /*
+        Carry the new version forward. The dispatch loop below writes the SAME
+        rows with `entry.version`, and until 0.57.4 that was the version read at
+        the top of this pass — so a row that settled and then dispatched in one
+        tick wrote with a stale version, the write was refused, and the job was
+        left running with nothing tracking it. The next tick then saw the step
+        still `pending` and sent it AGAIN: two of the same activity on one
+        phone, minutes apart, which is both wasted work and exactly the
+        repetition this plugin exists to avoid. Seen on the owner's own farm
+        (2026-09-20) as an `auto-scroll` running that no row claimed.
+      */
       if (written === null) ctx.log.info('a warm-up row changed while this tick was settling it — leaving it for the next tick', { key: entry.key })
+      else entry.version = written.version
     } catch (err) {
       ctx.log.warn('could not write back a warm-up row', { key: entry.key, error: messageOf(err) })
     }
@@ -1641,7 +1670,8 @@ async function runWarmupPass(
         for (const step of dispatch.steps) stuck = withStepState(stuck, step.activityId, { state: 'failed', error: `The farm refused this activity and would refuse it again: ${why}`, settledAt: input.now })
         entry.run = withRunSummary(stuck)
         try {
-          await ctx.storage.global.setIfVersion(entry.key, entry.run, entry.version)
+          const written = await ctx.storage.global.setIfVersion(entry.key, entry.run, entry.version)
+          if (written !== null) entry.version = written.version
         } catch (writeErr) {
           ctx.log.warn('could not write back a refused warm-up activity', { key: entry.key, error: messageOf(writeErr) })
         }
@@ -1659,7 +1689,15 @@ async function runWarmupPass(
     entry.run = withRunSummary(next)
     try {
       const written = await ctx.storage.global.setIfVersion(entry.key, entry.run, entry.version)
-      if (written === null) ctx.log.info('a warm-up row changed while this tick was sending it — the job is out and the next tick will reconcile it', { key: entry.key, jobId })
+      /*
+        A refused write here is the dangerous one: the job IS out, and a row
+        that does not record it will send the activity again next tick. Nothing
+        can un-send the job, so the honest thing is to say so loudly — `warn`,
+        not `info`, because it means a phone is about to do the same thing
+        twice.
+      */
+      if (written === null) ctx.log.warn('a warm-up row changed while this tick was sending it — the job is out and is NOT recorded, so the activity may be sent again', { key: entry.key, jobId })
+      else entry.version = written.version
     } catch (err) {
       ctx.log.warn('could not record a sent warm-up activity', { key: entry.key, jobId, error: messageOf(err) })
     }
@@ -2188,7 +2226,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.57.3',
+  version: '0.57.4',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
