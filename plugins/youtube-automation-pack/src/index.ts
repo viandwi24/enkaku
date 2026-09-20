@@ -86,7 +86,7 @@ export default definePlugin({
   // bottom bar — the principle `waitForTree`'s comment already stated for
   // search results, finally applied to the launch before them. The readiness
   // labels are bilingual (Home / Beranda, Subscriptions / Langganan).
-  version: '0.48.0',
+  version: '0.48.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',
@@ -95,6 +95,24 @@ export default definePlugin({
 
   /**
    * ## Changelog
+   *
+   * **0.48.1 — `search-channel` waits for the channel, not for the page to
+   *   have something on it.**
+   *
+   *   `hasResultRows` answers as soon as any row exists, and the first thing
+   *   YouTube renders is the promoted card at the top, whose own sub-nodes
+   *   count as rows. Measured on the owner's moto g06 power (2026-09-21): a
+   *   warm-up searched "trading", the page held an XTB advert and one video,
+   *   the channel had not arrived yet, and the run failed with "no channel row
+   *   matching trading was found". The artifact shows the ad, the `Sponsored`
+   *   label, and nothing else of the results.
+   *
+   *   The predicate is now `pickChannelRow` itself. A page that never grows a
+   *   channel still fails on the same budget; a page that was merely slow now
+   *   succeeds, which it did not before — and the failure says how many rows
+   *   it did see, so the next person reading it knows which of the two
+   *   happened. The same lesson 0.48.0 learned for the results list, applied
+   *   where it actually bites.
    *
    * **0.48.0 — `watch-video` watches for a TIME, not for a video.**
    *

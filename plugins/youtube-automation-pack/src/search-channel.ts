@@ -827,20 +827,40 @@ const searchChannelScript: PluginMemberScript<typeof paramsSchema, typeof result
     await capture(ctx, '03-typed')
     steps.push('typed')
 
-    // --- 3. submit and wait for ROWS ---------------------------------------
+    // --- 3. submit and wait for the CHANNEL ---------------------------------
     await ctx.device.key('ENTER')
-    const waited = await waitForTree(ctx, hasResultRows, { budgetMs: RESULTS_BUDGET_MS })
+    /*
+      Wait for the thing this script NEEDS, not for the page to have something
+      on it.
+
+      `hasResultRows` answers as soon as any row exists — and the first thing
+      YouTube renders is the promoted card at the top, whose own sub-nodes
+      count as rows. Measured on the owner's moto g06 power (2026-09-21): a
+      search for "trading" was judged while the page held an XTB advert and one
+      video, the channel had not arrived yet, and the run failed with "no
+      channel row matching trading was found". The artifact shows the ad, the
+      `Sponsored` label, and nothing else of the results.
+
+      So the predicate is `pickChannelRow` itself. A page that never grows a
+      channel still fails on the same budget with the same sentence; a page
+      that was merely slow now succeeds, which it did not before. The same
+      lesson `watch-video` learned in 0.48.0, in the place it actually applies
+      here.
+    */
+    const waited = await waitForTree(ctx, (t) => pickChannelRow(t, ctx.params.query) !== null, { budgetMs: RESULTS_BUDGET_MS })
     anchors.resultsWaitMs = `${waited.waitedMs}`
     const results = await capture(ctx, '04-results', waited.tree)
     steps.push(waited.ok ? 'results' : 'results(timeout)')
-    if (!waited.ok) fail('results', `the search was submitted but no result rows appeared within ${RESULTS_BUDGET_MS} ms — see artifact 04-results`)
+    if (!waited.ok && !hasResultRows(results)) {
+      fail('results', `the search was submitted but no result rows appeared within ${RESULTS_BUDGET_MS} ms — see artifact 04-results`)
+    }
 
     const rows = resultRowsOf(results)
     anchors.resultRows = `${rows.length}`
 
     // --- 4. open the channel ----------------------------------------------
     const target = pickChannelRow(results, ctx.params.query)
-    if (!target) fail('open-channel', `no channel row matching "${ctx.params.query}" was found in the results — see artifact 04-results`)
+    if (!target) fail('open-channel', `the results page grew ${rows.length} row(s) in ${RESULTS_BUDGET_MS} ms and none of them was a channel matching "${ctx.params.query}" — see artifact 04-results`)
     anchors.channelRow = target!.via
     await tapNode(ctx, target!.node)
 
