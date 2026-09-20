@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { MikrotikRestDriver } from './router-driver'
+import { MikrotikRestDriver, assertRouterId } from './router-driver'
 import { MikrotikRestError } from './errors'
 import { LOCAL_EXCEPTION_COMMENT } from '../shared'
 
@@ -484,6 +484,25 @@ describe('MikrotikRestDriver.inventory — duplicate WAN addresses (plan 134 §3
       expect((await driverFor(fixture.port).inventory()).paths).toHaveLength(3)
     } finally {
       fixture.stop()
+    }
+  })
+})
+
+describe('assertRouterId — the one place a router-supplied value builds a write URL', () => {
+  test('accepts the ids RouterOS actually issues', () => {
+    for (const id of ['*1', '*4A', '*ff', '*0']) expect(() => assertRouterId(id)).not.toThrow()
+  })
+
+  test('refuses anything that could aim the write somewhere else', () => {
+    /*
+      `urlFor` does not encode a path segment — it cannot, because a `.id`
+      starts with `*`. So an id carrying a traversal would send the PATCH or
+      DELETE to a RouterOS endpoint this plugin promises never to touch. It
+      takes a hostile router to produce one, and the promise is still the
+      promise.
+    */
+    for (const id of ['*1/../../ip/firewall/filter/*3', '*1?x=1', '../system/reboot', '*1 *2', '', '*']) {
+      expect(() => assertRouterId(id)).toThrow(/unusable rule id/)
     }
   })
 })

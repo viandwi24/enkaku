@@ -765,9 +765,23 @@ function BulkBuilderDialog({
 }
 
 export function AssignmentsTab() {
+  /*
+    A router that was never configured is NOT an error.
+
+    This tab threw every refusal, so a farm that had simply not saved a
+    connection yet met a red "Could not load" panel — a fault report for a
+    setup step nobody had reached. The Paths and Rules tabs already get this
+    right, with a neutral empty state in the same words; the difference was
+    that they ask a route that reports `configured: false` and this one asks a
+    route that refuses. The code is what tells them apart, so it is what this
+    branches on.
+  */
   const { data, error, loading, reload } = useLoader(async () => {
     const result = await fetchFleet()
-    if (isRefusal(result)) throw new Error(result.message)
+    if (isRefusal(result)) {
+      if (result.code === 'E_ROUTER_NOT_CONFIGURED') return null
+      throw new Error(result.message)
+    }
     return result.fleet
   }, [])
 
@@ -928,6 +942,14 @@ export function AssignmentsTab() {
   // scroll position back to the top on every single assignment (§0.3).
   if (isFirstLoad(loading, data)) return <LoadingRows />
   if (error) return <ErrorState message={error} onRetry={reload} />
+  // `null` is the loader's "no router saved" — see its note. Worded exactly as the Paths and Rules tabs word it.
+  if (data === null)
+    return (
+      <EmptyState
+        title="No router connection saved yet"
+        description="Open the Settings tab and save a router connection — devices and their paths are read from the router once one is."
+      />
+    )
   const revalidating = loading
 
   return (

@@ -1009,10 +1009,17 @@ function DeactivateButton({ group, devices, onDone }: { group: Group; devices: F
 // ---------------------------------------------------------------------------
 
 export function GroupsTab() {
+  /* A router nobody has configured yet is not a fault — the same branch the Assignments tab makes, for the same reason. */
   const { data, error, loading, reload } = useLoader(async () => {
     const [groupsResult, fleetResult] = await Promise.all([fetchGroups(), fetchFleet()])
-    if (isRefusal(groupsResult)) throw new Error(groupsResult.message)
-    if (isRefusal(fleetResult)) throw new Error(fleetResult.message)
+    if (isRefusal(groupsResult)) {
+      if (groupsResult.code === 'E_ROUTER_NOT_CONFIGURED') return null
+      throw new Error(groupsResult.message)
+    }
+    if (isRefusal(fleetResult)) {
+      if (fleetResult.code === 'E_ROUTER_NOT_CONFIGURED') return null
+      throw new Error(fleetResult.message)
+    }
     return { groups: groupsResult.items, devices: fleetResult.fleet.devices, paths: fleetResult.fleet.paths }
   }, [])
 
@@ -1037,6 +1044,13 @@ export function GroupsTab() {
 
   if (loading) return <LoadingRows />
   if (error) return <ErrorState message={error} onRetry={reload} />
+  if (data === null)
+    return (
+      <EmptyState
+        title="No router connection saved yet"
+        description="Open the Settings tab and save a router connection — a group assigns devices to a path on the router, so there is nothing to group until one is saved."
+      />
+    )
 
   return (
     <div className="@container space-y-4">

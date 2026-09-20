@@ -58,6 +58,8 @@ import {
   secretHintLeak,
   slugifyProxyName,
   suggestProxyName,
+  CAN_IGNORE_CLAUSE,
+  VPN_ENFORCES_CLAUSE,
 } from './shared'
 
 /**
@@ -167,7 +169,7 @@ describe('the plugin definition', () => {
     // (tag v0.1.19), so leaving the string alone would have made the fix for
     // a silent wrong-egress bug itself silently fail to arrive on every
     // install that had already seeded 0.9.0.
-    expect(plugin.version).toBe('0.13.0')
+    expect(plugin.version).toBe('0.13.1')
     expect(plugin.scripts.length).toBe(1)
   })
 
@@ -400,8 +402,22 @@ describe('the honesty copy is NARROWED by plan 112, never widened and never dele
     expect(ASSIGNMENT_NOTE).toContain(APPLY_RUNG_SENTENCE)
     expect(APPLY_RUNG_SENTENCE).toMatch(/can ignore that/)
     expect(APPLY_RUNG_SENTENCE).not.toMatch(/cannot escape|enforced|guaranteed/)
-    // The banner carries the same sentence rather than a second copy of it.
-    expect(BANNER_NOT_BUILT).toContain(APPLY_RUNG_SENTENCE)
+    /*
+      The banner carries the same CLAIM from the same source — not a paraphrase
+      of it, and since 0.13.1 not the whole sentence either.
+
+      It used to hold `APPLY_RUNG_SENTENCE` in full, and so does
+      `ASSIGNMENT_NOTE`, so opening that tab printed ninety identical words
+      twice and the first control sat under twenty lines of prose. The rule
+      this test exists for is that the claim has ONE source; narrowing that
+      source to the clause satisfies it and the screen at once. A revert to a
+      hand-written paraphrase still fails here.
+    */
+    expect(APPLY_RUNG_SENTENCE).toContain(CAN_IGNORE_CLAUSE)
+    expect(BANNER_NOT_BUILT).toContain(CAN_IGNORE_CLAUSE)
+    // And the banner does NOT repeat the mode paragraphs, which live beside the choice.
+    expect(BANNER_NOT_BUILT).not.toContain(APPLY_RUNG_SENTENCE)
+    expect(BANNER_NOT_BUILT).not.toContain(APPLY_VPN_SENTENCE)
 
     /**
      * And, since 0.6.0, the OTHER half is stated in the same three places — for
@@ -410,7 +426,15 @@ describe('the honesty copy is NARROWED by plan 112, never widened and never dele
      * promised something the HTTP rung will not deliver.
      */
     expect(ASSIGNMENT_NOTE).toContain(APPLY_VPN_SENTENCE)
-    expect(BANNER_NOT_BUILT).toContain(APPLY_VPN_SENTENCE)
+    /*
+      The banner names it too — by the shared clause, not by repeating the
+      paragraph (0.13.1, see above). And the clause carries BOTH halves of the
+      trade, because half of it in a banner would be selling the mode.
+    */
+    expect(APPLY_VPN_SENTENCE).toContain(VPN_ENFORCES_CLAUSE)
+    expect(BANNER_NOT_BUILT).toContain(VPN_ENFORCES_CLAUSE)
+    expect(VPN_ENFORCES_CLAUSE).toMatch(/cannot opt out/)
+    expect(VPN_ENFORCES_CLAUSE).toMatch(/password is sent to the phone/)
     // Both halves of the trade, in the sentence that offers the mode. Naming
     // only the reason to pick it would be selling it.
     expect(APPLY_VPN_SENTENCE).toMatch(/an app cannot opt out of it/)

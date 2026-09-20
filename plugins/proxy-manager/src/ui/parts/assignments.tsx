@@ -26,7 +26,8 @@ import {
 } from '@enkaku/ui'
 import {
   ASSIGNMENT_KEY,
-  ASSIGNMENT_NOTE,
+  ASSIGNMENT_LEAD,
+  ASSIGNMENT_MODES,
   PROXY_APPLY_MODES,
   PROXY_APPLY_MODE_DESCRIPTIONS,
   PROXY_APPLY_MODE_LABELS,
@@ -254,6 +255,8 @@ export function AssignmentsTab() {
 
   const [busy, setBusy] = useState<string | null>(null)
   const [writeError, setWriteError] = useState<string | null>(null)
+  /* The two mode paragraphs, folded away by default — see where they render. */
+  const [modesOpen, setModesOpen] = useState(false)
   /**
    * The table filter (plan 124 §4.5). Client-side over the rows already loaded,
    * which is what §2 asks for — the scan is one page of 200 and there is no
@@ -415,7 +418,23 @@ export function AssignmentsTab() {
       at 360 px, where this table used to be 469 px wide inside a 340 px box.
     */
     <div className="@container space-y-3">
-      <p className="max-w-prose text-[12px] leading-relaxed text-dim">{ASSIGNMENT_NOTE}</p>
+      {/*
+        The lead is always on screen; the two mode paragraphs open on demand
+        (0.13.1). Before this the whole note was twelve lines above the filter
+        box, which is how a screen gets its explanation skipped.
+      */}
+      <div className="space-y-1.5">
+        <p className="max-w-prose text-[12px] leading-relaxed text-dim">{ASSIGNMENT_LEAD}</p>
+        <button
+          type="button"
+          className="rounded-small text-[12px] text-accent underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-accent/40"
+          onClick={() => setModesOpen((open) => !open)}
+          aria-expanded={modesOpen}
+        >
+          {modesOpen ? 'Hide how Apply works' : 'How Apply works — the two modes, and the price of each'}
+        </button>
+        {modesOpen ? <p className="max-w-prose text-[12px] leading-relaxed text-dim">{ASSIGNMENT_MODES}</p> : null}
+      </div>
 
       {writeError ? <ErrorState message={writeError} onRetry={() => setWriteError(null)} /> : null}
 

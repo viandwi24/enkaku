@@ -486,8 +486,26 @@ export default definePlugin({
    * `scripts/check-design-tokens.ts` now fails the build if one comes back.
    * Minor, not patch: an operator meets the difference the moment the screen
    * opens.
+   *
+   * **0.16.1: a router nobody has configured yet is not a fault.** The
+   * Assignments tab threw every refusal, so a farm that had simply not saved a
+   * connection met a red "Could not load" panel — a fault report for a setup
+   * step nobody had reached. The Paths and Rules tabs already showed a neutral
+   * empty state for the same condition; the difference was that they read a
+   * route reporting `configured: false` while this one reads a route that
+   * refuses, so it now branches on `E_ROUTER_NOT_CONFIGURED` and says the same
+   * thing in the same words. Every other refusal still reads as the error it
+   * is.
+   *
+   *   Also here, from a read of every write path: a rule id the ROUTER
+   *   returned is the one value of the router's own making that this plugin
+   *   pastes into a later write's URL, and `urlFor` cannot encode it (a `.id`
+   *   starts with `*`). `assertRouterId` now refuses anything that is not
+   *   `*<hex>`, so an id carrying a traversal cannot aim a PATCH or DELETE at
+   *   an endpoint this plugin promises never to touch. It takes a hostile
+   *   router to produce one; the promise is still the promise.
    */
-  version: '0.16.0',
+  version: '0.16.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'network',
   title: 'MikroTik routing',

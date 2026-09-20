@@ -2144,8 +2144,18 @@ export const APPLY_INTENT_SENTENCE =
  * and is the half an operator most needs. `index.test.ts` holds the old clause
  * gone and this one present, the paired discipline this whole block runs on.
  */
-export const APPLY_RUNG_SENTENCE =
-  'The HTTP proxy mode is the asking kind. A bridge listens on this machine’s loopback, so the phone reaches it over the adb connection and is told to use it as its system proxy — an app with its own networking can ignore that, and nothing here can tell you which did. The upstream account stays on this machine.'
+/**
+ * The claim that must appear EVERYWHERE, extracted so it has one source.
+ *
+ * Both the banner and the Apply description carry it, and until 0.13.1 they
+ * did that by carrying the whole of `APPLY_RUNG_SENTENCE` — which put ninety
+ * identical words twice on one screen. The rule the test enforces is that
+ * neither may PARAPHRASE this; narrowing what is shared is how both can be
+ * satisfied at once.
+ */
+export const CAN_IGNORE_CLAUSE = 'an app with its own networking can ignore that, and nothing here can tell you which did'
+
+export const APPLY_RUNG_SENTENCE = `The HTTP proxy mode is the asking kind. A bridge listens on this machine’s loopback, so the phone reaches it over the adb connection and is told to use it as its system proxy — ${CAN_IGNORE_CLAUSE}. The upstream account stays on this machine.`
 
 /**
  * The second mode, in the same place, because a mode described alone reads as
@@ -2156,8 +2166,14 @@ export const APPLY_RUNG_SENTENCE =
  * the phone). Stating only the first would sell it; stating only the second
  * would make it look like a mistake to ever pick.
  */
-export const APPLY_VPN_SENTENCE =
-  'The VPN mode uses the record’s own SOCKS5 upstream instead, and the bridge is not involved at all: the Enkaku guest agent on the phone dials that upstream itself, so an app cannot opt out of it. The price is that the upstream password is sent to the phone to make that dial — the one thing the HTTP mode never does — and only a SOCKS5 upstream can be used this way.'
+/**
+ * The VPN mode's own claim, extracted for the same reason as
+ * `CAN_IGNORE_CLAUSE` — and it carries BOTH halves of the trade, because half
+ * of it in the banner would be selling the mode.
+ */
+export const VPN_ENFORCES_CLAUSE = 'an app cannot opt out of it, and the price is that the upstream password is sent to the phone'
+
+export const APPLY_VPN_SENTENCE = `The VPN mode uses the record’s own SOCKS5 upstream instead, and the bridge is not involved at all: the Enkaku guest agent on the phone dials that upstream itself, so ${VPN_ENFORCES_CLAUSE} to make that dial — the one thing the HTTP mode never does. Only a SOCKS5 upstream can be used this way.`
 
 /**
  * The two mode descriptions shown beside the choice itself, one line each.
@@ -2233,6 +2249,14 @@ export const PROXIES_VIEW_DESCRIPTION =
  * The banner that sits above the tabs, on every tab, for as long as this is
  * true.
  *
+ * **It no longer repeats the two mode paragraphs** (0.13.1). It carried
+ * `APPLY_RUNG_SENTENCE` and `APPLY_VPN_SENTENCE` in full, and so does
+ * `ASSIGNMENT_NOTE` — so opening the Assignments tab printed the same ninety
+ * words twice on one screen, and the first control sat below twenty lines of
+ * prose. The claim that must be visible EVERYWHERE is the one about escape;
+ * the mode detail belongs where a mode is chosen, which is the tab that
+ * already had it.
+ *
  * *"It is not a route ... and no device's traffic changes"* was two claims in a
  * row and only the second one fell. The first — an app that is not configured
  * to use a proxy will not use one — is now MORE important, not less, because a
@@ -2243,8 +2267,7 @@ export const PROXIES_VIEW_DESCRIPTION =
  * built yet"* stopped being true when step 112.2 landed, and what replaces it
  * is the half that is still true — it is stored, and it is never shown back.
  */
-export const BANNER_NOT_BUILT =
-  `A bridge runs on the farm’s own machine for every record you enable, and an app can be pointed at it. ${APPLY_RUNG_SENTENCE} ${APPLY_VPN_SENTENCE} An upstream password is stored encrypted on a row of its own, with no fragment of it on any read path, and nothing here can show a saved one back to you.`
+export const BANNER_NOT_BUILT = `A bridge runs on the farm’s own machine for every record you enable, and an app can be pointed at it — which is not the same as being routed through it: ${CAN_IGNORE_CLAUSE}. The VPN mode is the other kind: ${VPN_ENFORCES_CLAUSE}. The Assignments tab spells both out, beside the choice between them. An upstream password is stored encrypted on a row of its own, with no fragment of it on any read path, and nothing here can show a saved one back to you.`
 
 /** The catalogue's empty state. */
 export const CATALOGUE_EMPTY_HINT =
@@ -2311,7 +2334,21 @@ export const PASSWORD_ABSENT_HINT = 'No password is saved for this record. A bri
  * changes nothing on any phone.** Apply is a separate, deliberate press (plan
  * 114 §9 Q6).
  */
-export const ASSIGNMENT_NOTE = `${APPLY_INTENT_SENTENCE} Saving one here changes nothing on the phone until you press Apply on that row, and Apply asks which of the two modes to use. ${APPLY_RUNG_SENTENCE} ${APPLY_VPN_SENTENCE}`
+/**
+ * Split in two (0.13.1), because a tab whose first control sits under twelve
+ * lines of prose is a tab nobody reads the prose on either.
+ *
+ * `ASSIGNMENT_LEAD` is always on screen — it is the sentence that stops an
+ * operator thinking a saved note did something. `ASSIGNMENT_MODES` is the same
+ * two mode paragraphs, one click away under "How Apply works", and NOT
+ * shortened: they are the only full statement of the trade left on this screen
+ * now that the banner carries only the clauses.
+ */
+export const ASSIGNMENT_LEAD = `${APPLY_INTENT_SENTENCE} Saving one here changes nothing on the phone until you press Apply on that row, and Apply asks which of the two modes to use.`
+
+export const ASSIGNMENT_MODES = `${APPLY_RUNG_SENTENCE} ${APPLY_VPN_SENTENCE}`
+
+export const ASSIGNMENT_NOTE = `${ASSIGNMENT_LEAD} ${ASSIGNMENT_MODES}`
 
 /** The runs tab's standing note. */
 export const RUNS_NOTE =

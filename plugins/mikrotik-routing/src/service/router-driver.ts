@@ -238,6 +238,30 @@ const MANAGED_RULE_ACTION = 'lookup-only-in-table'
  */
 const CreatedRuleSchema = z.object({ '.id': z.string() }).passthrough()
 
+/**
+ * A RouterOS internal id, as the router itself writes them: `*1`, `*4A`.
+ *
+ * This is the ONE place data from the router's own response is pasted into a
+ * subsequent write's URL (`urlFor` deliberately does not encode a path, so
+ * that a `.id`'s `*` survives). A router answering with an id like
+ * `*1/../../ip/firewall/filter/*3` would therefore aim the PATCH or DELETE at
+ * a different RouterOS endpoint after the URL normalises — writing somewhere
+ * this plugin promises never to touch.
+ *
+ * It takes a hostile or compromised router to do it, which is close to "the
+ * attacker already owns what is being attacked". The check is still worth its
+ * two lines: the promise this plugin makes is that it writes to
+ * `/routing/rule` and nowhere else, and a promise that holds only while the
+ * other end behaves is not the promise an operator heard.
+ */
+const ROUTER_ID = /^\*[0-9A-Fa-f]+$/
+
+export function assertRouterId(id: string): void {
+  if (!ROUTER_ID.test(id)) {
+    throw new Error(`the router returned an unusable rule id (${JSON.stringify(id)}) — refusing to build a write URL from it`)
+  }
+}
+
 export class MikrotikRestDriver implements RouterDriver {
   private readonly client: MikrotikRestClient
 
@@ -408,6 +432,7 @@ export class MikrotikRestDriver implements RouterDriver {
    * and to the same explicit form as `createRule` above.
    */
   async updateRule(id: string, patch: Partial<DesiredRule>): Promise<void> {
+    assertRouterId(id)
     const body: Record<string, unknown> = {}
     if (patch.srcAddress !== undefined) body['src-address'] = `${patch.srcAddress}/32`
     if (patch.table !== undefined) body.table = patch.table
@@ -418,6 +443,7 @@ export class MikrotikRestDriver implements RouterDriver {
 
   /** `DELETE /routing/rule/<id>` — §4.1's verified behaviour: empty response. */
   async deleteRule(id: string): Promise<void> {
+    assertRouterId(id)
     await this.client.delete(`/routing/rule/${id}`)
   }
 

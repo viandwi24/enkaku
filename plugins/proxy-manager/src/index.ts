@@ -307,8 +307,19 @@ export default definePlugin({
    * `scripts/check-design-tokens.ts` now fails the build if one comes back.
    * Minor, not patch: an operator meets the difference the moment the screen
    * opens.
+   *
+   * **0.13.1: the screen stops saying the same thing twice.** The banner above
+   * the tabs carried `APPLY_RUNG_SENTENCE` and `APPLY_VPN_SENTENCE` in full,
+   * and so does the Assignments tab's own note — so opening that tab printed
+   * ninety identical words twice on one screen and the first control sat under
+   * twenty lines of prose. The claims are unchanged and are still shared from
+   * one source; what is shared is now the CLAUSE (`CAN_IGNORE_CLAUSE`,
+   * `VPN_ENFORCES_CLAUSE`) rather than the paragraph, so the banner still
+   * names both modes and both halves of the VPN trade, and the full
+   * explanation lives where the choice is made. Patch: nothing an operator can
+   * do changed, and no claim was narrowed or dropped.
    */
-  version: '0.13.0',
+  version: '0.13.1',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'plug',
   title: 'Proxy manager',
