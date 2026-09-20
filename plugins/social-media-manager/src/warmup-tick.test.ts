@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { RouterDevice } from './posts'
-import { runsFromPlan, type WarmupRun } from './warmup-runs'
+import { runsFromPlan, type WarmupRow } from './warmup-rows'
 import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
 import type { WarmupAssignment } from './warmup'
 
@@ -23,7 +23,7 @@ const assignment = (deviceId: string): WarmupAssignment => ({
   ],
 })
 
-const runsFor = (...ids: string[]): WarmupRun[] => runsFromPlan({ groupId: 'g1', assignments: ids.map(assignment), phase: 0, startedAt: STARTED })
+const runsFor = (...ids: string[]): WarmupRow[] => runsFromPlan({ groupId: 'g1', assignments: ids.map(assignment), phase: 0, startedAt: STARTED })
 const devicesFor = (...devices: RouterDevice[]): Map<string, RouterDevice> => new Map(devices.map((d) => [d.id, d]))
 
 describe('planWarmupTick — what goes out this tick', () => {
@@ -81,18 +81,18 @@ describe('the small helpers the tick writes with', () => {
 
   test('queuedSteps only offers steps there is a job to ask about', () => {
     const [run] = runsFor('d1')
-    expect(queuedSteps(run as WarmupRun)).toEqual([])
-    const out = withStepState(run as WarmupRun, 'a1', { state: 'queued', jobId: 'j1' })
+    expect(queuedSteps(run as WarmupRow)).toEqual([])
+    const out = withStepState(run as WarmupRow, 'a1', { state: 'queued', jobId: 'j1' })
     expect(queuedSteps(out).map((s) => s.activityId)).toEqual(['a1'])
     // queued with no job id is a row mid-write, not something to reconcile
-    const halfWritten = withStepState(run as WarmupRun, 'a1', { state: 'queued' })
+    const halfWritten = withStepState(run as WarmupRow, 'a1', { state: 'queued' })
     expect(queuedSteps(halfWritten)).toEqual([])
   })
 
   test('withStepState changes one step and leaves the rest untouched', () => {
     const [run] = runsFor('d1')
-    const out = withStepState(run as WarmupRun, 'a2', { state: 'failed', error: 'boom' })
-    expect(out.steps[0]).toEqual((run as WarmupRun).steps[0] as never)
+    const out = withStepState(run as WarmupRow, 'a2', { state: 'failed', error: 'boom' })
+    expect(out.steps[0]).toEqual((run as WarmupRow).steps[0] as never)
     expect(out.steps[1]).toMatchObject({ state: 'failed', error: 'boom' })
   })
 })

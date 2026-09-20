@@ -19,7 +19,7 @@ import { GROUP_PREFIX, GroupSchema, groupKeyFor, isRowDue, roomInFlight, withPro
 import retryFailed from './retry-failed'
 import addWarmup from './add-warmup'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
-import { WARMUP_PREFIX, WarmupRunSchema, isPermanentDispatchFailure, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRun } from './warmup-runs'
+import { WARMUP_PREFIX, WarmupRowSchema, isPermanentDispatchFailure, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRow } from './warmup-rows'
 import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
 import { warmupSequenceDoc } from './warmup-workflow'
 import {
@@ -1497,7 +1497,7 @@ const ActionsRunOutput = z.object({
  * what the phone is doing, and a settings change made after it was planned must
  * not silently re-pace work already scheduled.
  */
-function warmupGapsFor(run: WarmupRun): [number, number] {
+function warmupGapsFor(run: WarmupRow): [number, number] {
   const gaps: number[] = []
   for (let i = 1; i < run.steps.length; i++) gaps.push(Math.max(0, (run.steps[i]?.atSec ?? 0) - (run.steps[i - 1]?.atSec ?? 0)))
   return gaps.length === 0 ? [0, 0] : [Math.min(...gaps), Math.max(...gaps)]
@@ -1518,7 +1518,7 @@ async function runWarmupPass(
   ctx: PluginServiceContext,
   input: { fleet: z.infer<typeof DeviceListOutput>; names: Map<string, string>; claimed: ReadonlySet<string>; now: number; stopped: ReadonlySet<string> },
 ): Promise<void> {
-  const entries: { key: string; version: number; run: WarmupRun }[] = []
+  const entries: { key: string; version: number; run: WarmupRow }[] = []
   try {
     let cursor: string | null = null
     do {
@@ -1526,7 +1526,7 @@ async function runWarmupPass(
       if (cursor !== null) opts.cursor = cursor
       const page = await ctx.storage.global.list(opts)
       for (const entry of page.items) {
-        const parsed = WarmupRunSchema.safeParse(entry.value)
+        const parsed = WarmupRowSchema.safeParse(entry.value)
         // A row this build cannot parse is left alone rather than rewritten —
         // the same rule the post rows keep, for the same reason.
         if (parsed.success) entries.push({ key: entry.key, version: entry.version, run: parsed.data })
@@ -1704,7 +1704,7 @@ async function runWarmupPass(
   }
 
   // --- the session line the operator reads -----------------------------------
-  const byGroup = new Map<string, WarmupRun[]>()
+  const byGroup = new Map<string, WarmupRow[]>()
   for (const entry of entries) {
     const list = byGroup.get(entry.run.groupId) ?? []
     list.push(entry.run)

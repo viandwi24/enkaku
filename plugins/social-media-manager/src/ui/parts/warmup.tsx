@@ -29,7 +29,7 @@ import {
 import { PLATFORM_IDS, type PlatformId } from '../../platforms'
 import { DevicePicker, newPick, pickRefusal, resolvePick, type DevicePick } from './device-picker'
 import { readDuration, rollUpByDevice, sessionReport, type DeviceRollup } from '../../warmup-report'
-import { listDevices, listGroups, listWarmupRuns, pickHost, platformLabel, runMember, setSessionStopped, type Device, type Group, type WarmupRun, type WarmupStep } from '../shared'
+import { listDevices, listGroups, listWarmupRows, pickHost, platformLabel, runMember, setSessionStopped, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
 
 /**
  * The Warm-up screen (plan 900 D5, wave 4).
@@ -626,7 +626,7 @@ function JobLink({ jobId }: { jobId: string }): ReactElement {
 }
 
 /** One phone's phases, opened out — the detail the grouped row folds away. */
-function PhaseDetail({ device, phases }: { device: DeviceRollup<WarmupRun>; phases: number }): ReactElement {
+function PhaseDetail({ device, phases }: { device: DeviceRollup<WarmupRow>; phases: number }): ReactElement {
   return (
     <div className="flex flex-col gap-2.5 py-1">
       {device.phases.map((run) => (
@@ -678,7 +678,7 @@ function PhaseDetail({ device, phases }: { device: DeviceRollup<WarmupRun>; phas
  */
 export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string; refreshKey: number; onBack: () => void }): ReactElement {
   const [group, setGroup] = useState<Group | null>(null)
-  const [runs, setRuns] = useState<WarmupRun[] | null>(null)
+  const [runs, setRuns] = useState<WarmupRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set())
   const [showIdle, setShowIdle] = useState(false)
@@ -693,7 +693,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
   useEffect(() => {
     let live = true
     setError(null)
-    Promise.all([listGroups(), listWarmupRuns(groupId)])
+    Promise.all([listGroups(), listWarmupRows(groupId)])
       .then(([groups, rows]) => {
         if (!live) return
         setGroup(groups.find((g) => g.id === groupId) ?? null)

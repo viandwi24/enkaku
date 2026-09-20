@@ -25,7 +25,7 @@
  *    AND its row is returned to the state it had before it was sent, so the
  *    work is still owed. This is what makes stop different from "wait for it to
  *    finish": the operator pressing stop wants the phone free now.
- * 3. **Start owes the same work, at the same pace.** See `resumeWarmupRun`.
+ * 3. **Start owes the same work, at the same pace.** See `resumeWarmupRow`.
  *
  * ## Why a cancelled attempt is retired, not deleted
  *
@@ -135,11 +135,11 @@ export function stopPostRow<P extends ControlPost>(post: P, now: number): StopRe
  * Pull back one warm-up row.
  *
  * A queued activity goes back to `pending` with its job forgotten. It keeps its
- * place in the sequence and its `notBeforeAt`, which `resumeWarmupRun` then
+ * place in the sequence and its `notBeforeAt`, which `resumeWarmupRow` then
  * re-bases — so a stopped-and-started session runs the rest of the plan, not a
  * compressed version of it.
  */
-export function stopWarmupRun<R extends ControlRun>(run: R, now: number): StopResult<R> {
+export function stopWarmupRow<R extends ControlRun>(run: R, now: number): StopResult<R> {
   const cancel: string[] = []
   let pulled = 0
   const steps = run.steps.map((step) => {
@@ -177,7 +177,7 @@ export function stopWarmupRun<R extends ControlRun>(run: R, now: number): StopRe
  * Returns the row unchanged when nothing is waiting or nothing is overdue,
  * so a session started again within its own pacing keeps the plan it had.
  */
-export function resumeWarmupRun<R extends ControlRun>(run: R, now: number): R {
+export function resumeWarmupRow<R extends ControlRun>(run: R, now: number): R {
   const waiting = run.steps.filter((step) => step.state === 'pending')
   if (waiting.length === 0) return run
   const earliest = Math.min(...waiting.map((step) => step.notBeforeAt))

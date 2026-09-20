@@ -1,6 +1,6 @@
 import { api } from '@enkaku/ui'
 import { z } from 'zod'
-import { resumeWarmupRun, stopPostRow, stopWarmupRun } from '../session-control'
+import { resumeWarmupRow, stopPostRow, stopWarmupRow } from '../session-control'
 
 /**
  * The one screen's shared vocabulary: what it reads from the farm, and how.
@@ -213,7 +213,7 @@ export const WarmupStepSchema = z.object({
 })
 export type WarmupStep = z.infer<typeof WarmupStepSchema>
 
-export const WarmupRunSchema = z.object({
+export const WarmupRowSchema = z.object({
   version: z.literal(1),
   groupId: z.string(),
   deviceId: z.string(),
@@ -227,18 +227,18 @@ export const WarmupRunSchema = z.object({
   state: z.enum(['pending', 'running', 'done', 'partial', 'failed', 'skipped']).default('pending'),
   summary: z.string().nullable().default(null),
 })
-export type WarmupRun = z.infer<typeof WarmupRunSchema>
+export type WarmupRow = z.infer<typeof WarmupRowSchema>
 
 /**
  * Every phone's row in one warm-up session, ordered by phase and then by the
  * phone's own name — so a fleet of eighty reads as a list somebody can scan
  * rather than in whatever order the store happened to answer.
  */
-export async function listWarmupRuns(groupId: string): Promise<WarmupRun[]> {
+export async function listWarmupRows(groupId: string): Promise<WarmupRow[]> {
   const rows = await readAll(`warmup:${groupId}:`)
-  const runs: WarmupRun[] = []
+  const runs: WarmupRow[] = []
   for (const row of rows) {
-    const parsed = WarmupRunSchema.safeParse(row.value)
+    const parsed = WarmupRowSchema.safeParse(row.value)
     if (parsed.success) runs.push(parsed.data)
   }
   return runs.sort((a, b) => a.phase - b.phase || (a.deviceName ?? a.deviceId).localeCompare(b.deviceName ?? b.deviceId))
@@ -314,9 +314,9 @@ export async function setSessionStopped(group: Group, action: 'stop' | 'start'):
 
   if (group.kind === 'warmup') {
     for (const row of await readAll(`warmup:${group.id}:`)) {
-      const parsed = WarmupRunSchema.safeParse(row.value)
+      const parsed = WarmupRowSchema.safeParse(row.value)
       if (!parsed.success) continue
-      const next = stop ? stopWarmupRun(parsed.data, now) : { row: resumeWarmupRun(parsed.data, now), cancel: [] as string[], pulled: 0 }
+      const next = stop ? stopWarmupRow(parsed.data, now) : { row: resumeWarmupRow(parsed.data, now), cancel: [] as string[], pulled: 0 }
       if (next.row === parsed.data) continue
       pulled += next.pulled
       await cancelJobs(next.cancel)

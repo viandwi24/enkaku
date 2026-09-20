@@ -5,7 +5,7 @@ import { GROUP_PREFIX, GroupSchema, WarmupSettingsSchema, DEFAULT_WARMUP_KEYWORD
 import { PLATFORMS, PLATFORM_IDS, PlatformIdSchema, deviceCarriesPlatform, type PlatformId } from './platforms'
 import { phaseCount, planWarmup, type WarmupDevice } from './warmup'
 import { WarmupTargetSchema, describeTarget, reachesNothing, resolveWarmupTarget } from './warmup-target'
-import { runsFromPlan, warmupProgress, warmupRunKey, warmupSummary } from './warmup-runs'
+import { runsFromPlan, warmupProgress, warmupRowKey, warmupSummary } from './warmup-rows'
 
 /**
  * Start a warm-up session: draw the plan once, write a row per phone.
@@ -308,7 +308,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       const runs = runsFromPlan({ groupId, assignments, phase, startedAt: phaseStart, names, sequence: settings.sequenceMode })
       let longest = 0
       for (const run of runs) {
-        await ctx.storage.global.set(warmupRunKey(groupId, phase, run.deviceId), run)
+        await ctx.storage.global.set(warmupRowKey(groupId, phase, run.deviceId), run)
         written += 1
         activities += run.steps.length
         if (run.steps.length === 0) skipped += 1

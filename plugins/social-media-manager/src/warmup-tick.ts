@@ -1,5 +1,5 @@
 import { isDeviceFree, type RouterDevice } from './posts'
-import { dueSequence, nextStep, type WarmupRun, type WarmupStepRow } from './warmup-runs'
+import { dueSequence, nextStep, type WarmupRow, type WarmupStepRow } from './warmup-rows'
 
 /**
  * The decisions a warm-up tick makes, separated from the calls it makes
@@ -19,7 +19,7 @@ import { dueSequence, nextStep, type WarmupRun, type WarmupStepRow } from './war
  * and marks exactly these steps as queued against it.
  */
 export interface WarmupDispatch {
-  run: WarmupRun
+  run: WarmupRow
   steps: WarmupStepRow[]
   deviceId: string
   /** How to send it: one script job, or one workflow job carrying the lot. */
@@ -47,7 +47,7 @@ export interface WarmupDispatch {
  * operator chose into whatever the queue happened to be doing.
  */
 export function planWarmupTick(input: {
-  runs: readonly WarmupRun[]
+  runs: readonly WarmupRow[]
   devices: ReadonlyMap<string, RouterDevice>
   /** Phones already spoken for this tick, by the post pass or by a warm-up step still in the air. */
   claimed: ReadonlySet<string>
@@ -74,18 +74,18 @@ export function planWarmupTick(input: {
 }
 
 /** The phones a set of runs already has jobs out on — they take nothing else this tick. */
-export function phonesInFlight(runs: readonly WarmupRun[]): Set<string> {
+export function phonesInFlight(runs: readonly WarmupRow[]): Set<string> {
   const out = new Set<string>()
   for (const run of runs) if (run.steps.some((step) => step.state === 'queued')) out.add(run.deviceId)
   return out
 }
 
 /** The step rows of one run, with `activityId` moved to `state`, leaving the rest untouched. */
-export function withStepState(run: WarmupRun, activityId: string, patch: Partial<WarmupStepRow>): WarmupRun {
+export function withStepState(run: WarmupRow, activityId: string, patch: Partial<WarmupStepRow>): WarmupRow {
   return { ...run, steps: run.steps.map((step) => (step.activityId === activityId ? { ...step, ...patch } : step)) }
 }
 
 /** Every queued step that has a job to ask about. */
-export function queuedSteps(run: WarmupRun): WarmupStepRow[] {
+export function queuedSteps(run: WarmupRow): WarmupStepRow[] {
   return run.steps.filter((step) => step.state === 'queued' && step.jobId !== null)
 }

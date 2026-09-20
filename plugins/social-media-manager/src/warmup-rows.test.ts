@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { WarmupAssignment } from './warmup'
 import {
-  WarmupRunSchema,
+  WarmupRowSchema,
   isRunOver,
   nextStep,
   platformsCovered,
@@ -11,15 +11,15 @@ import {
   sequenceOutcome,
   settleWarmupStep,
   warmupProgress,
-  warmupRunKey,
-  warmupRunPrefix,
-  warmupRunState,
+  warmupRowKey,
+  warmupRowPrefix,
+  warmupRowState,
   warmupSummary,
   withRunSummary,
-  type WarmupRun,
+  type WarmupRow,
   type WarmupStepRow,
   type WarmupStepState,
-} from './warmup-runs'
+} from './warmup-rows'
 
 const STARTED = 1_800_000_000
 
@@ -37,10 +37,10 @@ const assignment = (over: Partial<WarmupAssignment> = {}): WarmupAssignment => (
   ...over,
 })
 
-const oneRun = (over: Partial<WarmupAssignment> = {}): WarmupRun =>
-  runsFromPlan({ groupId: 'g1', assignments: [assignment(over)], phase: 0, startedAt: STARTED })[0] as WarmupRun
+const oneRun = (over: Partial<WarmupAssignment> = {}): WarmupRow =>
+  runsFromPlan({ groupId: 'g1', assignments: [assignment(over)], phase: 0, startedAt: STARTED })[0] as WarmupRow
 
-const withStates = (run: WarmupRun, states: readonly WarmupStepState[]): WarmupRun =>
+const withStates = (run: WarmupRow, states: readonly WarmupStepState[]): WarmupRow =>
   withRunSummary({ ...run, steps: run.steps.map((step, i) => ({ ...step, state: states[i] ?? step.state })) })
 
 describe('runsFromPlan — the plan becomes rows once, at start', () => {
@@ -69,19 +69,19 @@ describe('runsFromPlan — the plan becomes rows once, at start', () => {
 
   test('a row round-trips through its schema', () => {
     const run = oneRun()
-    expect(WarmupRunSchema.parse(run)).toEqual(run)
+    expect(WarmupRowSchema.parse(run)).toEqual(run)
   })
 
   test('the key is per session, per phase and per phone, and the prefix reads one whole session', () => {
-    expect(warmupRunKey('g1', 0, 'd1')).toBe('warmup:g1:0:d1')
-    expect(warmupRunKey('g1', 0, 'd1').startsWith(warmupRunPrefix('g1'))).toBe(true)
-    expect(warmupRunKey('g1', 2, 'd1').startsWith(warmupRunPrefix('g1'))).toBe(true)
-    expect(warmupRunKey('g2', 0, 'd1').startsWith(warmupRunPrefix('g1'))).toBe(false)
+    expect(warmupRowKey('g1', 0, 'd1')).toBe('warmup:g1:0:d1')
+    expect(warmupRowKey('g1', 0, 'd1').startsWith(warmupRowPrefix('g1'))).toBe(true)
+    expect(warmupRowKey('g1', 2, 'd1').startsWith(warmupRowPrefix('g1'))).toBe(true)
+    expect(warmupRowKey('g2', 0, 'd1').startsWith(warmupRowPrefix('g1'))).toBe(false)
   })
 
   /* Three phases are three pieces of work for one phone; one key would lose two of them. */
   test('two phases of one phone do not share a key', () => {
-    expect(warmupRunKey('g1', 0, 'd1')).not.toBe(warmupRunKey('g1', 1, 'd1'))
+    expect(warmupRowKey('g1', 0, 'd1')).not.toBe(warmupRowKey('g1', 1, 'd1'))
   })
 })
 
@@ -119,15 +119,15 @@ describe('nextStep — one activity at a time, in order, on the clock', () => {
   })
 })
 
-describe('warmupRunState — what an operator is told about one phone', () => {
+describe('warmupRowState — what an operator is told about one phone', () => {
   test('every state is reachable from its steps', () => {
     const run = oneRun()
-    expect(warmupRunState(run.steps)).toBe('pending')
-    expect(warmupRunState(withStates(run, ['success']).steps)).toBe('running')
-    expect(warmupRunState(withStates(run, ['success', 'success', 'success']).steps)).toBe('done')
-    expect(warmupRunState(withStates(run, ['success', 'failed', 'success']).steps)).toBe('partial')
-    expect(warmupRunState(withStates(run, ['failed', 'failed', 'failed']).steps)).toBe('failed')
-    expect(warmupRunState([])).toBe('skipped')
+    expect(warmupRowState(run.steps)).toBe('pending')
+    expect(warmupRowState(withStates(run, ['success']).steps)).toBe('running')
+    expect(warmupRowState(withStates(run, ['success', 'success', 'success']).steps)).toBe('done')
+    expect(warmupRowState(withStates(run, ['success', 'failed', 'success']).steps)).toBe('partial')
+    expect(warmupRowState(withStates(run, ['failed', 'failed', 'failed']).steps)).toBe('failed')
+    expect(warmupRowState([])).toBe('skipped')
   })
 
   /* "Some of it worked" is a different fact from both of its neighbours, and it decides whether Retry is worth pressing. */
@@ -210,7 +210,7 @@ describe('retryFailedSteps — Retry failed means the same thing it does on the 
 })
 
 describe('the session, over its phones', () => {
-  const runs = (): WarmupRun[] => {
+  const runs = (): WarmupRow[] => {
     const base = oneRun()
     return [
       withStates({ ...base, deviceId: 'a' }, ['success', 'success', 'success']),
@@ -257,7 +257,7 @@ describe('the stored shape survives a version that adds a field', () => {
       atSec: 0,
       notBeforeAt: STARTED,
     }
-    const parsed = WarmupRunSchema.parse({
+    const parsed = WarmupRowSchema.parse({
       version: 1,
       groupId: 'g1',
       deviceId: 'd1',
@@ -277,8 +277,8 @@ describe('the stored shape survives a version that adds a field', () => {
   the other path.
 */
 describe('dueSequence — a row that goes out as one workflow job', () => {
-  const workflowRun = (): WarmupRun =>
-    runsFromPlan({ groupId: 'g1', assignments: [assignment()], phase: 0, startedAt: STARTED, sequence: 'workflow' })[0] as WarmupRun
+  const workflowRun = (): WarmupRow =>
+    runsFromPlan({ groupId: 'g1', assignments: [assignment()], phase: 0, startedAt: STARTED, sequence: 'workflow' })[0] as WarmupRow
 
   test('a job-per-activity row offers nothing here', () => {
     expect(dueSequence(oneRun(), STARTED + 10_000)).toBeNull()
@@ -306,7 +306,7 @@ describe('dueSequence — a row that goes out as one workflow job', () => {
   /* A retry re-queues the failed ones, and they go out together as a shorter sequence. */
   test('after a retry only the failed activities go out again', () => {
     const run = retryFailedSteps(withStates(workflowRun(), ['success', 'failed', 'failed']), STARTED + 5_000)
-    expect(dueSequence(run as WarmupRun, STARTED + 5_000)?.map((s) => s.activityId)).toEqual(['tt-a-notif', 'tt-a-shop'])
+    expect(dueSequence(run as WarmupRow, STARTED + 5_000)?.map((s) => s.activityId)).toEqual(['tt-a-notif', 'tt-a-shop'])
   })
 
   test('the row remembers the mode it was planned in', () => {
@@ -361,8 +361,8 @@ describe('warmupProgress counts PHONES, not stored rows', () => {
     worse — a number nobody can check against the shelf makes every number
     beside it suspect.
   */
-  const rowFor = (deviceId: string, phase: number, state: WarmupStepState): WarmupRun =>
-    WarmupRunSchema.parse({
+  const rowFor = (deviceId: string, phase: number, state: WarmupStepState): WarmupRow =>
+    WarmupRowSchema.parse({
       version: 1,
       groupId: 'g1',
       deviceId,

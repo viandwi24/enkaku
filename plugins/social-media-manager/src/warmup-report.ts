@@ -1,4 +1,4 @@
-import { WARMUP_STEP_STATES, rollUpPhases, type WarmupRunState, type WarmupStepState } from './warmup-runs'
+import { WARMUP_STEP_STATES, rollUpPhases, type WarmupRowState, type WarmupStepState } from './warmup-rows'
 
 /**
  * What a warm-up session looks like when you stand back from it.
@@ -25,7 +25,7 @@ import { WARMUP_STEP_STATES, rollUpPhases, type WarmupRunState, type WarmupStepS
 /**
  * What this module needs of a step and a run — and nothing else.
  *
- * Deliberately NOT `WarmupRun`. The same rows are read in two places with two
+ * Deliberately NOT `WarmupRow`. The same rows are read in two places with two
  * schemas: the plugin's own (`warmup-runs.ts`, which also carries `params`,
  * `script` and `sequence` because the dispatcher needs them) and the browser
  * mirror in `ui/shared.ts`, which parses what the storage API returns and
@@ -46,7 +46,7 @@ export interface ReportRun {
   phase: number
   platform: string | null
   note: string | null
-  state: WarmupRunState
+  state: WarmupRowState
   steps: readonly ReportStep[]
 }
 
@@ -74,7 +74,7 @@ export interface DeviceRollup<R extends ReportRun = ReportRun> {
   /** The platforms it was actually given, in phase order, each once. */
   platforms: string[]
   /** Rolled up across the phases, by the same rule a run uses over its steps. */
-  state: WarmupRunState
+  state: WarmupRowState
   counts: StepCounts
   /** Activities planned for this phone across every phase. */
   activities: number
@@ -91,7 +91,7 @@ export interface DeviceRollup<R extends ReportRun = ReportRun> {
  * made a fourteen-phone farm report "42 phones". One implementation, so the
  * list and the detail page cannot disagree about what a phone is doing.
  */
-export function rollUpState(states: readonly WarmupRunState[]): WarmupRunState {
+export function rollUpState(states: readonly WarmupRowState[]): WarmupRowState {
   return rollUpPhases(states)
 }
 

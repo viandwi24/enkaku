@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { PostSchema, type Attempt, type Post } from './posts'
-import { resumeWarmupRun, stopPostRow, stopWarmupRun } from './session-control'
-import { WarmupRunSchema, type WarmupRun, type WarmupStepRow } from './warmup-runs'
+import { resumeWarmupRow, stopPostRow, stopWarmupRow } from './session-control'
+import { WarmupRowSchema, type WarmupRow, type WarmupStepRow } from './warmup-rows'
 
 const attempt = (over: Partial<Attempt>): Attempt => ({
   jobId: over.jobId ?? 'j1',
@@ -41,8 +41,8 @@ const step = (over: Partial<WarmupStepRow>): WarmupStepRow => ({
   settledAt: null,
 })
 
-const run = (steps: WarmupStepRow[]): WarmupRun =>
-  WarmupRunSchema.parse({ version: 1, groupId: 'g1', deviceId: 'd1', platform: 'youtube', steps })
+const run = (steps: WarmupStepRow[]): WarmupRow =>
+  WarmupRowSchema.parse({ version: 1, groupId: 'g1', deviceId: 'd1', platform: 'youtube', steps })
 
 describe('stopPostRow', () => {
   test('an attempt still out is cancelled, retired, and owed again', () => {
@@ -88,9 +88,9 @@ describe('stopPostRow', () => {
   })
 })
 
-describe('stopWarmupRun', () => {
+describe('stopWarmupRow', () => {
   test('a queued activity goes back to owing, with its job forgotten', () => {
-    const { row, cancel, pulled } = stopWarmupRun(run([step({ activityId: 'a1', state: 'queued', jobId: 'j3', startedAt: 400 })]), 500)
+    const { row, cancel, pulled } = stopWarmupRow(run([step({ activityId: 'a1', state: 'queued', jobId: 'j3', startedAt: 400 })]), 500)
     expect(cancel).toEqual(['j3'])
     expect(pulled).toBe(1)
     expect(row.steps[0]?.state).toBe('pending')
@@ -100,7 +100,7 @@ describe('stopWarmupRun', () => {
   })
 
   test('a sequence sharing one job cancels it once and pulls back every step on it', () => {
-    const { cancel, pulled, row } = stopWarmupRun(
+    const { cancel, pulled, row } = stopWarmupRow(
       run([step({ activityId: 'a1', state: 'queued', jobId: 'w1' }), step({ activityId: 'a2', state: 'queued', jobId: 'w1' })]),
       500,
     )
@@ -110,19 +110,19 @@ describe('stopWarmupRun', () => {
   })
 
   test('activities that already answered are left exactly as they are', () => {
-    const { row, pulled } = stopWarmupRun(run([step({ activityId: 'a1', state: 'success' }), step({ activityId: 'a2', state: 'failed' })]), 500)
+    const { row, pulled } = stopWarmupRow(run([step({ activityId: 'a1', state: 'success' }), step({ activityId: 'a2', state: 'failed' })]), 500)
     expect(pulled).toBe(0)
     expect(row.steps.map((s) => s.state)).toEqual(['success', 'failed'])
   })
 })
 
-describe('resumeWarmupRun', () => {
+describe('resumeWarmupRow', () => {
   test('the gaps the operator chose survive a long stop', () => {
     // Three activities a minute apart, started again two hours late. They must
     // still be a minute apart — a warm-up firing four activities back to back
     // on one phone is the exact shape a platform looks for.
     const now = 100_000
-    const resumed = resumeWarmupRun(
+    const resumed = resumeWarmupRow(
       run([step({ activityId: 'a1', state: 'pending', notBeforeAt: 1_000 }), step({ activityId: 'a2', state: 'pending', notBeforeAt: 1_060 }), step({ activityId: 'a3', state: 'pending', notBeforeAt: 1_120 })]),
       now,
     )
@@ -130,7 +130,7 @@ describe('resumeWarmupRun', () => {
   })
 
   test('an activity that already answered keeps its stamp', () => {
-    const resumed = resumeWarmupRun(run([step({ activityId: 'a1', state: 'success', notBeforeAt: 1_000 }), step({ activityId: 'a2', state: 'pending', notBeforeAt: 1_060 })]), 100_000)
+    const resumed = resumeWarmupRow(run([step({ activityId: 'a1', state: 'success', notBeforeAt: 1_000 }), step({ activityId: 'a2', state: 'pending', notBeforeAt: 1_060 })]), 100_000)
     expect(resumed.steps[0]?.notBeforeAt).toBe(1_000)
   })
 
@@ -138,11 +138,11 @@ describe('resumeWarmupRun', () => {
     // Nothing overdue means nothing to re-base, and shifting anyway would push
     // the whole plan later every time somebody pressed stop and start.
     const before = run([step({ activityId: 'a1', state: 'pending', notBeforeAt: 5_000 })])
-    expect(resumeWarmupRun(before, 1_000)).toBe(before)
+    expect(resumeWarmupRow(before, 1_000)).toBe(before)
   })
 
   test('a finished run is returned untouched', () => {
     const before = run([step({ activityId: 'a1', state: 'success' })])
-    expect(resumeWarmupRun(before, 100_000)).toBe(before)
+    expect(resumeWarmupRow(before, 100_000)).toBe(before)
   })
 })

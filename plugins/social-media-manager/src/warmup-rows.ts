@@ -43,12 +43,20 @@ export const WARMUP_PREFIX = 'warmup:'
  * overwrite the first, and the operator would watch a session that kept losing
  * its own history.
  */
-export function warmupRunKey(groupId: string, phase: number, deviceId: string): string {
+export function warmupRowKey(groupId: string, phase: number, deviceId: string): string {
   return `${WARMUP_PREFIX}${groupId}:${phase}:${deviceId}`
 }
 
-/** Everything under one session, for a prefix read. */
-export function warmupRunPrefix(groupId: string): string {
+/**
+ * Everything under one session, for a prefix read.
+ *
+ * A note on the two words this plugin now uses, because they were one word
+ * until 0.58.0 and the collision was confusing: a **row** is one phone's work
+ * in one pass over the fleet — this file. A **run** is one of those passes,
+ * with its own id, its own start and its own history. A session that has been
+ * started three times has three runs, and each run has one row per phone.
+ */
+export function warmupRowPrefix(groupId: string): string {
   return `${WARMUP_PREFIX}${groupId}:`
 }
 
@@ -80,10 +88,10 @@ export const WarmupStepRowSchema = z.object({
 export type WarmupStepRow = z.infer<typeof WarmupStepRowSchema>
 
 /** A run's state, rolled up from its steps. */
-export const WARMUP_RUN_STATES = ['pending', 'running', 'done', 'partial', 'failed', 'skipped'] as const
-export type WarmupRunState = (typeof WARMUP_RUN_STATES)[number]
+export const WARMUP_ROW_STATES = ['pending', 'running', 'done', 'partial', 'failed', 'skipped'] as const
+export type WarmupRowState = (typeof WARMUP_ROW_STATES)[number]
 
-export const WarmupRunSchema = z.object({
+export const WarmupRowSchema = z.object({
   version: z.literal(1),
   groupId: z.string().min(1),
   deviceId: z.string().min(1),
@@ -105,10 +113,10 @@ export const WarmupRunSchema = z.object({
    * record of what the phone actually did.
    */
   sequence: z.enum(['jobs', 'workflow']).default('jobs'),
-  state: z.enum(WARMUP_RUN_STATES).default('pending'),
+  state: z.enum(WARMUP_ROW_STATES).default('pending'),
   summary: z.string().max(200).nullable().default(null),
 })
-export type WarmupRun = z.infer<typeof WarmupRunSchema>
+export type WarmupRow = z.infer<typeof WarmupRowSchema>
 
 /**
  * Turn one phase's plan into stored rows.
@@ -125,7 +133,7 @@ export function runsFromPlan(input: {
   startedAt: number
   names?: ReadonlyMap<string, string>
   sequence?: 'jobs' | 'workflow'
-}): WarmupRun[] {
+}): WarmupRow[] {
   const { groupId, assignments, phase, startedAt, names } = input
   return assignments.map((assignment) => {
     const steps: WarmupStepRow[] = assignment.steps.map((step) => ({
@@ -141,7 +149,7 @@ export function runsFromPlan(input: {
       startedAt: null,
       settledAt: null,
     }))
-    const run: WarmupRun = {
+    const run: WarmupRow = {
       version: 1,
       groupId,
       deviceId: assignment.deviceId,
@@ -168,7 +176,7 @@ export function runsFromPlan(input: {
  * the pacing, and skipping ahead past a gap would compress the session into the
  * burst it exists to avoid.
  */
-export function nextStep(run: WarmupRun, now: number): WarmupStepRow | null {
+export function nextStep(run: WarmupRow, now: number): WarmupStepRow | null {
   // A workflow row goes out whole, through `dueSequence` — never one step at a time.
   if (run.sequence === 'workflow') return null
   if (run.steps.some((step) => step.state === 'queued')) return null
@@ -185,7 +193,7 @@ export function nextStep(run: WarmupRun, now: number): WarmupStepRow | null {
  * while the first is still walking the phone is the very thing `nextStep`
  * refuses for the job-per-activity path.
  */
-export function dueSequence(run: WarmupRun, now: number): WarmupStepRow[] | null {
+export function dueSequence(run: WarmupRow, now: number): WarmupStepRow[] | null {
   if (run.sequence !== 'workflow') return null
   if (run.steps.some((step) => step.state === 'queued')) return null
   const pending = run.steps.filter((step) => step.state === 'pending')
@@ -195,7 +203,7 @@ export function dueSequence(run: WarmupRun, now: number): WarmupStepRow[] | null
 }
 
 /** Is this run finished — nothing pending, nothing out? */
-export function isRunOver(run: WarmupRun): boolean {
+export function isRunOver(run: WarmupRow): boolean {
   return !run.steps.some((step) => step.state === 'pending' || step.state === 'queued')
 }
 
@@ -208,7 +216,7 @@ export function isRunOver(run: WarmupRun): boolean {
  * activity never ends the run (plan 900 D6.5), so `partial` is the common
  * outcome of a phone that met one bad screen.
  */
-export function warmupRunState(steps: readonly WarmupStepRow[]): WarmupRunState {
+export function warmupRowState(steps: readonly WarmupStepRow[]): WarmupRowState {
   if (steps.length === 0) return 'skipped'
   const counts = { success: 0, failed: 0, pending: 0, queued: 0 }
   for (const step of steps) {
@@ -231,12 +239,12 @@ export function warmupRunState(steps: readonly WarmupStepRow[]): WarmupRunState 
 }
 
 /** The one line the sessions table shows for a phone. */
-export function warmupRunSummary(run: WarmupRun): string {
+export function warmupRunSummary(run: WarmupRow): string {
   if (run.steps.length === 0) return run.note ?? 'Nothing to do'
   const done = run.steps.filter((step) => step.state === 'success').length
   const failed = run.steps.filter((step) => step.state === 'failed').length
   const where = run.platform ?? 'no platform'
-  const state = warmupRunState(run.steps)
+  const state = warmupRowState(run.steps)
   if (state === 'pending') return `${where} — waiting to start`
   if (state === 'running') return `${where} — ${done + failed} of ${run.steps.length} done`
   if (state === 'done') return `${where} — all ${run.steps.length} activities done`
@@ -245,8 +253,8 @@ export function warmupRunSummary(run: WarmupRun): string {
 }
 
 /** The run with its state and summary recomputed from its own steps, so the two can never disagree. */
-export function withRunSummary(run: WarmupRun): WarmupRun {
-  const state = warmupRunState(run.steps)
+export function withRunSummary(run: WarmupRow): WarmupRow {
+  const state = warmupRowState(run.steps)
   return { ...run, state, summary: warmupRunSummary({ ...run, state }) }
 }
 
@@ -317,7 +325,7 @@ export interface WarmupProgress {
 }
 
 /** The session's counts, over its rows. */
-export function warmupProgress(runs: readonly WarmupRun[]): WarmupProgress {
+export function warmupProgress(runs: readonly WarmupRow[]): WarmupProgress {
   /*
     Counted PER PHONE, not per row.
 
@@ -332,11 +340,11 @@ export function warmupProgress(runs: readonly WarmupRun[]): WarmupProgress {
     `warmup-report.ts` uses — one phone, one verdict, and the total is a number
     the operator can count on the shelf.
   */
-  const byDevice = new Map<string, WarmupRunState[]>()
+  const byDevice = new Map<string, WarmupRowState[]>()
   for (const run of runs) {
     const list = byDevice.get(run.deviceId)
-    if (list) list.push(warmupRunState(run.steps))
-    else byDevice.set(run.deviceId, [warmupRunState(run.steps)])
+    if (list) list.push(warmupRowState(run.steps))
+    else byDevice.set(run.deviceId, [warmupRowState(run.steps)])
   }
 
   const out: WarmupProgress = { devices: byDevice.size, waiting: 0, running: 0, done: 0, partial: 0, failed: 0, skipped: 0 }
@@ -359,7 +367,7 @@ export function warmupProgress(runs: readonly WarmupRun[]): WarmupProgress {
  * this plugin cannot disagree about it — `warmup-report.ts`'s `rollUpState`
  * delegates to this one, and `warmup-report.test.ts` holds them equal.
  */
-export function rollUpPhases(states: readonly WarmupRunState[]): WarmupRunState {
+export function rollUpPhases(states: readonly WarmupRowState[]): WarmupRowState {
   const live = states.filter((state) => state !== 'skipped')
   if (live.length === 0) return states.length === 0 ? 'pending' : 'skipped'
   if (live.some((state) => state === 'running')) return 'running'
@@ -424,7 +432,7 @@ export function isPermanentDispatchFailure(message: string): boolean {
  * button look broken for a minute. `null` when there is nothing to retry, so a
  * caller does not write a row it did not change.
  */
-export function retryFailedSteps(run: WarmupRun, now: number): WarmupRun | null {
+export function retryFailedSteps(run: WarmupRow, now: number): WarmupRow | null {
   /*
     `skipped` goes again too, and that is not a generalisation — it is what a
     stopped sequence leaves behind.
@@ -447,7 +455,7 @@ export function retryFailedSteps(run: WarmupRun, now: number): WarmupRun | null 
 }
 
 /** Which platforms a session's rows actually covered, for the page's header. */
-export function platformsCovered(runs: readonly WarmupRun[]): PlatformId[] {
+export function platformsCovered(runs: readonly WarmupRow[]): PlatformId[] {
   const seen = new Set<PlatformId>()
   for (const run of runs) if (run.platform !== null) seen.add(run.platform)
   return [...seen]

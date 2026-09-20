@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { readDuration, rollUpByDevice, rollUpState, sessionReport } from './warmup-report'
-import { WarmupRunSchema, type WarmupRun, type WarmupStepRow } from './warmup-runs'
+import { WarmupRowSchema, type WarmupRow, type WarmupStepRow } from './warmup-rows'
 
 const step = (over: Partial<WarmupStepRow> = {}): WarmupStepRow => ({
   activityId: over.activityId ?? 'a1',
@@ -16,8 +16,8 @@ const step = (over: Partial<WarmupStepRow> = {}): WarmupStepRow => ({
   settledAt: over.settledAt ?? null,
 })
 
-const run = (over: Partial<WarmupRun> = {}): WarmupRun =>
-  WarmupRunSchema.parse({
+const run = (over: Partial<WarmupRow> = {}): WarmupRow =>
+  WarmupRowSchema.parse({
     version: 1,
     groupId: 'g1',
     deviceId: over.deviceId ?? 'd1',
