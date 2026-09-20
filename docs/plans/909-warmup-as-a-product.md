@@ -375,6 +375,28 @@ The lesson generalises past this plugin: **a plugin's own log is where its
 service speaks, and `ctx.log.warn` does not reach the core's stdout.** Two
 stalls in this series were diagnosed the slow way before anyone looked there.
 
+## 4a. The whole thing, run from nothing (2026-09-21)
+
+With every warm-up row deleted and the fleet quiet, on the owner's moto g06
+power:
+
+1. **A session was made from the form** — "Warm-up pagi", every phone, three
+   platforms, one activity each. 14 phones, 42 activities, one run, and every
+   phone showing all three platforms in its own order.
+2. **Run 1 finished its three platforms**: TikTok green, Instagram green,
+   YouTube red. The red one was real and is described in D13 — a row whose
+   `params` a pre-fix browser Retry had destroyed.
+3. **Retry failed** put that activity back in the queue, per run, and the
+   numbers recomputed to match.
+4. **A second run was started from New run.** Both appear on the session, each
+   with its own progress: the older kept 67%, the newer began at nothing.
+5. **Run 2 finished all three platforms green** — `3 of 3 answered`, `done`,
+   100%. The row is clean: 0 of its steps are missing `params`, against 1 in
+   run 1, which is what D13's fix bought.
+
+Everything in D1 to D13 was exercised by that sequence except Remove, which was
+used separately on a run of an earlier session.
+
 ## 5. Still open
 
 - **Cadence** (*"sehari bisa sekali, atau sehari bisa 2 kali"*) is the farm's
