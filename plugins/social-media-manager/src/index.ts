@@ -78,6 +78,38 @@ import {
  *
  * ## Changelog
  *
+ * - **0.51.0 — the warm-up rotation is plugin code, not a graph** (plan 900 D1,
+ *   plan 902).
+ *
+ *   `warmup-catalog.ts` carries the same nine styles the workflow drew, as
+ *   typed data; `warmup.ts` plans a session from them — platform rotation,
+ *   phases, weighted style draw, shuffle, gaps, start jitter, scaled counts.
+ *   Pure, `now` and `random` injected, so a test asserts the plan rather than
+ *   tolerating it.
+ *
+ *   The point is what the language buys. A count that was `scaled('15 +
+ *   rand(25)')` — a string for an engine to parse on a phone — is
+ *   `scaled(draw, 15, 25)`, and the `$device.number` versus batch-position trap
+ *   CLAUDE.md warns about is now a typed field that does not compile when it is
+ *   the wrong one.
+ *
+ *   It also found a defect the graph was hiding. Checking every param in the
+ *   catalog against the packs' own schemas showed `tiktok/keyword-videos`
+ *   declares `keywordBoostFactor` and NOT `likeProbability`, while the catalog
+ *   was sending both — an undeclared param is refused at dispatch, so every
+ *   TikTok phone drawn into `tt-b` or `tt-c` would have failed with a
+ *   validation error naming the plugin rather than the line. Twenty script refs
+ *   and every param name are now verified against the packs.
+ *
+ *   `smm/warmup-rotation` still ships, titled "superseded". A farm may have a
+ *   schedule pointing at it, and removing the document would break that
+ *   schedule with nothing to explain it; plan 900 §6 Q1 asks the owner, and
+ *   wave 5 removes it once the answer is no. Nothing dispatches it any more.
+ *
+ *   No session writes a warm-up yet — that is wave 3 — so this is the engine
+ *   only. Minor rather than patch because an operator meets the superseded
+ *   title in the workflows list.
+ *
  * - **0.50.1 — a session now says which KIND it is** (plan 900 D4, plan 901).
  *   `GroupSchema` gains `kind` (`post` | `warmup`) and a nullable `warmup`
  *   settings block, tied to each other by a check: the two are one fact, and
@@ -1658,7 +1690,7 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.50.1',
+  version: '0.51.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

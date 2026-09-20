@@ -4,6 +4,21 @@ import type { WorkflowDocInput } from '@enkaku/protocol'
  * The three-platform warm-up rotation (plan 314), shipped by this plugin as
  * `smm/warmup-rotation` (plan 315) — tuned for a trading and finance niche.
  *
+ * ## Superseded, and deliberately still here (plan 900 D1, wave 2)
+ *
+ * Warm-up is a plugin feature now: `warmup-catalog.ts` carries these same nine
+ * styles as typed data and `warmup.ts` plans them, so the rotation no longer
+ * needs an expression engine to run. Nothing in this plugin reads this file any
+ * more except the registration below.
+ *
+ * It is NOT deleted, and that is a decision rather than an oversight. A farm may
+ * have a schedule pointing at `smm/warmup-rotation`, and removing the document
+ * would make that schedule fail on the next activation with nothing to explain
+ * it. Plan 900 §6 Q1 asks the owner whether any farm still runs it; wave 5
+ * removes it once the answer is no. Until then the title says "superseded" so an
+ * operator picking from a list is not choosing between two identical things
+ * without being told which is which.
+ *
  * The owner's real use (2026-09-14): eighty phones warmed up at once, every
  * day at a fixed hour, so each phone's For You page fills with trading and
  * finance content — without eighty phones visibly doing the same thing at the
@@ -91,10 +106,9 @@ function styles(id: string, title: string, x: number, cases: { to: string; label
 export const warmupRotation: WorkflowDocInput = {
   schema: 2,
   name: 'warmup-rotation',
-  title: 'Warmup rotation (trading niche)',
+  title: 'Warmup rotation (trading niche) — superseded',
   description:
-    'Platform rotates per phone per day ($device.number + slot + day); each phone then draws one of three styles, shuffled with random gaps, counts and a trading keyword.',
-  params: [
+    'SUPERSEDED by Warm-up sessions (plan 900) — the same rotation, with per-device results and Retry failed. Kept so a farm whose schedule points here keeps working; removed once none does.',  params: [
     {
       name: 'slot',
       type: 'number',

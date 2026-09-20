@@ -161,7 +161,7 @@ exist in the rebuilt feature:
 | wave | plan | what it lands |
 |---|---|---|
 | 1 | 901 | The session model: `kind` on `GroupSchema`, a `WarmupSettingsSchema`, migration of existing rows, and the reader that keeps old sessions readable |
-| 2 | 902 | The warm-up engine in plugin code: rotation, phases, style draw, shuffle, gaps, jitter — with `warmup-rotation.ts` deleted and its tests rewritten against the new code |
+| 2 | 902 | The warm-up engine in plugin code: rotation, phases, style draw, shuffle, gaps, jitter. `warmup-rotation.ts` is marked superseded but NOT deleted — §6 Q1 is unanswered and a farm may have a schedule pointing at it, so wave 5 removes it |
 | 3 | 903 | Dispatch and session rows: per-device, per-platform results; Retry failed; the notes vocabulary that auto-post already has |
 | 4 | 904 | Studio surface: the second nav item, the warm-up session page, the settings form (templates/sequences, keywords, like chance and like keywords, gaps, amount) |
 | 5 | 905 | Scheduling, docs, and the retirement notice for `smm/warmup-rotation` |
