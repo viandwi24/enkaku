@@ -1,0 +1,82 @@
+import { isDeviceFree, type RouterDevice } from './posts'
+import { nextStep, type WarmupRun, type WarmupStepRow } from './warmup-runs'
+
+/**
+ * The decisions a warm-up tick makes, separated from the calls it makes
+ * (plan 900 D1, wave 3).
+ *
+ * `index.ts` owns the reads, the dispatches and the writes; everything that has
+ * to be RIGHT lives here, where a test can ask it directly. The same split
+ * `planDispatch` has, for the same reason: a router tick is the one code path
+ * that is hardest to reproduce by hand and easiest to get subtly wrong.
+ */
+
+/** What a tick decided to send. */
+export interface WarmupDispatch {
+  run: WarmupRun
+  step: WarmupStepRow
+  deviceId: string
+}
+
+/**
+ * Which activities go out this tick.
+ *
+ * Three rules, and each of them cost something to learn on the posting side:
+ *
+ * - **one phone, one job.** A phone already carrying a Social job — a post
+ *   dispatched this same tick (`claimed`), or a warm-up step still out — takes
+ *   nothing else. `device.list`'s `activities` was read before either job
+ *   existed, so it cannot see a job this tick just made.
+ * - **a busy or offline phone is skipped, not failed.** It frees itself, and
+ *   the step keeps its place in the queue; the next tick tries again.
+ * - **posting wins a tie.** The caller passes the phones the post pass already
+ *   claimed, so a warm-up never takes a phone out from under a real upload.
+ *   A warm-up is the lowest-value work on the farm and should behave like it.
+ *
+ * Deliberately NOT capped by the session's `concurrency`. The spread is the
+ * start jitter — eighty phones each waiting a random 0-120 s — and a second
+ * cap on top of it would hold a phone past its turn and stretch the gaps the
+ * operator chose into whatever the queue happened to be doing.
+ */
+export function planWarmupTick(input: {
+  runs: readonly WarmupRun[]
+  devices: ReadonlyMap<string, RouterDevice>
+  /** Phones already spoken for this tick, by the post pass or by a warm-up step still in the air. */
+  claimed: ReadonlySet<string>
+  now: number
+}): WarmupDispatch[] {
+  const { runs, devices, claimed, now } = input
+  const taken = new Set(claimed)
+  const out: WarmupDispatch[] = []
+  for (const run of runs) {
+    if (taken.has(run.deviceId)) continue
+    const step = nextStep(run, now)
+    if (step === null) continue
+    const device = devices.get(run.deviceId)
+    // A phone that has left the farm is not a failure of this step: the session
+    // keeps it, and it runs if the phone comes back. `planDispatch` gives a row
+    // whose phone stays away long enough its own failure; a warm-up has no
+    // deadline to miss, so it simply waits.
+    if (!device || !isDeviceFree(device)) continue
+    taken.add(run.deviceId)
+    out.push({ run, step, deviceId: run.deviceId })
+  }
+  return out
+}
+
+/** The phones a set of runs already has jobs out on — they take nothing else this tick. */
+export function phonesInFlight(runs: readonly WarmupRun[]): Set<string> {
+  const out = new Set<string>()
+  for (const run of runs) if (run.steps.some((step) => step.state === 'queued')) out.add(run.deviceId)
+  return out
+}
+
+/** The step rows of one run, with `activityId` moved to `state`, leaving the rest untouched. */
+export function withStepState(run: WarmupRun, activityId: string, patch: Partial<WarmupStepRow>): WarmupRun {
+  return { ...run, steps: run.steps.map((step) => (step.activityId === activityId ? { ...step, ...patch } : step)) }
+}
+
+/** Every queued step that has a job to ask about. */
+export function queuedSteps(run: WarmupRun): WarmupStepRow[] {
+  return run.steps.filter((step) => step.state === 'queued' && step.jobId !== null)
+}

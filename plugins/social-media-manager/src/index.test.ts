@@ -13,6 +13,7 @@ import skipPlatform from './skip-platform'
 import updateGroup from './update-group'
 import cleanPhoneVideos from './clean-phone-videos'
 import syncAccounts from './sync-accounts'
+import addWarmup from './add-warmup'
 import { PLATFORMS } from './platforms'
 import { POST_PREFIX, RESULT_UNREADABLE } from './posts'
 
@@ -34,15 +35,15 @@ describe('social-media-manager manifest', () => {
   /** The three-site version bump: `package.json`, `src/index.ts`, and this assertion. */
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('0.51.2')
+    expect(plugin.version).toBe('0.52.0')
     expect(plugin.version).toBe(pkg.version)
   })
 
   test('every member is presentable in Studio', () => {
-    expect(plugin.scripts.map((s) => s.id)).toEqual(['add-post', 'retry-failed', 'add-posts', 'add-group', 'start-group', 'retry-group', 'update-post', 'resolve-attempt', 'skip-platform', 'update-group', 'clean-phone-videos', 'sync-accounts'])
+    expect(plugin.scripts.map((s) => s.id)).toEqual(['add-post', 'retry-failed', 'add-posts', 'add-group', 'start-group', 'retry-group', 'update-post', 'resolve-attempt', 'skip-platform', 'update-group', 'clean-phone-videos', 'sync-accounts', 'add-warmup'])
     // Typed against the members themselves rather than the manifest's erased
     // `ScriptDefinition`, which drops `title`/`description` from the type.
-    const members: Array<{ id: string; title?: string; description?: string }> = [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts]
+    const members: Array<{ id: string; title?: string; description?: string }> = [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts, addWarmup]
     expect(members.map((m) => m.id).sort()).toEqual(plugin.scripts.map((s) => s.id).sort())
     for (const member of members) {
       expect({ id: member.id, titled: (member.title ?? '').length > 0 }).toEqual({ id: member.id, titled: true })
@@ -52,7 +53,7 @@ describe('social-media-manager manifest', () => {
 
   test('every member parameter description fits the farm\'s 300-character limit', () => {
     // The farm refuses a longer one at install, which no typecheck can see.
-    for (const member of [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts]) {
+    for (const member of [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts, addWarmup]) {
       const json = z.toJSONSchema(member.params, { io: 'input' }) as { properties?: Record<string, { description?: string }> }
       for (const [name, property] of Object.entries(json.properties ?? {})) {
         expect({ member: member.id, name, length: (property.description ?? '').length <= 300 }).toEqual({ member: member.id, name, length: true })

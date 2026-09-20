@@ -17,7 +17,10 @@ import { NO_HASHTAG_RULE } from './hashtags'
 import { platformPostTexts } from './platform-captions'
 import { GROUP_PREFIX, GroupSchema, groupKeyFor, isRowDue, roomInFlight, withProgress, type Group, type RowState } from './groups'
 import retryFailed from './retry-failed'
+import addWarmup from './add-warmup'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
+import { WARMUP_PREFIX, WarmupRunSchema, isRunOver, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRun } from './warmup-runs'
+import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
 import {
   POST_PREFIX,
   PostSchema,
@@ -77,6 +80,25 @@ import {
  * memory would be worse than not having them.
  *
  * ## Changelog
+ *
+ * - **0.52.0 — a warm-up session actually runs** (plan 900 D1, plan 903).
+ *   `add-warmup` plans one, `runWarmupPass` sends it. The plan is drawn ONCE,
+ *   when the session is made, because every count and style comes from
+ *   `random` and a router that re-planned each tick would give a phone a
+ *   different style every minute. The rows are what the phones are doing.
+ *
+ *   The warm-up pass runs LAST in a tick and is handed the phones the post pass
+ *   already claimed, so a warm-up never takes a phone out from under a real
+ *   upload. A warm-up is the lowest-value work on the farm and now behaves like
+ *   it. A phone that is busy, offline or gone is skipped rather than failed: the
+ *   step keeps its place and the next tick tries again.
+ *
+ *   A dispatch that threw is never recorded as queued. A row claiming a job
+ *   that does not exist would wait for an answer for ever, which is the one
+ *   failure a reconciler cannot recover from on its own.
+ *
+ *   No Studio surface yet — the session is made and watched through the action
+ *   and its rows (wave 4).
  *
  * - **0.51.2 — a phone is only rotated to a platform it carries.** The
  *   workflow assumed every phone could do every platform; on a real farm a
@@ -1238,6 +1260,129 @@ async function reconcilePost(ctx: PluginServiceContext, post: Post): Promise<Pos
   return any ? { ...post, dispatch } : null
 }
 
+/**
+ * The warm-up half of a router tick (plan 900 D1, wave 3).
+ *
+ * Reads the warm-up rows, settles whatever came back, sends whatever is due.
+ * Kept out of the post pass and run AFTER it, so a warm-up can never take a
+ * phone out from under a real upload — the `claimed` set is the post pass's
+ * own, and a warm-up simply does not consider those phones this tick.
+ *
+ * Everything that has to be right is in `warmup-tick.ts`, where a test can ask
+ * it directly; this function owns only the reads, the calls and the writes.
+ */
+async function runWarmupPass(
+  ctx: PluginServiceContext,
+  input: { fleet: z.infer<typeof DeviceListOutput>; names: Map<string, string>; claimed: ReadonlySet<string>; now: number },
+): Promise<void> {
+  const entries: { key: string; version: number; run: WarmupRun }[] = []
+  try {
+    let cursor: string | null = null
+    do {
+      const opts: { prefix: string; limit: number; cursor?: string } = { prefix: WARMUP_PREFIX, limit: 500 }
+      if (cursor !== null) opts.cursor = cursor
+      const page = await ctx.storage.global.list(opts)
+      for (const entry of page.items) {
+        const parsed = WarmupRunSchema.safeParse(entry.value)
+        // A row this build cannot parse is left alone rather than rewritten —
+        // the same rule the post rows keep, for the same reason.
+        if (parsed.success) entries.push({ key: entry.key, version: entry.version, run: parsed.data })
+      }
+      cursor = page.nextCursor
+    } while (cursor !== null)
+  } catch (err) {
+    ctx.log.warn('router tick could not read the warm-up rows — skipping the warm-up half of this tick', { error: messageOf(err) })
+    return
+  }
+  if (entries.length === 0) return
+
+  // --- settle what came back -------------------------------------------------
+  for (const entry of entries) {
+    let run = entry.run
+    let changed = false
+    for (const step of queuedSteps(run)) {
+      let job: unknown
+      try {
+        job = await ctx.farm.call('job.get', { jobId: step.jobId as string }, JobGetOutput)
+      } catch (err) {
+        /*
+          A read that did not get through says nothing about what the phone did,
+          so the step keeps waiting and the next tick asks again — unless the
+          farm no longer HAS the job, which is the one answer that settles it.
+        */
+        if (!isJobGone(err)) continue
+        run = withStepState(run, step.activityId, { state: 'failed', error: 'The farm no longer has this job, so what the phone did cannot be read.', settledAt: input.now })
+        changed = true
+        continue
+      }
+      const settled = settleWarmupStep(job as { status: string; error?: string | null })
+      if (settled === null) continue
+      run = withStepState(run, step.activityId, { state: settled.state, error: settled.error, settledAt: input.now })
+      changed = true
+    }
+    if (!changed) continue
+    entry.run = withRunSummary(run)
+    try {
+      const written = await ctx.storage.global.setIfVersion(entry.key, entry.run, entry.version)
+      if (written === null) ctx.log.info('a warm-up row changed while this tick was settling it — leaving it for the next tick', { key: entry.key })
+    } catch (err) {
+      ctx.log.warn('could not write back a warm-up row', { key: entry.key, error: messageOf(err) })
+    }
+  }
+
+  // --- send what is due ------------------------------------------------------
+  const devices = new Map(input.fleet.items.map((item) => [item.id, item as unknown as RouterDevice]))
+  const runs = entries.map((entry) => entry.run)
+  const busy = new Set<string>([...input.claimed, ...phonesInFlight(runs)])
+  const plan = planWarmupTick({ runs, devices, claimed: busy, now: input.now })
+
+  for (const dispatch of plan) {
+    const entry = entries.find((candidate) => candidate.run === dispatch.run)
+    if (!entry) continue
+    let jobId: string
+    try {
+      const job = await ctx.farm.call('job.run', { scriptRef: dispatch.step.script, deviceId: dispatch.deviceId, params: dispatch.step.params }, JobRunOutput)
+      jobId = job.jobId
+    } catch (err) {
+      /*
+        A dispatch that threw never reached a phone, so the step is NOT marked
+        queued — it keeps its place and the next tick tries again. The one thing
+        that must not happen is a row claiming a job that does not exist, which
+        would wait for an answer for ever.
+      */
+      ctx.log.warn('could not send a warm-up activity', { key: entry.key, script: dispatch.step.script, error: messageOf(err) })
+      continue
+    }
+    entry.run = withRunSummary(withStepState(entry.run, dispatch.step.activityId, { state: 'queued', jobId, startedAt: input.now }))
+    try {
+      const written = await ctx.storage.global.setIfVersion(entry.key, entry.run, entry.version)
+      if (written === null) ctx.log.info('a warm-up row changed while this tick was sending it — the job is out and the next tick will reconcile it', { key: entry.key, jobId })
+    } catch (err) {
+      ctx.log.warn('could not record a sent warm-up activity', { key: entry.key, jobId, error: messageOf(err) })
+    }
+  }
+
+  // --- the session line the operator reads -----------------------------------
+  const byGroup = new Map<string, WarmupRun[]>()
+  for (const entry of entries) {
+    const list = byGroup.get(entry.run.groupId) ?? []
+    list.push(entry.run)
+    byGroup.set(entry.run.groupId, list)
+  }
+  for (const [groupId, groupRuns] of byGroup) {
+    const summary = warmupSummary(warmupProgress(groupRuns))
+    try {
+      const group = await ctx.storage.global.get(groupKeyFor(groupId), GroupSchema)
+      if (!group || group.summary === summary) continue
+      await ctx.storage.global.set(groupKeyFor(groupId), { ...group, summary })
+    } catch (err) {
+      ctx.log.warn('could not update a warm-up session summary', { groupId, error: messageOf(err) })
+    }
+  }
+  const over = runs.filter(isRunOver).length
+  ctx.log.debug('warm-up pass done', { rows: runs.length, sent: plan.length, finished: over })
+}
+
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
@@ -1335,7 +1480,11 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     ctx.log.warn('router tick could not read the post rows — skipping this tick', { error: messageOf(err) })
     return
   }
-  if (listed.items.length === 0) return
+  if (listed.items.length === 0) {
+    // No posts is not no work: a warm-up session runs on its own rows.
+    await runWarmupPass(ctx, { fleet, names, claimed: new Set(), now: Math.floor(Date.now() / 1000) })
+    return
+  }
 
   /*
    * Phones already spoken for THIS tick. A phone carrying both `tiktok` and
@@ -1664,6 +1813,9 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
 
     if (sent.length > 0) ctx.log.info('dispatched a post', { key: entry.key, platforms: sent.join(','), summary: postSummary(next) })
   }
+
+  // Last, and with the post pass's claims: posting is the higher-value work.
+  await runWarmupPass(ctx, { fleet, names, claimed, now: Math.floor(Date.now() / 1000) })
 }
 
 /**
@@ -1715,11 +1867,11 @@ export default definePlugin({
   // Platforms screens, and the auto-post timer (off by default). TikTok is the
   // only platform with a verified upload flow; Instagram and YouTube are
   // declared and say why they cannot post yet.
-  version: '0.51.2',
+  version: '0.52.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
-  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts],
+  scripts: [addPost, retryFailed, addPosts, addGroup, startGroup, retryGroup, updatePost, resolveAttempt, skipPlatform, updateGroup, cleanPhoneVideos, syncAccounts, addWarmup],
   /*
     Plan 315 — workflows this plugin ships. Registered on the farm as
     `smm/<name>` when this version is activated, read-only there; an operator

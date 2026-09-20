@@ -34,8 +34,17 @@ import type { WarmupAssignment } from './warmup'
 
 export const WARMUP_PREFIX = 'warmup:'
 
-export function warmupRunKey(groupId: string, deviceId: string): string {
-  return `${WARMUP_PREFIX}${groupId}:${deviceId}`
+/**
+ * `warmup:<groupId>:<phase>:<deviceId>` — one row per phone PER PHASE.
+ *
+ * The phase is in the key and not only in the row because a session with three
+ * phases gives a phone three separate pieces of work, each with its own
+ * platform and its own schedule. One row per phone would make the second phase
+ * overwrite the first, and the operator would watch a session that kept losing
+ * its own history.
+ */
+export function warmupRunKey(groupId: string, phase: number, deviceId: string): string {
+  return `${WARMUP_PREFIX}${groupId}:${phase}:${deviceId}`
 }
 
 /** Everything under one session, for a prefix read. */

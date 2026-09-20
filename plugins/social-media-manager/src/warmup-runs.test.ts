@@ -70,10 +70,16 @@ describe('runsFromPlan — the plan becomes rows once, at start', () => {
     expect(WarmupRunSchema.parse(run)).toEqual(run)
   })
 
-  test('the key is per session and per phone, and the prefix reads one session', () => {
-    expect(warmupRunKey('g1', 'd1')).toBe('warmup:g1:d1')
-    expect(warmupRunKey('g1', 'd1').startsWith(warmupRunPrefix('g1'))).toBe(true)
-    expect(warmupRunKey('g2', 'd1').startsWith(warmupRunPrefix('g1'))).toBe(false)
+  test('the key is per session, per phase and per phone, and the prefix reads one whole session', () => {
+    expect(warmupRunKey('g1', 0, 'd1')).toBe('warmup:g1:0:d1')
+    expect(warmupRunKey('g1', 0, 'd1').startsWith(warmupRunPrefix('g1'))).toBe(true)
+    expect(warmupRunKey('g1', 2, 'd1').startsWith(warmupRunPrefix('g1'))).toBe(true)
+    expect(warmupRunKey('g2', 0, 'd1').startsWith(warmupRunPrefix('g1'))).toBe(false)
+  })
+
+  /* Three phases are three pieces of work for one phone; one key would lose two of them. */
+  test('two phases of one phone do not share a key', () => {
+    expect(warmupRunKey('g1', 0, 'd1')).not.toBe(warmupRunKey('g1', 1, 'd1'))
   })
 })
 
