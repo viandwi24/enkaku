@@ -58,3 +58,29 @@ export function visibleStrings(root: UiNode): string[] {
   }
   return out
 }
+
+/**
+ * What to tap to activate `target`: the node itself when it takes taps, otherwise the nearest
+ * ancestor that does. `null` when nothing on the way up is clickable.
+ *
+ * Found on production (SM-A075F, `id-ID`, 2026-09-21). The "You" page's `Lihat channel` label is
+ * NOT clickable there — the whole header card around it is, a `ViewGroup` with no description of
+ * its own that also holds the avatar, the name and the handle. On the moto g06 the same label was
+ * itself a clickable `ViewGroup d="View channel"`. A reader that looked only for a clickable node
+ * WITH that label found one on the moto and none on the Samsung, so `my-videos` reached the You
+ * page and then failed to open the channel. Asking "what activates this label" answers both.
+ */
+export function tapTargetOf(root: UiNode, target: UiNode): UiNode | null {
+  if (target.clickable) return target
+  const path: UiNode[] = []
+  const walk = (node: UiNode): boolean => {
+    path.push(node)
+    if (node === target) return true
+    for (const child of node.children) if (walk(child)) return true
+    path.pop()
+    return false
+  }
+  if (!walk(root)) return null
+  for (let i = path.length - 2; i >= 0; i--) if ((path[i] as UiNode).clickable) return path[i] as UiNode
+  return null
+}

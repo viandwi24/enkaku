@@ -101,7 +101,32 @@ export default definePlugin({
     that the title carries numbers of its own -- `2026 Solar Eclipse @ 50,000 Feet` -- so the count
     is read backwards from the word it belongs to (`countBefore`, SDK), never from the sentence.
   */
-  version: '0.49.0',
+  /*
+    0.50.0 — WHAT THE PRODUCTION FLEET ACTUALLY DRAWS.
+
+    Every anchor in this pack was measured on one phone: a moto g06 with YouTube in `en-US`. The
+    owner's production fleet is twenty SM-A075F phones with YouTube in `id-ID`, and a warm-up over
+    them failed 45 of 80 YouTube activities (2026-09-21) while TikTok and Instagram failed 13 and
+    11. Every failure traced to a screen that was fully drawn and a matcher that did not know its
+    words — measured from the members' own artifacts on that farm, not guessed from screenshots.
+
+      - `check-profile` / `my-videos`: the You page draws a chip row ("Ganti akun", "Akun Google")
+        and no control described "Akun". `onYouPage` now knows the chips. And "Lihat channel" is not
+        clickable there — the header card around it is — so `my-videos` taps whatever activates the
+        label (`tapTargetOf`) instead of demanding a clickable node with that name.
+      - `check-notifications`: the bell is described "Notifikasi, 9" whenever there is anything
+        unread, and the old exact match missed it exactly then. It now accepts the count, refuses the
+        status bar's "Notifikasi <app>:" icons by pattern, and goes to Home first when YouTube came
+        back on the Shorts player, whose toolbar has no bell.
+      - `watch-video` / `search-play`: a result reads "9.49" (a dot), "6,4 ribu x ditonton" and
+        "13 jam yang lalu"; the three video patterns knew only ":", "views" and "ago", so a page full
+        of videos read as "0 of 13 rows are videos". `search-play` also now picks only from rows
+        that look like videos — it had never been given the filter `watch-video` uses.
+      - `check-profile` and `check-notifications` now save the TREE on failure, not only a picture.
+        The screenshot of "the account page never appeared" showed the account page; the one file
+        that would have named the missed node was never written.
+  */
+  version: '0.50.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',

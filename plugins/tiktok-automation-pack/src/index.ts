@@ -405,6 +405,16 @@ async function relaunch(ctx: ScriptContext<unknown>, pkg: string): Promise<void>
 const MAX_FOREGROUND_RELAUNCHES = 2
 
 /**
+ * How many failed readings in a row mean the inspector cannot see this screen at all.
+ *
+ * Three. One is an ordinary hiccup on TikTok and two can still be one; three consecutive failures of
+ * a dump that normally takes a second are an outage. At the ninety-five seconds a failing dump took
+ * on the production fleet, three is about five minutes to a clear failure — against the sixty the
+ * job used to spend reaching the same end with nothing said.
+ */
+export const MAX_DEAD_DUMPS = 3
+
+/**
  * Is TikTok still the app on screen? (1.49.2)
  *
  * An unanswered dump reads as YES on purpose: the inspector is not dependable on this app (see
@@ -596,6 +606,7 @@ export const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof re
         let consecutiveBlind = 0
         let dialogSweeps = 0
         let foregroundRelaunches = 0
+        let deadDumps = 0
         let before = await snapshot(ctx)
         if (!before) throw new Error('could not take a first screenshot — the inspector never answered')
         const frame = pngSize(before)
@@ -616,6 +627,7 @@ export const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof re
           */
           try {
             const before = await ctx.device.dump()
+            deadDumps = 0
             if (keyboardWindowShowing(before)) {
               ctx.log.warn('a keyboard is up over the feed — closing it before reading the video')
               await ctx.device.key('BACK')
@@ -628,7 +640,28 @@ export const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof re
               recoveries += 1
             }
           } catch {
-            // The inspector is unreliable on this app; the ladder below is the fallback it always was.
+            /*
+              One failed reading is an ordinary hiccup on this app, and the ladder below is the
+              fallback it always was. Several IN A ROW are not a hiccup: they are an inspector that
+              cannot read this screen at all, and nothing below can see anything either.
+
+              Production phone #27 (SM-A075F, 2026-09-21) is why this counts. Its guest agent had
+              rejected the core's pairing token, so the inspector was the uiautomator fallback — and
+              uiautomator cannot dump a screen that is playing video; it waits for an idle UI that a
+              video never gives it. Every reading failed after about ninety-five seconds, the
+              stuck-feed ladder read every failure as "nothing found", swept for dialogs it could
+              not see, and the job ran to its sixty-minute timeout with the phone frozen on one
+              video — thirty-three failed readings, fifteen swipes, nothing reported until the end.
+            */
+            deadDumps += 1
+            if (deadDumps >= MAX_DEAD_DUMPS) {
+              await ctx.artifact.screenshot('inspector-down').catch(() => {})
+              throw new Error(
+                `the inspector could not read the screen ${deadDumps} times in a row, so this run cannot see the feed at all. ` +
+                  'The usual cause on this app is the uiautomator fallback, which cannot read a screen that is playing video; ' +
+                  "the guest agent's ui-tree inspector can — check that this phone's guest agent is paired with this core.",
+              )
+            }
           }
 
           const signals = await readVisibleSignals(ctx)
@@ -1674,7 +1707,24 @@ export default definePlugin({
   //   no id, no date. That is reported as it is. Matching those readings to
   //   videos across days is the Social Media Manager's job, not something this
   //   member can fake by opening every video at a view apiece.
-  version: '1.54.0',
+  /*
+    1.55.0 — A PHONE WHOSE INSPECTOR CANNOT SEE STOPS IN MINUTES, NOT AN HOUR.
+
+    Production phone #27 (SM-A075F, 2026-09-21) sat frozen on one TikTok video for the full sixty-
+    minute timeout of an `auto-scroll`: fifteen swipes of the thirty-six it was sent to do, thirty-
+    three failed screen readings, and nothing said until the end. Its guest agent was a "bootstrap"
+    build without the `ui-tree` inspector, so the core fell back to uiautomator, which cannot read a
+    screen that is playing video. Every reading failed after about ninety-five seconds.
+
+      - `clearBlockingDialog` read the screen once PER LABEL — twenty ack and deny labels, twenty
+        dumps — so one sweep on a dead inspector took over half an hour. It now reads once and
+        matches every label against that one reading (`matchSelector`, the same walk the core uses
+        for `find`), and when that reading fails it stops asking.
+      - `auto-scroll` gives up after three failed readings in a row, saying why: the inspector cannot
+        see this screen, and the guest agent's `ui-tree` is what can. About five minutes, against
+        sixty, and the phone is free for the next activity.
+  */
+  version: '1.55.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

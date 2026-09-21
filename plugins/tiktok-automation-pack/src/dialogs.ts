@@ -1,5 +1,6 @@
 import type { ScriptContext, WaitForOptions } from '@enkaku/sdk'
 import type { Selector, UiNode } from '@enkaku/protocol'
+import { centerOf, matchSelector } from '@enkaku/protocol'
 import { sleep } from './human'
 import { dismissInterruptions } from './interruptions'
 
@@ -107,33 +108,63 @@ export const ACK_SELECTORS: Selector[] = [
  *    A recovery that can leave the intended screen — or the app itself — is not a recovery for a
  *    script whose whole job is "prove which screen this device is on".
  */
+/**
+ * The first selector in `list` that matches anything on `screen`, and what it matched.
+ *
+ * In list order, not tree order — the lists are ranked (an explicit acknowledgement is preferred
+ * to a generic "Tutup"), and that ranking is what the old one-`find`-per-selector loop honoured.
+ * `matchSelector` answers `null` for a miss and, for a `{ point }` selector, a synthetic node; the
+ * lists here hold only `{ text }` and `{ id }`, so a match is always a real node on the screen.
+ */
+export function firstMatch(screen: UiNode, list: readonly Selector[]): { node: UiNode; selector: Selector } | null {
+  for (const selector of list) {
+    const node = matchSelector(screen, selector)
+    if (node !== null) return { node, selector }
+  }
+  return null
+}
+
 export async function clearBlockingDialog(ctx: ScriptContext<unknown>, opts?: { allowBack?: boolean }): Promise<void> {
   const allowBack = opts?.allowBack ?? true
-  // A known interruption first (1.32.0): it is closed by its own close control, which the closed lists below cannot
-  // tell apart from any other "Tutup" on screen.
+  /*
+    ONE reading for the whole ladder, not one per selector.
+
+    This asked `find()` for each of the twenty ack and deny labels in turn, and every `find` is a
+    dump of its own. That is only slow on a good day. On a bad one it is ruinous: the owner's
+    production phone #27 (SM-A075F, 2026-09-21) sat on a playing TikTok video whose screen the
+    uiautomator fallback could not dump at all, each dump failed after about ninety-five seconds,
+    and every failure was swallowed by the `catch` below and answered with the next label — twenty
+    of them, so one sweep took over half an hour. `auto-scroll` gives up after three sweeps, which
+    it never reached: its sixty-minute timeout ended the job first, after fifteen swipes of the
+    thirty-six it was sent to do, with the phone frozen on one video the whole time.
+
+    `matchSelector` is the same walk the core does to answer `find()`, so matching twenty selectors
+    against one dump reads exactly what twenty finds would have — once. And when that one dump
+    fails, the ladder has nothing to read, so it stops asking rather than asking nineteen more times.
+  */
+  let screen: UiNode | null = null
   try {
-    if ((await dismissInterruptions(ctx)).dismissed.length > 0) return
+    // A known interruption first (1.32.0): it is closed by its own close control, which the closed
+    // lists below cannot tell apart from any other "Tutup" on screen. `dismissInterruptions` reads
+    // the screen and hands that same reading back, so the ladder below asks the inspector nothing.
+    const interrupted = await dismissInterruptions(ctx)
+    if (interrupted.dismissed.length > 0) return
+    screen = interrupted.tree
   } catch {
-    // Inspector unavailable — the ladder below is the fallback it always was.
+    ctx.log.warn('the inspector could not read the screen, so no ack or deny button can be found this sweep')
   }
-  for (const sel of ACK_SELECTORS) {
-    try {
-      if ((await ctx.device.find(sel)) === null) continue
-      await ctx.device.tap(sel)
-      ctx.log.warn('acknowledged a notice dialog', { selector: JSON.stringify(sel) })
+  if (screen !== null) {
+    const ack = firstMatch(screen, ACK_SELECTORS)
+    if (ack) {
+      await ctx.device.tap({ point: centerOf(ack.node.bounds) })
+      ctx.log.warn('acknowledged a notice dialog', { selector: JSON.stringify(ack.selector) })
       return
-    } catch {
-      // Inspector unavailable — fall through to the next mechanism rather than pretending we know what is there.
     }
-  }
-  for (const sel of DENY_SELECTORS) {
-    try {
-      if ((await ctx.device.find(sel)) === null) continue
-      await ctx.device.tap(sel)
-      ctx.log.warn('denied a permission prompt', { selector: JSON.stringify(sel) })
+    const deny = firstMatch(screen, DENY_SELECTORS)
+    if (deny) {
+      await ctx.device.tap({ point: centerOf(deny.node.bounds) })
+      ctx.log.warn('denied a permission prompt', { selector: JSON.stringify(deny.selector) })
       return
-    } catch {
-      // Inspector unavailable — fall through to BACK rather than pretending we know what is there.
     }
   }
   if (!allowBack) {

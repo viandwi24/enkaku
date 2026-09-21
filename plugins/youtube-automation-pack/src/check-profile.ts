@@ -3,7 +3,7 @@ import { ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { flatten } from './tree'
-import { YOUTUBE_PACKAGE, relaunch, tapNode, waitForTree } from './youtube'
+import { YOUTUBE_PACKAGE, capture, relaunch, tapNode, waitForTree } from './youtube'
 import { dismissPopups } from './popups'
 
 /**
@@ -80,10 +80,25 @@ export function youTabOf(tree: UiNode): UiNode | null {
  */
 export function onYouPage(tree: UiNode): boolean {
   const nodes = flatten(tree)
-  const accounts = nodes.some((n) => /^(accounts|akun)$/i.test(n.desc.trim()))
+  const accounts = nodes.some((n) => ACCOUNT_CONTROL.test(n.desc.trim()))
   const channel = nodes.some((n) => /^(view channel|lihat channel|lihat saluran)$/i.test(n.desc.trim()))
   return accounts && channel
 }
+
+/**
+ * The account control on the You page, in every layout measured so far.
+ *
+ * The moto g06 (`en-US`) draws one control described `Accounts`. The owner's production fleet —
+ * SM-A075F, `id-ID`, 2026-09-21 — draws a row of chips instead: `Ganti akun`, `Akun Google`,
+ * `Aktifkan Mode Samaran`, and no node described `Akun` at all. The old pattern demanded exactly
+ * `Akun`, so on every one of those phones the page loaded in full and was never recognised:
+ * `check-profile` failed 8 of 11 runs with "the account page never appeared" over a screenshot
+ * showing the account page, and the recap's `my-videos` failed on the same line.
+ *
+ * Still anchored at both ends, so a heading that merely MENTIONS an account is not taken for the
+ * control; it is only the list of names that grew.
+ */
+const ACCOUNT_CONTROL = /^(accounts|akun|switch account|ganti akun|google account|akun google)$/i
 
 /**
  * The account name.
@@ -153,7 +168,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     steps.push('home')
     const tab = youTabOf(home)
     if (!tab) {
-      await ctx.artifact.screenshot('yt-01-no-you-tab')
+      await capture(ctx, 'yt-01-no-you-tab', home)
       throw new Error('the "You" tab was not on the bottom navigation — see artifact yt-01-no-you-tab')
     }
     await tapNode(ctx, tab)
@@ -166,7 +181,13 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     */
     const opened = await waitForTree(ctx, onYouPage, { budgetMs: YOU_ENTER_TIMEOUT_MS })
     if (!opened.ok) {
-      await ctx.artifact.screenshot('yt-02-no-you-page')
+      /*
+        The TREE, not only a screenshot. Until now this saved a picture and nothing else, and the
+        picture from production showed the account page fully drawn — so the failure was the
+        matcher, and the one artifact that could have said which node it missed was never saved.
+        `capture` is what `search-channel` and `watch-video` already do at every step.
+      */
+      await capture(ctx, 'yt-02-no-you-page', opened.tree)
       throw new Error('tapped the "You" tab but the account page never appeared — see artifact yt-02-no-you-page')
     }
     steps.push('you page')
