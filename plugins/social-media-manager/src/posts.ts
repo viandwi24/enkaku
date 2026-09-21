@@ -1733,3 +1733,23 @@ export function unassignedNote(
   if (pick.deviceId !== null) return `${head} Suggested: ${names.get(pick.deviceId) ?? pick.deviceId} — where it ran before, and no other video of this session has it.`
   return `${head} ${pick.reason ?? ''}`.trim()
 }
+
+/**
+ * Has this row begun — is any of its platforms answered, out, or tried in the current round (0.64.0)?
+ *
+ * A session lets a NEW video start only one gap after the last one did (`router`'s start gate), so a
+ * group of phones coming back together does not send their videos in the same tick. A row that has
+ * begun is not a new start: its next platform follows on the same phone as soon as that phone is free.
+ */
+export function postRowStarted(post: Pick<Post, 'platforms' | 'dispatch'>): boolean {
+  return post.platforms.some((id) => {
+    const state = post.dispatch[id]
+    return state !== undefined && (state.state !== 'pending' || state.attempts.length > 0)
+  })
+}
+
+/** When a begun row began: the earliest of its current attempts, or `null`. */
+export function postRowStartedAt(post: Pick<Post, 'platforms' | 'dispatch'>): number | null {
+  const at = post.platforms.flatMap((id) => (post.dispatch[id]?.attempts ?? []).map((a) => a.at ?? null)).filter((t): t is number => t !== null)
+  return at.length === 0 ? null : Math.min(...at)
+}

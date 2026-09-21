@@ -27,7 +27,7 @@ import { postSessionIdle, warmupRunIdle } from './session-idle'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
 import { WARMUP_PREFIX, WarmupRowSchema, isPermanentDispatchFailure, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRow } from './warmup-rows'
 import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
-import { WARMUP_MAX_PARALLEL_DEFAULT, WARMUP_START_GAP_DEFAULT, admitRow, isAdmitted, isRunning, planAdmissions } from './warmup-queue'
+import { WARMUP_MAX_PARALLEL_DEFAULT, WARMUP_START_GAP_DEFAULT, admitRow, isAdmitted, isRunning, planAdmissions, stableGap } from './warmup-queue'
 import { warmupSequenceDoc } from './warmup-workflow'
 import {
   POST_PREFIX,
@@ -35,6 +35,8 @@ import {
   deviceDisplayName,
   planDispatch,
   phonesFor,
+  postRowStarted,
+  postRowStartedAt,
   postSummary,
   refreshPost,
   rollUp,
@@ -2471,7 +2473,34 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     }
   }
 
+  /*
+    The start gate (0.64.0). Per session: how many videos have begun and when the latest began. A
+    video that has not begun may start only one drawn gap (`pacing.gapSec`) after that — so phones
+    coming back together, or a session played again after a pause, send their videos one at a time
+    rather than as many as `concurrency` allows in a single tick. `stableGap` is keyed on the count,
+    so the gap is one draw per start, the same on every tick.
+  */
+  const startGate = new Map<string, { last: number; started: number }>()
   for (const entry of listed.items) {
+    const parsed = PostSchema.safeParse(entry.value)
+    if (!parsed.success || parsed.data.groupId === null || !postRowStarted(parsed.data)) continue
+    const gate = startGate.get(parsed.data.groupId) ?? { last: 0, started: 0 }
+    gate.started += 1
+    gate.last = Math.max(gate.last, postRowStartedAt(parsed.data) ?? 0)
+    startGate.set(parsed.data.groupId, gate)
+  }
+
+  /*
+    First in, first out (0.64.0): rows are considered in the order Start gave them their turns, not
+    in the order the store happens to list their keys. Rows with no turn (ungrouped) come last.
+  */
+  const turnOf = (entry: { value: unknown }): number => {
+    const parsed = PostSchema.safeParse(entry.value)
+    return parsed.success && parsed.data.notBeforeAt !== null ? parsed.data.notBeforeAt : Number.MAX_SAFE_INTEGER
+  }
+  const inTurn = [...listed.items].sort((a, b) => turnOf(a) - turnOf(b))
+
+  for (const entry of inTurn) {
     let post: Post
     try {
       post = PostSchema.parse(entry.value)
@@ -2641,10 +2670,29 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
       if (stopped.has(post.groupId)) continue
       const left = room.get(post.groupId) ?? Number.POSITIVE_INFINITY
       if (left <= 0) continue
+      if (!postRowStarted(post)) {
+        const gate = startGate.get(post.groupId) ?? { last: 0, started: 0 }
+        const pacing = groups.get(post.groupId)?.pacing
+        const gap = pacing ? stableGap(pacing.gapSec, `${post.groupId}:post:${gate.started}`) : 0
+        if (gate.last > 0 && nowSec < gate.last + gap) continue
+      }
     }
 
     const devices: RouterDevice[] = fleet.items
-    const plan = planDispatch({ post: planned, devices, busy: claimed, now: nowSec, maxDevicesPerPlatform: settings.maxDevicesPerPlatform })
+    /*
+      A session's video waits for its phone however long it is away (0.64.0) — offline is not a
+      failure an operator has to clear. If every phone with work left is offline the session pauses
+      itself (`session-idle.ts`), and Play is the way back. Only an ungrouped row still gives up.
+    */
+    const newStart = post.groupId !== null && !postRowStarted(post)
+    const plan = planDispatch({
+      post: planned,
+      devices,
+      busy: claimed,
+      now: nowSec,
+      maxDevicesPerPlatform: settings.maxDevicesPerPlatform,
+      ...(post.groupId !== null ? { giveUpAfterSec: Number.POSITIVE_INFINITY } : {}),
+    })
     if (plan.dispatches.length === 0 && Object.keys(plan.states).length === 0 && plan.note === post.lastNote) continue
 
     /*
@@ -2728,6 +2776,10 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     }
 
     if (sent.length > 0) ctx.log.info('dispatched a post', { key: entry.key, platforms: sent.join(','), summary: postSummary(next) })
+    if (sent.length > 0 && newStart && post.groupId !== null) {
+      const gate = startGate.get(post.groupId) ?? { last: 0, started: 0 }
+      startGate.set(post.groupId, { last: nowSec, started: gate.started + 1 })
+    }
   }
 
   /*
@@ -2946,6 +2998,13 @@ export default definePlugin({
     where each phone stands (`phoneQueueStatus`): running, #n in queue, waiting for a phone that is
     offline, resting between platforms, its group paused, ready, paused, or done with how many
     failed; a waiting phone can be skipped.
+
+    Post sessions take the same rules. A video that has not begun starts only one drawn gap
+    (`pacing.gapSec`) after the session's last one did — the start gate — so phones coming back
+    together send their videos one at a time, not as many as `concurrency` allows in one tick; rows
+    are considered in the order Start gave them. A session's video no longer fails itself after 45
+    minutes offline: it waits for its phone, the session pauses itself when every phone with work
+    left is offline, and Play is the way back. Post sessions have Pause (graceful) beside Stop.
   */
   version: '0.64.0',
   icon: 'upload',

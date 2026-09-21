@@ -15,6 +15,7 @@ import {
   LoadingRows,
   PencilSimpleIcon,
   PauseIcon,
+  SquareIcon,
   PlayIcon,
   PlusIcon,
   Progress,
@@ -670,7 +671,7 @@ function useSessionActions(reload: () => void, onRemoved?: (group: Group) => voi
    * back in the queue, straight from the browser; this only says which way to
    * move and reports what came back.
    */
-  function stopSession(group: Group, action: 'stop' | 'start'): void {
+  function stopSession(group: Group, action: 'stop' | 'start' | 'pause'): void {
     void run(
       `stop:${group.id}`,
       /*
@@ -684,8 +685,10 @@ function useSessionActions(reload: () => void, onRemoved?: (group: Group) => voi
         success:
           action === 'stop'
             ? `“${group.title}” stopped — anything running was cancelled and put back in the queue`
-            : `“${group.title}” started again — the router sends the rest on its next pass`,
-        failure: action === 'stop' ? `Could not stop “${group.title}”` : `Could not start “${group.title}”`,
+            : action === 'pause'
+              ? `“${group.title}” paused — nothing new goes out; what is posting now finishes`
+              : `“${group.title}” playing again — the router sends the rest on its next pass`,
+        failure: action === 'stop' ? `Could not stop “${group.title}”` : action === 'pause' ? `Could not pause “${group.title}”` : `Could not start “${group.title}”`,
         onSuccess: () => reload(),
       },
     )
@@ -3203,7 +3206,7 @@ function SessionRow({
   busy: boolean
   onStart: () => void
   onRetry: () => void
-  onStop: (action: 'stop' | 'start') => void
+  onStop: (action: 'stop' | 'start' | 'pause') => void
   onRemove: () => void
 }): ReactElement {
   const p = group.progress
@@ -3228,7 +3231,7 @@ function SessionRow({
         {/* Said on the row, not only by the absence of a Stop button: a stopped session that still shows "4 waiting" otherwise reads as one that is stuck. */}
         {group.stopped ? (
           <Badge variant="outline" className="ml-1.5 align-middle text-warn">
-            {autoPauseOf(group) !== null ? 'paused' : 'stopped'}
+            paused
           </Badge>
         ) : null}
         {/* A pause the router made itself says why, or it reads as a stop nobody pressed. */}
@@ -3320,7 +3323,7 @@ function SessionHead({
   busy: boolean
   onStart: () => void
   onRetry: () => void
-  onStop: (action: 'stop' | 'start') => void
+  onStop: (action: 'stop' | 'start' | 'pause') => void
   onRemove: () => void
   onEditPacing: (edit: PacingChange, onDone: () => void) => void
 }): ReactElement {
@@ -3450,7 +3453,7 @@ function SessionActions({
   busy: boolean
   onStart: () => void
   onRetry: () => void
-  onStop: (action: 'stop' | 'start') => void
+  onStop: (action: 'stop' | 'start' | 'pause') => void
   onRemove: () => void
   className?: string
 }): ReactElement {
@@ -3468,7 +3471,7 @@ function SessionActions({
       {group.stopped ? (
         <Button size="sm" disabled={busy} onClick={() => onStop('start')}>
           <PlayIcon aria-hidden />
-          Start again
+          Play
         </Button>
       ) : null}
       {group.stopped ? null : (
@@ -3517,11 +3520,19 @@ function SessionActions({
       />
       )}
 
+      {/* Pause (0.64.0): nothing new goes out, and a video already on a phone is left to finish. */}
+      {group.stopped ? null : (
+        <Button variant="outline" size="sm" disabled={busy} onClick={() => onStop('pause')}>
+          <PauseIcon aria-hidden />
+          Pause
+        </Button>
+      )}
+
       {group.stopped ? null : (
         <ConfirmDialog
           trigger={
             <Button variant="outline" size="sm" disabled={busy}>
-              <PauseIcon aria-hidden />
+              <SquareIcon aria-hidden />
               Stop
             </Button>
           }

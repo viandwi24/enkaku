@@ -418,6 +418,11 @@ export async function setSessionStopped(
     and sends nothing more, and every activity already on a phone is left to finish — nothing is
     cancelled and no row is touched. Stop is the one that pulls work back.
   */
+  if (action === 'pause' && group.kind !== 'warmup') {
+    /* A post session's pause: its one marker, nothing cancelled — the video on a phone finishes. */
+    await writeEntry(stopKey(group.id, POST_RUN), { version: 1, at: now, by: 'operator', reason: '' } satisfies StopMarker)
+    return { cancelled: 0, couldNotCancel: 0, pulled: 0, failed: 0 }
+  }
   if (action === 'pause' && group.kind === 'warmup') {
     const rows = (await readAll(`warmup:${group.id}:`))
       .map((row) => WarmupRowSchema.safeParse(row.value))

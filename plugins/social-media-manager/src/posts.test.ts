@@ -15,6 +15,8 @@ import {
   MARKS_LIMIT,
   newPost,
   planDispatch,
+  postRowStarted,
+  postRowStartedAt,
   applyPostEdit,
   NO_PHONE_ASSIGNED,
   sessionOwner,
@@ -1314,5 +1316,23 @@ describe('skipping a platform for a phone (0.45.0)', () => {
   test('a skipped platform round-trips through the stored schema', () => {
     const base = post({ dispatch: { tiktok: skippedState('skipped', NOW) } })
     expect(PostSchema.parse(base)).toEqual(base)
+  })
+})
+
+describe('postRowStarted — what the start gate counts as a new video (0.64.0)', () => {
+  const state = (s: string, attempts: { at: number }[] = []) => ({ state: s, attempts }) as unknown as Post['dispatch'][string]
+
+  test('a video nothing has happened to has not begun', () => {
+    expect(postRowStarted({ platforms: ['tiktok', 'youtube'], dispatch: {} })).toBe(false)
+    expect(postRowStarted({ platforms: ['tiktok'], dispatch: { tiktok: state('pending') } })).toBe(false)
+  })
+
+  test('one platform out or answered is a video under way — its next platform is no new start', () => {
+    expect(postRowStarted({ platforms: ['tiktok', 'youtube'], dispatch: { tiktok: state('succeeded', [{ at: 10 }]), youtube: state('pending') } })).toBe(true)
+    expect(postRowStarted({ platforms: ['tiktok'], dispatch: { tiktok: state('dispatched', [{ at: 10 }]) } })).toBe(true)
+  })
+
+  test('it began when its earliest current attempt did', () => {
+    expect(postRowStartedAt({ platforms: ['tiktok', 'youtube'], dispatch: { tiktok: state('succeeded', [{ at: 30 }]), youtube: state('dispatched', [{ at: 90 }]) } })).toBe(30)
   })
 })
