@@ -3,6 +3,7 @@ import type { UiNode } from '@enkaku/protocol'
 import shorts from './__fixtures__/screen-channel-shorts-grid.json'
 import videos from './__fixtures__/screen-channel-videos-list.json'
 import own from './__fixtures__/screen-channel-own-empty.json'
+import fresh from './__fixtures__/screen-channel-no-views.json'
 import { channelTab, channelTabs, readChannelPage } from './my-videos'
 
 /*
@@ -13,6 +14,7 @@ import { channelTab, channelTabs, readChannelPage } from './my-videos'
 const shortsTab = shorts as unknown as UiNode
 const videosTab = videos as unknown as UiNode
 const ownChannel = own as unknown as UiNode
+const freshUpload = fresh as unknown as UiNode
 
 describe('readChannelPage — the Shorts grid', () => {
   test('title and view count come out of the one description', () => {
@@ -88,5 +90,30 @@ describe('channelTabs', () => {
 describe('readChannelPage — a channel that has posted nothing', () => {
   test('an empty Shorts tab reads as no videos, not as an error', () => {
     expect(readChannelPage(ownChannel, 'shorts')).toEqual([])
+  })
+})
+
+describe('readChannelPage — a video with no views yet', () => {
+  /*
+    Captured on the owner's own channel the minute after a post landed
+    (2026-09-21). YouTube writes the count as a WORD there — `Tes upload
+    otomatis 21 September, No views - play Short` — and reading only digits
+    dropped the row, so the video just posted was the one video the recap could
+    not see, and the channel reported "nothing has been posted".
+  */
+  test('"No views" is a count of zero, not a row to skip', () => {
+    const read = readChannelPage(freshUpload, 'shorts')
+    expect(read.length).toBe(1)
+    expect(read[0]?.views).toBe(0)
+    expect(read[0]?.approx).toBe(false)
+  })
+
+  test('its title still comes out whole', () => {
+    expect(readChannelPage(freshUpload, 'shorts')[0]?.title).toBe('Tes upload otomatis 21 September')
+  })
+
+  test('a real count is still preferred over the zero word', () => {
+    // Nothing about the zero case may weaken the normal one.
+    expect(readChannelPage(shortsTab, 'shorts').map((v) => v.views)).toEqual([246_000, 178_000, 179_000, 223_000, 318_000, 233_000])
   })
 })

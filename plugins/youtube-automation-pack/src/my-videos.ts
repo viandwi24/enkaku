@@ -49,8 +49,24 @@ import { accountNameOf, onYouPage, youTabOf } from './check-profile'
 
 const VIEWS = /\bviews?\b|penayangan|kali ditonton|x ditonton/i
 
+/**
+ * A video with no views yet, which YouTube writes as a WORD, not a zero.
+ *
+ * Measured on the owner's moto the minute after a post landed (2026-09-21):
+ * `Tes upload otomatis 21 September, No views - play Short`. `countBefore`
+ * finds the label and no number before it, answers `null`, and the row was
+ * dropped — so the video an operator most wants to see, the one just posted,
+ * was the one video the recap could not report. The whole channel then read as
+ * "nothing has been posted", which is worse than a wrong number: it is a
+ * confident statement of the opposite of the truth.
+ */
+const NO_VIEWS = /\b(no views?|tidak ada penayangan|belum ada penayangan|no penayangan)\b/i
+
 /** How long a channel tab gets to draw its list before it is taken at its word as empty. */
 const TAB_LOAD_BUDGET_MS = 10_000
+
+/** How long YouTube gets to draw its bottom navigation after a relaunch. */
+const NAV_BUDGET_MS = 20_000
 
 const paramsSchema = z.object({
   maxVideos: z
@@ -121,15 +137,34 @@ export function readChannelPage(tree: UiNode, layout: 'shorts' | 'videos'): Chan
   for (const node of flatten(tree)) {
     const desc = node.desc.trim()
     if (desc === '') continue
-    const reading = countBefore(desc, VIEWS)
+    // A count, or the word that means none. Anything else on the screen that
+    // merely mentions views is not a video and is skipped.
+    const counted = countBefore(desc, VIEWS)
+    const reading = counted.value !== null ? counted : NO_VIEWS.test(desc) ? { value: 0, approx: false } : counted
     if (reading.value === null) continue
-    // A parent and its child can both carry the description. The first one
-    // found depth-first is the outer row; anything inside it is the same video.
-    if (rows.some((row) => row.node.desc.trim() === desc)) continue
+    /*
+      One row per CELL, decided by position rather than by text.
+
+      A cell and the label inside it both carry a description, and they are not
+      the same string: a fresh Short's cell reads `<title>, No views - play
+      Short` while the overlay inside it reads just `No views`. Matching on
+      equal text let that overlay through as a second video — a phantom titled
+      "No views" sitting beside the real one (owner's moto, 2026-09-21). Walking
+      depth-first, the outer node is always seen first, so anything lying inside
+      an accepted row is that same video seen again.
+    */
+    if (rows.some((row) => inside(node, row.node))) continue
     rows.push({ node, title: titleOf(desc, layout), views: reading.value, approx: reading.approx, age: ageOf(desc, layout) })
   }
   rows.sort((a, b) => (a.node.bounds.top !== b.node.bounds.top ? a.node.bounds.top - b.node.bounds.top : a.node.bounds.left - b.node.bounds.left))
   return rows.map((row, rank) => ({ rank, title: row.title, views: row.views, viewsText: row.node.desc.trim(), approx: row.approx, age: row.age }))
+}
+
+/** True when `inner` lies within `outer` — equal bounds count as inside. */
+function inside(inner: UiNode, outer: UiNode): boolean {
+  const a = inner.bounds
+  const b = outer.bounds
+  return a.left >= b.left && a.right <= b.right && a.top >= b.top && a.bottom <= b.bottom
 }
 
 /** The title, given which layout wrote the description. */
@@ -175,6 +210,19 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     const want = ctx.params.maxVideos
 
     let tree = (await dismissPopups(ctx, await ctx.device.dump())).tree
+    /*
+      WAIT for the navigation. Every other anchor in this member waits and this
+      one read a single dump, which is exactly the shape of failure that found
+      it: a recap read dispatched straight after a `post-video` job caught
+      YouTube still coming up and reported "the bottom navigation had no You
+      tab" — a phone that was perfectly fine a few seconds later (owner's moto,
+      2026-09-21). A relaunch is the one moment an app is guaranteed NOT to be
+      drawn yet.
+    */
+    if (youTabOf(tree) === null) {
+      const ready = await waitForTree(ctx, (t) => youTabOf(t) !== null, { budgetMs: NAV_BUDGET_MS })
+      tree = ready.tree
+    }
     const youTab = youTabOf(tree)
     if (!youTab) {
       await capture(ctx, 'yt-my-videos-no-nav', tree)

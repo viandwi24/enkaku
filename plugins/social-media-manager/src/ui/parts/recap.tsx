@@ -16,9 +16,14 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableFooter,
   TableHead,
   TableHeader,
   TableRow,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
   TrashIcon,
   WarningIcon,
   describeApiError,
@@ -116,7 +121,13 @@ function groupByPhone(rows: readonly RecapRow[], fleet: readonly Device[]): Phon
   return [...out.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
 
-export function RecapPanel(): ReactElement {
+/** Which table the Recap tab is showing, and — when it is the per-platform one — which platform. */
+export interface RecapView {
+  view: 'all' | 'platform'
+  platform: PlatformId
+}
+
+export function RecapPanel({ view, onView }: { view: RecapView; onView: (next: Partial<RecapView>) => void }): ReactElement {
   const [devices, setDevices] = useState<Device[] | null>(null)
   const [rows, setRows] = useState<RecapRow[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -315,7 +326,38 @@ export function RecapPanel(): ReactElement {
               description="Pick the phones and platforms above and press Refresh recap. Each phone opens its own profile, reads the newest posts' view counts, and closes it again."
             />
           ) : (
-            <PhoneTable phones={phones} onChanged={reloadRows} />
+            /*
+              Two readings of the same rows, not two datasets. "All" adds a
+              phone's three platforms up, which is the question "how is this
+              phone doing"; "Per platform" lays one platform's videos out side
+              by side, which is the question "how is each POST doing". The
+              owner asked for both, and neither is the other summarised.
+            */
+            <Tabs value={view.view} onValueChange={(next) => onView({ view: next === 'platform' ? 'platform' : 'all' })} className="gap-3">
+              <TabsList variant="compact">
+                <TabsTrigger value="all">All</TabsTrigger>
+                <TabsTrigger value="platform">Per platform</TabsTrigger>
+              </TabsList>
+              <TabsContent value="all">
+                <PhoneTable phones={phones} onChanged={reloadRows} />
+              </TabsContent>
+              <TabsContent value="platform">
+                <Tabs value={view.platform} onValueChange={(next) => onView({ platform: (PLATFORM_IDS.includes(next as PlatformId) ? next : 'tiktok') as PlatformId })} className="gap-3">
+                  <TabsList variant="compact">
+                    {PLATFORMS.map((p) => (
+                      <TabsTrigger key={p.id} value={p.id}>
+                        {p.title}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                  {PLATFORMS.map((p) => (
+                    <TabsContent key={p.id} value={p.id}>
+                      <PlatformMatrix rows={(rows ?? []).filter((row) => row.platform === p.id)} fleet={fleet} title={p.title} />
+                    </TabsContent>
+                  ))}
+                </Tabs>
+              </TabsContent>
+            </Tabs>
           )}
         </CardContent>
       </Card>
@@ -494,6 +536,122 @@ function VideoLine({ video, faded = false }: { video: RecapVideo; faded?: boolea
       {video.approx ? <span className="text-faint" title={`the phone drew "${video.viewsText}"`}>≈</span> : null}
       {delta !== null && delta !== 0 && !faded ? <span className="text-ok">+{num(delta)}</span> : null}
       <span className="text-faint">{video.rank === null ? `last seen ${relativeTime(video.lastSeenAt * 1000)}` : `since ${relativeTime(video.firstSeenAt * 1000)}`}</span>
+    </div>
+  )
+}
+
+/**
+ * One platform, laid out as a grid: a phone per row, a VIDEO per column.
+ *
+ * The owner's own sketch (2026-09-21):
+ *
+ * ```
+ * device  video1  video2  video3  total
+ * moto 06    100     200     300    600
+ * total                             600
+ * ```
+ *
+ * with *"col video1 - video... itu tergantung jumlah video paling banyaknya"* —
+ * the columns are however many videos the busiest account has, not a fixed
+ * number. This answers a different question from the All tab: that one adds a
+ * phone's three platforms up and says how the PHONE is doing; this lays one
+ * platform's posts side by side and says how each POST is doing, across the
+ * fleet.
+ *
+ * ## Why there is an "Older" column
+ *
+ * The numbered columns are the videos in the READ WINDOW, newest first. A
+ * phone that has posted more than the window covers also carries videos with
+ * their last known counts and no position, and those still belong in the
+ * total — the alternative is a row whose numbers visibly do not add up, in a
+ * table whose entire purpose is adding up. So they get a column of their own,
+ * and it is drawn only when some account actually has one.
+ */
+function PlatformMatrix({ rows, fleet, title }: { rows: readonly RecapRow[]; fleet: readonly Device[]; title: string }): ReactElement {
+  const byId = new Map(fleet.map((d) => [d.id, d]))
+
+  const lines = rows
+    .map((row) => {
+      const inWindow = row.videos.filter((video) => video.rank !== null).sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))
+      const older = row.videos.filter((video) => video.rank === null).reduce((sum, video) => sum + video.views, 0)
+      const device = byId.get(row.deviceId)
+      return {
+        row,
+        name: device ? deviceName(device) : row.deviceName || row.deviceId,
+        videos: inWindow,
+        older,
+        total: inWindow.reduce((sum, video) => sum + video.views, 0) + older,
+      }
+    })
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  if (lines.length === 0) {
+    return <EmptyState title={`No ${title} account has been read yet`} description="Tick this platform above and press Refresh recap." />
+  }
+
+  const columns = Math.max(0, ...lines.map((line) => line.videos.length))
+  const anyOlder = lines.some((line) => line.older > 0)
+  const columnTotals = Array.from({ length: columns }, (_, i) => lines.reduce((sum, line) => sum + (line.videos[i]?.views ?? 0), 0))
+  const olderTotal = lines.reduce((sum, line) => sum + line.older, 0)
+  const grandTotal = lines.reduce((sum, line) => sum + line.total, 0)
+
+  return (
+    <div className="space-y-2">
+      <p className="text-[12px] text-faint">
+        Newest first — #1 is each account's most recent post. {columns === 0 ? 'No videos have been read on this platform yet.' : `${columns} column${columns === 1 ? '' : 's'}, because that is what the busiest account has.`}
+      </p>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Phone</TableHead>
+            {Array.from({ length: columns }, (_, i) => (
+              <TableHead key={i} className="text-right">
+                #{i + 1}
+              </TableHead>
+            ))}
+            {anyOlder ? <TableHead className="text-right">Older</TableHead> : null}
+            <TableHead className="text-right">Total</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {lines.map((line) => (
+            <TableRow key={line.row.deviceId}>
+              <TableCell className="font-medium text-text">
+                {line.name}
+                {line.row.account ? <span className="text-faint"> · {line.row.account}</span> : null}
+                {line.row.state !== 'ok' ? <span className="text-warn"> · {line.row.state === 'reading' ? (line.row.jobId === '' ? 'waiting' : 'reading') : line.row.state}</span> : null}
+              </TableCell>
+              {Array.from({ length: columns }, (_, i) => {
+                const video = line.videos[i]
+                if (!video) return <TableCell key={i} className="text-right text-faint">—</TableCell>
+                const delta = videoDelta(video)
+                /* The title and the growth ride on the cell rather than in it: a grid this wide has room for one number per cell and no more. */
+                const hint = [video.title, video.approx ? `drawn as "${video.viewsText}"` : '', delta !== null && delta !== 0 ? `${delta > 0 ? '+' : ''}${num(delta)} since the read before` : ''].filter((part) => part !== '').join(' — ')
+                return (
+                  <TableCell key={i} className="text-right tabular-nums" title={hint || undefined}>
+                    {num(video.views)}
+                    {video.approx ? <span className="text-faint">≈</span> : null}
+                  </TableCell>
+                )
+              })}
+              {anyOlder ? <TableCell className="text-right tabular-nums text-dim">{line.older > 0 ? num(line.older) : '—'}</TableCell> : null}
+              <TableCell className="text-right font-medium tabular-nums text-text">{num(line.total)}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+        <TableFooter>
+          <TableRow>
+            <TableCell className="font-medium text-text">Total</TableCell>
+            {columnTotals.map((value, i) => (
+              <TableCell key={i} className="text-right tabular-nums text-dim">
+                {num(value)}
+              </TableCell>
+            ))}
+            {anyOlder ? <TableCell className="text-right tabular-nums text-dim">{num(olderTotal)}</TableCell> : null}
+            <TableCell className="text-right font-medium tabular-nums text-text">{num(grandTotal)}</TableCell>
+          </TableRow>
+        </TableFooter>
+      </Table>
     </div>
   )
 }

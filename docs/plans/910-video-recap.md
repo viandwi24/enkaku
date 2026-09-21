@@ -1,6 +1,6 @@
 # 910 — Video recap: how every posted video is actually doing
 
-> Status: implemented (smm 0.60.0, tiktok 1.54.0, instagram 0.14.0, youtube 0.49.0)
+> Status: implemented (smm 0.60.0, tiktok 1.54.0, instagram 0.14.0, youtube 0.49.0), verified against real posts on 2026-09-21
 > Ships: plugins/social-media-manager/src/recap.ts
 
 **Series:** 900 (warm-up in SMM) — the first thing added to the Social Media
@@ -129,6 +129,46 @@ accounts, after the fixtures were captured:
 - `youtube/my-videos` — `Hendi sunadi`, a Shorts tab holding only drafts,
   reported as "nothing has been posted from this channel" rather than as a
   failure or as an empty account that would push every video out of the window.
+
+## 4a. What a real post taught it, the same day
+
+The feature was verified a second time by actually POSTING — one video to all
+three platforms from the SMM Posts tab, then recapping — and that hour found
+three things the fixtures could not.
+
+**1. A fresh YouTube Short has no number at all.** It reads
+`Tes upload otomatis 21 September, No views - play Short`. `countBefore` finds
+the label, finds no digits before it, and the row was dropped — so the video an
+operator most wants to see, the one just posted, was the only video the recap
+could not report, and the channel read as "nothing has been posted". That is
+worse than a wrong number: it is a confident statement of the opposite of the
+truth. `NO_VIEWS` now reads the word as a zero.
+
+**2. A cell and the label inside it are not two videos.** Fixing (1) made the
+overlay `No views` — a child node of the same cell — pass the same test and
+appear as a second, phantom video titled "No views". Rows are now deduplicated
+by CONTAINMENT rather than by equal text, which is the rule that was always
+correct: walking depth-first, anything lying inside an accepted row is that row
+seen again.
+
+**3. A fixture from `uiautomator` is not the tree the member reads.** The first
+test written for (1) passed immediately, which was the clue: the phantom node
+exists only in the guest agent's `ui-tree`, not in a `uiautomator dump`. The
+fixture was replaced with the member's own saved artifact, and only then did
+the test fail without the fix. **A reading test is worth exactly as much as the
+provenance of its fixture.**
+
+Plus one timing defect with no fixture at all: a recap read dispatched straight
+after a `post-video` job caught YouTube still coming up, and the member — alone
+among its steps — read the bottom navigation from a single dump instead of
+waiting for it. A relaunch is the one moment an app is guaranteed not to be
+drawn yet.
+
+The end-to-end result, on the owner's moto with three live accounts: TikTok 6
+videos to 7, Instagram 1 to 2, YouTube 0 to 1. Every previously known video kept
+its key and shifted down by exactly one; TikTok's sixth left the six-video
+window and kept its last count in the `Older` column, where 0 + 420 + 73 + 8 +
+11 + 71 + 1,655 still adds to the 2,238 the row reports.
 
 ## 5. What this does NOT do
 

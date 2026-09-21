@@ -6,7 +6,7 @@ import { SessionDetail, SessionsPanel } from './parts/sessions'
 import { OpenSpeechContext, SpeechPanel } from './parts/speech'
 import { DraftsPanel } from './parts/drafts'
 import { NewWarmupForm, WarmupDetail, WarmupPanel } from './parts/warmup'
-import { RecapPanel } from './parts/recap'
+import { RecapPanel, type RecapView } from './parts/recap'
 
 /**
  * One screen for the whole job: upload the videos, say where they go, name the
@@ -117,6 +117,26 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
     query value is unchanged — only what the tab is CALLED changed — so every link already written still opens it.
   */
   const openSpeech = useCallback(() => setParams({ session: null, tab: 'speech' }), [setParams])
+
+  /*
+    The Recap tab's two sub-tabs, in the URL like every other place on this
+    page: `recap=platform&platformTab=tiktok` is a link somebody can send, and
+    a reload lands back on the table the operator was reading rather than on
+    the one this component happens to default to.
+  */
+  const recapView: RecapView = {
+    view: params.recap === 'platform' ? 'platform' : 'all',
+    platform: params.platformTab === 'instagram' || params.platformTab === 'youtube' ? params.platformTab : 'tiktok',
+  }
+  const setRecapView = useCallback(
+    (next: Partial<RecapView>) => {
+      const patch: Record<string, string | null> = {}
+      if (next.view !== undefined) patch.recap = next.view === 'all' ? null : next.view
+      if (next.platform !== undefined) patch.platformTab = next.platform === 'tiktok' ? null : next.platform
+      setParams(patch)
+    },
+    [setParams],
+  )
 
   /*
     A new session lands the operator ON it. They have just decided forty things
@@ -245,7 +265,7 @@ function SocialPostsView({ params, setParams }: PluginViewProps): React.ReactEle
           two different things, one letter apart.
         */}
         <TabsContent value="recap">
-          <RecapPanel />
+          <RecapPanel view={recapView} onView={setRecapView} />
         </TabsContent>
         <TabsContent value="speech">
           <SpeechPanel refreshKey={refreshKey} onRefreshingChange={setRefreshing} />
