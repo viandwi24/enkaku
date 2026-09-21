@@ -368,6 +368,12 @@ export interface AgentTreeOps {
 
 export interface CapabilityContextDeps {
   db: Db
+  /**
+   * A device's recent drop-and-return count (0.2.74, `registry/flap-rate.ts`) — attached to every
+   * device `device.list`/`device.get` returns, which is how a plugin tells a steady phone from one on
+   * a failing hub. Absent in a mode that does not count them.
+   */
+  flaps?: (deviceId: string) => { recent: number; windowSec: number } | null
   activities: ActivityRegistry
   controlSettings: () => ControlPolicySettings
   states: DeviceStateMachine
@@ -608,20 +614,22 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
       // `networks`/`declaredMedia` (plan 88 §5 step 88.5) are resolved ONCE
       // here, never per row — the same N+1 rule `device-registry.ts:171-175`
       // already states.
-      return listDevicesWithLabels(
+      const items = listDevicesWithLabels(
         deps.db,
         readiness ? (deviceId) => readiness.get(deviceId) : undefined,
         (deviceId) => ({ activities: deps.activities.list(deviceId), lastControl: deps.activities.lastControl(deviceId) }),
         deps.networks?.() ?? [],
         deps.declaredMedia?.(),
       )
+      const flaps = deps.flaps
+      return flaps ? items.map((item) => ({ ...item, flaps: flaps(item.id) })) : items
     },
 
     getDevice(deviceId) {
       const row = getDeviceRow(deviceId)
       if (!row) return null
       const group = row.groupId ? groupRefFor(deps.db, row.groupId) : null
-      return rowToDeviceInfo(
+      const info = rowToDeviceInfo(
         row,
         loadDeviceLabels(deps.db, [deviceId]).get(deviceId) ?? [],
         group,
@@ -632,6 +640,7 @@ export function createCapabilityContext(deps: CapabilityContextDeps, actor: Capa
         deps.declaredMedia?.(),
         lookupDeviceNumber(deps.db, row.stableId),
       )
+      return deps.flaps ? { ...info, flaps: deps.flaps(deviceId) } : info
     },
 
     jobService: deps.jobService,

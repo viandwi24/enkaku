@@ -2960,6 +2960,7 @@ let blobGc: BlobGc | null = null
       */
       let runActionFn: ((request: ActionRequest, actor: { id: string; role: Role }) => Promise<ActionResponse>) | null = null
       const capContextDeps: CapabilityContextDeps = {
+        flaps: (deviceId) => ({ recent: flapRate.recent(deviceId), windowSec: FLAP_WINDOW_SEC }),
         db,
         activities,
         actionsRun: (request, actor) => {
