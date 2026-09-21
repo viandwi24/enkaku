@@ -2,7 +2,7 @@ import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { countBefore, mergePages, ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
-import { flatten } from './tree'
+import { flatten, tapTargetOf } from './tree'
 import { YOUTUBE_PACKAGE, capture, relaunch, sleep, tapNode, waitForTree } from './youtube'
 import { dismissPopups } from './popups'
 import { accountNameOf, onYouPage, youTabOf } from './check-profile'
@@ -64,6 +64,9 @@ const NO_VIEWS = /\b(no views?|tidak ada penayangan|belum ada penayangan|no pena
 
 /** How long a channel tab gets to draw its list before it is taken at its word as empty. */
 const TAB_LOAD_BUDGET_MS = 10_000
+
+/** The You page's link to the channel, in both measured languages. */
+const VIEW_CHANNEL = /^(view channel|lihat channel|lihat saluran)$/i
 
 /** How long YouTube gets to draw its bottom navigation after a relaunch. */
 const NAV_BUDGET_MS = 20_000
@@ -241,7 +244,13 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
       throw Object.assign(new Error('the "You" page showed no account — this phone is signed out of YouTube'), { code: 'E_SIGNED_OUT' })
     }
 
-    const viewChannel = flatten(you.tree).find((n) => n.clickable && /^(view channel|lihat channel|lihat saluran)$/i.test(n.desc.trim()))
+    /*
+      The LABEL, then whatever activates it. On the moto the label is itself clickable; on the
+      production SM-A075F it is a plain child of a clickable header card (see `tapTargetOf`), and
+      demanding a clickable node with this description found nothing there.
+    */
+    const label = flatten(you.tree).find((n) => VIEW_CHANNEL.test(n.desc.trim()) || VIEW_CHANNEL.test(n.text.trim()))
+    const viewChannel = label ? tapTargetOf(you.tree, label) : null
     if (!viewChannel) {
       await capture(ctx, 'yt-my-videos-no-channel-link', you.tree)
       throw Object.assign(new Error('the "You" page had no "View channel" control — cannot reach this account\'s own uploads'), { code: 'E_ANCHOR_NOT_FOUND' })

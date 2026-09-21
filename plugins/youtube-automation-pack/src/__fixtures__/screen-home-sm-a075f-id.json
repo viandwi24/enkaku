@@ -1,0 +1,203 @@
+{
+ "resourceId": "",
+ "text": "",
+ "desc": "",
+ "className": "hierarchy",
+ "packageName": "",
+ "bounds": {
+  "left": 0,
+  "top": 0,
+  "right": 0,
+  "bottom": 0
+ },
+ "clickable": false,
+ "enabled": true,
+ "focused": false,
+ "index": 0,
+ "_provenance": "Reduced from production artifact 0fc22bce-78b3-487e-b240-f1d6587516b1 (youtube/watch-video 01-home, SM-A075F, id-ID, 2026-09-21). The bell carries its unread count in its description.",
+ "children": [
+  {
+   "resourceId": "",
+   "text": "",
+   "desc": "",
+   "className": "android.widget.FrameLayout",
+   "packageName": "com.google.android.youtube",
+   "bounds": {
+    "left": 0,
+    "top": 0,
+    "right": 720,
+    "bottom": 1600
+   },
+   "clickable": false,
+   "enabled": true,
+   "focused": false,
+   "index": 0,
+   "children": [
+    {
+     "resourceId": "",
+     "text": "",
+     "desc": "Notifikasi Enkaku Guest Agent: ",
+     "className": "android.widget.ImageView",
+     "packageName": "com.android.systemui",
+     "bounds": {
+      "left": 212,
+      "top": 11,
+      "right": 243,
+      "bottom": 56
+     },
+     "clickable": false,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": []
+    },
+    {
+     "resourceId": "com.google.android.youtube:id/menu_item_view",
+     "text": "",
+     "desc": "Notifikasi, 9",
+     "className": "android.widget.ImageView",
+     "packageName": "com.google.android.youtube",
+     "bounds": {
+      "left": 540,
+      "top": 64,
+      "right": 630,
+      "bottom": 154
+     },
+     "clickable": true,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": []
+    },
+    {
+     "resourceId": "com.google.android.youtube:id/menu_item_view",
+     "text": "",
+     "desc": "Telusuri",
+     "className": "android.widget.ImageView",
+     "packageName": "com.google.android.youtube",
+     "bounds": {
+      "left": 630,
+      "top": 64,
+      "right": 720,
+      "bottom": 154
+     },
+     "clickable": true,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": []
+    },
+    {
+     "resourceId": "",
+     "text": "",
+     "desc": "Beranda",
+     "className": "android.widget.Button",
+     "packageName": "com.google.android.youtube",
+     "bounds": {
+      "left": 0,
+      "top": 1420,
+      "right": 144,
+      "bottom": 1510
+     },
+     "clickable": true,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": []
+    },
+    {
+     "resourceId": "",
+     "text": "",
+     "desc": "Anda",
+     "className": "android.widget.Button",
+     "packageName": "com.google.android.youtube",
+     "bounds": {
+      "left": 576,
+      "top": 1420,
+      "right": 720,
+      "bottom": 1510
+     },
+     "clickable": true,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": [
+      {
+       "resourceId": "com.google.android.youtube:id/thumbnail_layout",
+       "text": "",
+       "desc": "",
+       "className": "android.widget.FrameLayout",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 626,
+        "top": 1429,
+        "right": 671,
+        "bottom": 1474
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": [
+        {
+         "resourceId": "com.google.android.youtube:id/you_tab_border",
+         "text": "",
+         "desc": "",
+         "className": "android.widget.ImageView",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 626,
+          "top": 1429,
+          "right": 671,
+          "bottom": 1474
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        },
+        {
+         "resourceId": "com.google.android.youtube:id/pivot_bar_thumbnail",
+         "text": "",
+         "desc": "",
+         "className": "android.widget.ImageView",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 632,
+          "top": 1435,
+          "right": 665,
+          "bottom": 1468
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        }
+       ]
+      },
+      {
+       "resourceId": "com.google.android.youtube:id/text",
+       "text": "Anda",
+       "desc": "",
+       "className": "android.widget.TextView",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 624,
+        "top": 1478,
+        "right": 672,
+        "bottom": 1501
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": []
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

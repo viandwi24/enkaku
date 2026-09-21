@@ -4,27 +4,65 @@ import type { Selector, UiNode } from '@enkaku/protocol'
 import { clearBlockingDialog } from './dialogs'
 
 /**
- * A minimal `ScriptContext` stand-in — only `device.find`/`tap`/`key` and `log.warn` are used by
- * `clearBlockingDialog`, so that is all this implements. `matches` names the ACK/DENY selector (by
- * its `text`) that should be "found" on screen; everything else answers `null`, exactly like the
- * live inspector does for a selector that genuinely is not there.
+ * A minimal `ScriptContext` stand-in for `clearBlockingDialog`.
+ *
+ * The screen is ONE reading: `dump()` returns a tree holding a clickable button for each label in
+ * `matches`, at a known place, and counts how often it was asked. `find()` is still here, and
+ * counted, because the thing these tests guard is that the sweep never goes back to asking the
+ * inspector once per selector. `deadInspector` makes every reading throw, the way the uiautomator
+ * fallback does on a playing video.
  */
-function mkCtx(matches: string[] = []): { ctx: ScriptContext<unknown>; calls: { find: Selector[]; tap: Selector[]; key: string[] } } {
-  const calls = { find: [] as Selector[], tap: [] as Selector[], key: [] as string[] }
-  const wanted = new Set(matches)
+function mkCtx(matches: string[] = [], opts?: { deadInspector?: boolean }): {
+  ctx: ScriptContext<unknown>
+  calls: { dump: number; find: number; tap: { x: number; y: number }[]; key: string[] }
+} {
+  const calls = { dump: 0, find: 0, tap: [] as { x: number; y: number }[], key: [] as string[] }
+  const node = (text: string, i: number): UiNode =>
+    ({
+      resourceId: '',
+      text,
+      desc: '',
+      className: 'android.widget.Button',
+      packageName: 'com.ss.android.ugc.trill',
+      bounds: { left: 100, top: 1000 + i * 100, right: 300, bottom: 1080 + i * 100 },
+      clickable: true,
+      enabled: true,
+      focused: false,
+      index: i,
+      children: [],
+    }) as UiNode
+  const screen = {
+    resourceId: '',
+    text: '',
+    desc: '',
+    className: 'hierarchy',
+    packageName: '',
+    bounds: { left: 0, top: 0, right: 720, bottom: 1600 },
+    clickable: false,
+    enabled: true,
+    focused: false,
+    index: 0,
+    children: matches.map(node),
+  } as UiNode
   const ctx = {
     device: {
-      find: async (sel: Selector): Promise<UiNode | null> => {
-        calls.find.push(sel)
-        return 'text' in sel && wanted.has(sel.text) ? ({ text: sel.text } as unknown as UiNode) : null
+      dump: async (): Promise<UiNode> => {
+        calls.dump += 1
+        if (opts?.deadInspector) throw new Error('INSPECTOR_DUMP_FAILED: uiautomator dump produced no hierarchy')
+        return screen
+      },
+      find: async (): Promise<UiNode | null> => {
+        calls.find += 1
+        return null
       },
       tap: async (sel: Selector): Promise<void> => {
-        calls.tap.push(sel)
+        if ('point' in sel) calls.tap.push(sel.point)
       },
       key: async (code: string): Promise<void> => {
         calls.key.push(code)
       },
     },
+    artifact: { screenshot: async () => {}, file: async () => {} },
     log: { debug() {}, info() {}, warn() {}, error() {} },
   } as unknown as ScriptContext<unknown>
   return { ctx, calls }
@@ -59,22 +97,70 @@ describe('clearBlockingDialog — allowBack gating (plan 86 root-cause fix)', ()
   test('an ACK match short-circuits before BACK is even considered, with allowBack: false', async () => {
     const { ctx, calls } = mkCtx(['Mengerti'])
     await clearBlockingDialog(ctx, { allowBack: false })
-    expect(calls.tap).toEqual([{ text: 'Mengerti' }])
+    // The centre of the one button on screen.
+    expect(calls.tap).toEqual([{ x: 200, y: 1040 }])
     expect(calls.key).toEqual([])
   })
 
   test('a DENY match short-circuits before BACK is even considered, with allowBack: false', async () => {
     const { ctx, calls } = mkCtx(['Tolak'])
     await clearBlockingDialog(ctx, { allowBack: false })
-    expect(calls.tap).toEqual([{ text: 'Tolak' }])
+    expect(calls.tap).toEqual([{ x: 200, y: 1040 }])
     expect(calls.key).toEqual([])
   })
 
-  test('every ACK selector is tried before any DENY selector, regardless of allowBack', async () => {
+  test('an acknowledgement is preferred to a refusal when both are on screen', async () => {
+    // "Tolak" is drawn FIRST on this screen and "Mengerti" second — the list's ranking wins, not the
+    // tree's order, which is what the old one-find-per-selector loop honoured.
+    const { ctx, calls } = mkCtx(['Tolak', 'Mengerti'])
+    await clearBlockingDialog(ctx, { allowBack: false })
+    expect(calls.tap).toEqual([{ x: 200, y: 1140 }])
+  })
+})
+
+describe('clearBlockingDialog — reads the screen once, not once per label', () => {
+  /*
+    This file used to assert that a sweep with nothing on screen called `find()` exactly twenty
+    times — thirteen acknowledgements and seven refusals, one inspector round trip each. That was
+    the design, and on a working inspector it was merely slow. On the owner's production phone #27
+    (SM-A075F, 2026-09-21) the inspector was the uiautomator fallback on a playing video, every
+    reading failed after about ninety-five seconds, and one sweep of twenty took over half an hour.
+  */
+  test('a whole sweep, nothing on screen, is one reading', async () => {
     const { ctx, calls } = mkCtx()
     await clearBlockingDialog(ctx, { allowBack: false })
-    // 13 ACK selectors + 7 DENY selectors tried, in that order, before giving up.
-    // (13th: "Tidak sekarang", measured 2026-09-03 against the login-save sheet.)
-    expect(calls.find.length).toBe(20)
+    expect(calls.dump).toBe(1)
+    expect(calls.find).toBe(0)
+  })
+
+  test('a dead inspector costs one failed reading, not twenty', async () => {
+    const { ctx, calls } = mkCtx([], { deadInspector: true })
+    await clearBlockingDialog(ctx, { allowBack: false })
+    expect(calls.dump).toBe(1)
+    expect(calls.find).toBe(0)
+    expect(calls.tap).toEqual([])
+  })
+
+  test('with a dead inspector, the single-screen caller still gets its BACK', async () => {
+    // BACK needs no inspector, and on `auto-scroll` it is the recovery that was always on the ladder.
+    const { ctx, calls } = mkCtx([], { deadInspector: true })
+    await clearBlockingDialog(ctx)
+    expect(calls.key).toEqual(['BACK'])
+  })
+})
+
+describe('firstMatch — the ranking is the list\'s, not the screen\'s', () => {
+  test('returns the first selector in LIST order that matches anything', async () => {
+    const { firstMatch, ACK_SELECTORS } = await import('./dialogs')
+    const { ctx } = mkCtx(['Tutup', 'Mengerti'])
+    const screen = await (ctx.device as unknown as { dump: () => Promise<UiNode> }).dump()
+    expect(firstMatch(screen, ACK_SELECTORS)?.selector).toEqual({ text: 'Mengerti' })
+  })
+
+  test('nothing matching is null, not a guess', async () => {
+    const { firstMatch, DENY_SELECTORS } = await import('./dialogs')
+    const { ctx } = mkCtx(['Mengerti'])
+    const screen = await (ctx.device as unknown as { dump: () => Promise<UiNode> }).dump()
+    expect(firstMatch(screen, DENY_SELECTORS)).toBe(null)
   })
 })

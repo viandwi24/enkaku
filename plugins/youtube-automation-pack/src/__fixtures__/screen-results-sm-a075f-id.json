@@ -1,0 +1,333 @@
+{
+ "resourceId": "",
+ "text": "",
+ "desc": "",
+ "className": "hierarchy",
+ "packageName": "",
+ "bounds": {
+  "left": 0,
+  "top": 0,
+  "right": 0,
+  "bottom": 0
+ },
+ "clickable": false,
+ "enabled": true,
+ "focused": false,
+ "index": 0,
+ "_provenance": "Reduced from production artifact eda1b7f4-5933-45cd-83d9-fce12cb8f6c5 (youtube/watch-video 01-results, a \"forex\" search that read \"0 of 13 rows are videos\"; SM-A075F, id-ID, 2026-09-21). Both rows copied verbatim.",
+ "children": [
+  {
+   "resourceId": "",
+   "text": "",
+   "desc": "",
+   "className": "android.widget.FrameLayout",
+   "packageName": "com.google.android.youtube",
+   "bounds": {
+    "left": 0,
+    "top": 0,
+    "right": 720,
+    "bottom": 1600
+   },
+   "clickable": false,
+   "enabled": true,
+   "focused": false,
+   "index": 0,
+   "children": [
+    {
+     "resourceId": "",
+     "text": "",
+     "desc": "Bersponsor - Trade Way - Trading App - XAUUSD Indonesia\nDownload di Google Play\nTrade Way",
+     "className": "android.widget.Button",
+     "packageName": "com.google.android.youtube",
+     "bounds": {
+      "left": 26,
+      "top": 169,
+      "right": 349,
+      "bottom": 739
+     },
+     "clickable": false,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": [
+      {
+       "resourceId": "",
+       "text": "Download di Google Play",
+       "desc": "",
+       "className": "android.widget.TextView",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 41,
+        "top": 606,
+        "right": 299,
+        "bottom": 638
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": []
+      },
+      {
+       "resourceId": "",
+       "text": "T",
+       "desc": "",
+       "className": "android.widget.TextView",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 45,
+        "top": 672,
+        "right": 74,
+        "bottom": 735
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": []
+      },
+      {
+       "resourceId": "",
+       "text": "Bersponsor Trade Way",
+       "desc": "",
+       "className": "android.widget.TextView",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 117,
+        "top": 668,
+        "right": 256,
+        "bottom": 700
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": []
+      }
+     ]
+    },
+    {
+     "resourceId": "",
+     "text": "",
+     "desc": "Trading Modal $100 Profit $12/Hari | AYQ 230 - 9 menit, 49 detik - Buka channel Rizki Aditama | Sekolah Trading - Rizki Aditama | Sekolah Trading - 6,4 ribu x ditonton - 13 jam yang lalu - putar video",
+     "className": "android.widget.Button",
+     "packageName": "com.google.android.youtube",
+     "bounds": {
+      "left": 0,
+      "top": 784,
+      "right": 720,
+      "bottom": 1355
+     },
+     "clickable": true,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": [
+      {
+       "resourceId": "",
+       "text": "",
+       "desc": "",
+       "className": "android.view.ViewGroup",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 0,
+        "top": 784,
+        "right": 720,
+        "bottom": 1189
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": [
+        {
+         "resourceId": "",
+         "text": "",
+         "desc": "",
+         "className": "android.widget.ImageView",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 0,
+          "top": 784,
+          "right": 720,
+          "bottom": 1189
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        },
+        {
+         "resourceId": "",
+         "text": "",
+         "desc": "",
+         "className": "android.view.ViewGroup",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 0,
+          "top": 784,
+          "right": 720,
+          "bottom": 1189
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": [
+          {
+           "resourceId": "",
+           "text": "",
+           "desc": "",
+           "className": "android.widget.ImageView",
+           "packageName": "com.google.android.youtube",
+           "bounds": {
+            "left": 0,
+            "top": 784,
+            "right": 720,
+            "bottom": 1189
+           },
+           "clickable": false,
+           "enabled": true,
+           "focused": false,
+           "index": 0,
+           "children": []
+          },
+          {
+           "resourceId": "",
+           "text": "",
+           "desc": "9 menit, 49 detik",
+           "className": "android.view.ViewGroup",
+           "packageName": "com.google.android.youtube",
+           "bounds": {
+            "left": 644,
+            "top": 1136,
+            "right": 705,
+            "bottom": 1174
+           },
+           "clickable": false,
+           "enabled": true,
+           "focused": false,
+           "index": 0,
+           "children": [
+            {
+             "resourceId": "",
+             "text": "9.49",
+             "desc": "9.49",
+             "className": "android.view.ViewGroup",
+             "packageName": "com.google.android.youtube",
+             "bounds": {
+              "left": 652,
+              "top": 1141,
+              "right": 697,
+              "bottom": 1168
+             },
+             "clickable": false,
+             "enabled": true,
+             "focused": false,
+             "index": 0,
+             "children": []
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "resourceId": "",
+       "text": "",
+       "desc": "",
+       "className": "android.view.ViewGroup",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 0,
+        "top": 1189,
+        "right": 720,
+        "bottom": 1355
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": [
+        {
+         "resourceId": "",
+         "text": "",
+         "desc": "Buka channel Rizki Aditama | Sekolah Trading",
+         "className": "android.widget.Button",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 23,
+          "top": 1212,
+          "right": 91,
+          "bottom": 1280
+         },
+         "clickable": true,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        },
+        {
+         "resourceId": "",
+         "text": "Trading Modal $100 Profit $12/Hari | AYQ 230",
+         "desc": "",
+         "className": "android.widget.TextView",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 114,
+          "top": 1212,
+          "right": 622,
+          "bottom": 1287
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        },
+        {
+         "resourceId": "",
+         "text": "Rizki Aditama | Sekolah Trading · 6,4 rb x ditonton · 13 jam yang lalu",
+         "desc": "",
+         "className": "android.widget.TextView",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 114,
+          "top": 1295,
+          "right": 645,
+          "bottom": 1355
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        },
+        {
+         "resourceId": "",
+         "text": "",
+         "desc": "Menu tindakan",
+         "className": "android.widget.ImageView",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 645,
+          "top": 1212,
+          "right": 690,
+          "bottom": 1257
+         },
+         "clickable": true,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -132,9 +132,22 @@ const CHROME_LABELS = /^(more options|more actions|navigate up|clear|voice searc
   (moto g06 power, 2026-09-20). The words around the number are localised and
   the number is not.
 */
-const HAS_DURATION = /\b\d{1,2}:\d{2}\b/
-const HAS_VIEWS = /\d[\d.,]*\s*(?:k|m|b|rb|jt|thousand|million|billion)?\s+views?\b/i
-const HAS_AGE = /\d+\s*\w*\s+ago\b/i
+/*
+  And in BOTH languages the fleet runs (2026-09-21). These three were measured on the moto in
+  `en-US`, and the owner's production phones — SM-A075F, `id-ID` — write every one of them
+  differently. A real result row there reads:
+
+    Trading Modal $100 Profit $12/Hari | AYQ 230 - 9 menit, 49 detik - Buka channel … -
+    6,4 ribu x ditonton - 13 jam yang lalu - putar video
+
+  with a duration badge drawn as `9.49` (a DOT, not a colon) and a meta line that says `6,4 rb`
+  where the description says `6,4 ribu`. Not one of the English patterns matched any of it, so every
+  row was judged "not a video", and `watch-video` failed 10 runs in 10 with "0 of 13 rows are
+  videos" on a results page full of videos. Every pattern is still anchored on a digit.
+*/
+const HAS_DURATION = /\b\d{1,2}[:.]\d{2}\b|\b\d+\s+(?:menit|detik|minutes?|seconds?)\b/i
+const HAS_VIEWS = /\d[\d.,]*\s*(?:k|m|b|rb|jt|ribu|juta|miliar|thousand|million|billion)?\s*(?:x\s+)?(?:views?|ditonton|penayangan)\b/i
+const HAS_AGE = /\d+\s*\w*\s+(?:ago|(?:yang\s+)?lalu)\b/i
 
 /** Every readable string inside a row, in tree order. */
 function readableOf(row: UiNode): string[] {
@@ -170,11 +183,11 @@ function readableOf(row: UiNode): string[] {
  *
  * Verified offline against both captured trees before it went near a phone.
  */
-function looksPlayable(row: UiNode): boolean {
+export function looksPlayable(row: UiNode): boolean {
   const readable = readableOf(row)
   if (readable.length === 0) return false
   if (readable.every((value) => CHROME_LABELS.test(value.trim()))) return false
-  if (readable.some((value) => /^sponsored\b/i.test(value.trim()))) return false
+  if (readable.some((value) => /^(sponsored|bersponsor)\b/i.test(value.trim()))) return false
   /* A subscriber count means a CHANNEL card. Tapping one opens the channel, which is a different script's job. */
   if (readable.some((value) => /\bsubscribers?\b/i.test(value))) return false
   return readable.some((value) => HAS_DURATION.test(value) || HAS_VIEWS.test(value) || HAS_AGE.test(value))

@@ -3,7 +3,7 @@ import { ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { flatten, rowsById } from './tree'
-import { YOUTUBE_PACKAGE, relaunch, tapNode, waitForTree } from './youtube'
+import { YOUTUBE_PACKAGE, capture, relaunch, tapNode, waitForTree } from './youtube'
 import { dismissPopups } from './popups'
 
 /**
@@ -45,19 +45,38 @@ const resultSchema = z.object({
   steps: z.array(z.string()).describe('Each step reached, in order — where a failed run stopped.').meta(ui({ title: 'Steps' })),
 })
 
+/** How long to wait for Home's toolbar after tapping the Home tab. */
+const HOME_TIMEOUT_MS = 12_000
+
 /** How long to wait for the notifications screen after tapping the bell. */
 const NOTIFICATIONS_ENTER_TIMEOUT_MS = 20_000
 
 /** Words that are chrome on this screen, never a notification. */
 const CHROME = /^(all|mentions|semua|sebutan|home|shorts|create|subscriptions|you|beranda|buat|langganan|anda|notifications|notifikasi|search|telusuri|navigate up|more options)$/i
 
-/** The bell in the home toolbar. Matched by description — its Search sibling is 84px away. */
+/**
+ * The bell, whose description may carry the unread count.
+ *
+ * Production, SM-A075F, `id-ID`, 2026-09-21: the home toolbar's bell is described `Notifikasi, 9`
+ * — the count rides on the label — while the same account's You page draws it as plain
+ * `Notifikasi`. The old pattern accepted only the bare word, so the bell was invisible exactly
+ * when the account HAD notifications, which on a real account is nearly always: 9 of 10 runs
+ * failed with "the notifications bell was not in the YouTube toolbar".
+ *
+ * Deliberately NOT loosened to "starts with Notifikasi". The status bar on those same phones draws
+ * one icon per app notification, described `Notifikasi Enkaku Guest Agent: `, `Notifikasi Cuaca:`
+ * and so on, and a prefix match would have to rely on the package check alone to keep them out.
+ * This accepts the bare word or the word followed by `, <count>` — the one variant measured.
+ */
+export const BELL = /^(notifications|notifikasi|pemberitahuan)(?:,\s*\d+\+?)?$/i
+
 export function notificationsBellOf(tree: UiNode): UiNode | null {
-  return (
-    flatten(tree).find(
-      (n) => n.clickable && (n.packageName === '' || n.packageName === YOUTUBE_PACKAGE) && /^(notifications|notifikasi|pemberitahuan)$/i.test(n.desc.trim()),
-    ) ?? null
-  )
+  return flatten(tree).find((n) => n.clickable && (n.packageName === '' || n.packageName === YOUTUBE_PACKAGE) && BELL.test(n.desc.trim())) ?? null
+}
+
+/** The bottom navigation's Home item, in both measured languages. */
+export function homeTabOf(tree: UiNode): UiNode | null {
+  return flatten(tree).find((n) => n.clickable && (n.packageName === '' || n.packageName === YOUTUBE_PACKAGE) && /^(home|beranda)$/i.test(n.desc.trim())) ?? null
 }
 
 /**
@@ -142,11 +161,26 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   async run(ctx) {
     const steps: string[] = []
 
-    const home = (await dismissPopups(ctx, await ctx.device.dump())).tree
+    let home = (await dismissPopups(ctx, await ctx.device.dump())).tree
     steps.push('home')
+    /*
+      Go HOME first when the bell is not already there. A relaunch does not promise Home: on the
+      production fleet YouTube came back on the Shorts player — left there by the warm-up's own
+      `scroll-shorts` earlier in the same sequence — whose toolbar has Search and a menu and no
+      bell at all. The bell lives on Home, so that is where this looks for it.
+    */
+    if (notificationsBellOf(home) === null) {
+      const homeTab = homeTabOf(home)
+      if (homeTab) {
+        await tapNode(ctx, homeTab)
+        const onHome = await waitForTree(ctx, (t) => notificationsBellOf(t) !== null, { budgetMs: HOME_TIMEOUT_MS })
+        home = onHome.tree
+        steps.push('went to Home')
+      }
+    }
     const bell = notificationsBellOf(home)
     if (!bell) {
-      await ctx.artifact.screenshot('yt-01-no-bell')
+      await capture(ctx, 'yt-01-no-bell', home)
       throw new Error('the notifications bell was not in the YouTube toolbar — see artifact yt-01-no-bell')
     }
     await tapNode(ctx, bell)
@@ -160,7 +194,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     */
     const opened = await waitForTree(ctx, onNotifications, { budgetMs: NOTIFICATIONS_ENTER_TIMEOUT_MS })
     if (!opened.ok) {
-      await ctx.artifact.screenshot('yt-02-no-notifications')
+      await capture(ctx, 'yt-02-no-notifications', opened.tree)
       throw new Error('tapped the bell but the notifications screen never appeared — see artifact yt-02-no-notifications')
     }
     steps.push('notifications screen')

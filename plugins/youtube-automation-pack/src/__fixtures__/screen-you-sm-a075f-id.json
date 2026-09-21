@@ -1,0 +1,533 @@
+{
+ "resourceId": "",
+ "text": "",
+ "desc": "",
+ "className": "hierarchy",
+ "packageName": "",
+ "bounds": {
+  "left": 0,
+  "top": 0,
+  "right": 0,
+  "bottom": 0
+ },
+ "clickable": false,
+ "enabled": true,
+ "focused": false,
+ "index": 0,
+ "_provenance": "Reduced from production artifact 9d2bc5d7-5909-4dd4-ab1d-9abe5b1e2dab (youtube/my-videos, SM-A075F #21, id-ID, 2026-09-21). Every node below the frame is copied verbatim; only siblings no reader consults were left out.",
+ "children": [
+  {
+   "resourceId": "",
+   "text": "",
+   "desc": "",
+   "className": "android.widget.FrameLayout",
+   "packageName": "com.google.android.youtube",
+   "bounds": {
+    "left": 0,
+    "top": 0,
+    "right": 720,
+    "bottom": 1600
+   },
+   "clickable": false,
+   "enabled": true,
+   "focused": false,
+   "index": 0,
+   "children": [
+    {
+     "resourceId": "",
+     "text": "",
+     "desc": "Notifikasi Enkaku Guest Agent: ",
+     "className": "android.widget.ImageView",
+     "packageName": "com.android.systemui",
+     "bounds": {
+      "left": 212,
+      "top": 11,
+      "right": 243,
+      "bottom": 56
+     },
+     "clickable": false,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": []
+    },
+    {
+     "resourceId": "com.google.android.youtube:id/menu_item_view",
+     "text": "",
+     "desc": "Notifikasi",
+     "className": "android.widget.ImageView",
+     "packageName": "com.google.android.youtube",
+     "bounds": {
+      "left": 450,
+      "top": 64,
+      "right": 540,
+      "bottom": 154
+     },
+     "clickable": true,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": []
+    },
+    {
+     "resourceId": "",
+     "text": "",
+     "desc": "",
+     "className": "android.view.ViewGroup",
+     "packageName": "com.google.android.youtube",
+     "bounds": {
+      "left": 23,
+      "top": 154,
+      "right": 697,
+      "bottom": 335
+     },
+     "clickable": true,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": [
+      {
+       "resourceId": "",
+       "text": "",
+       "desc": "",
+       "className": "android.widget.ImageView",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 23,
+        "top": 177,
+        "right": 158,
+        "bottom": 312
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": []
+      },
+      {
+       "resourceId": "",
+       "text": "Bitorex Vault",
+       "desc": "Bitorex Vault",
+       "className": "android.view.ViewGroup",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 181,
+        "top": 199,
+        "right": 697,
+        "bottom": 255
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": []
+      },
+      {
+       "resourceId": "",
+       "text": "@BitorexVault",
+       "desc": "@BitorexVault",
+       "className": "android.view.ViewGroup",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 181,
+        "top": 258,
+        "right": 329,
+        "bottom": 288
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": []
+      },
+      {
+       "resourceId": "",
+       "text": "  •  ",
+       "desc": "  •  ",
+       "className": "android.view.ViewGroup",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 329,
+        "top": 255,
+        "right": 362,
+        "bottom": 291
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": []
+      },
+      {
+       "resourceId": "",
+       "text": "Lihat channel",
+       "desc": "Lihat channel",
+       "className": "android.view.ViewGroup",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 362,
+        "top": 258,
+        "right": 502,
+        "bottom": 288
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": []
+      },
+      {
+       "resourceId": "",
+       "text": "",
+       "desc": "",
+       "className": "android.widget.ImageView",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 502,
+        "top": 256,
+        "right": 536,
+        "bottom": 290
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": []
+      }
+     ]
+    },
+    {
+     "resourceId": "",
+     "text": "",
+     "desc": "",
+     "className": "android.view.ViewGroup",
+     "packageName": "com.google.android.youtube",
+     "bounds": {
+      "left": 23,
+      "top": 350,
+      "right": 720,
+      "bottom": 425
+     },
+     "clickable": false,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": [
+      {
+       "resourceId": "",
+       "text": "",
+       "desc": "Ganti akun",
+       "className": "android.widget.Button",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 23,
+        "top": 350,
+        "right": 214,
+        "bottom": 410
+       },
+       "clickable": true,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": [
+        {
+         "resourceId": "",
+         "text": "",
+         "desc": "",
+         "className": "android.widget.ImageView",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 40,
+          "top": 365,
+          "right": 70,
+          "bottom": 395
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        },
+        {
+         "resourceId": "",
+         "text": "Ganti akun",
+         "desc": "Ganti akun",
+         "className": "android.view.ViewGroup",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 78,
+          "top": 365,
+          "right": 189,
+          "bottom": 395
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        }
+       ]
+      },
+      {
+       "resourceId": "",
+       "text": "",
+       "desc": "Akun Google",
+       "className": "android.widget.Button",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 230,
+        "top": 350,
+        "right": 442,
+        "bottom": 410
+       },
+       "clickable": true,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": [
+        {
+         "resourceId": "",
+         "text": "",
+         "desc": "",
+         "className": "android.widget.ImageView",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 247,
+          "top": 365,
+          "right": 277,
+          "bottom": 395
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        },
+        {
+         "resourceId": "",
+         "text": "Akun Google",
+         "desc": "Akun Google",
+         "className": "android.view.ViewGroup",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 285,
+          "top": 365,
+          "right": 417,
+          "bottom": 395
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        }
+       ]
+      },
+      {
+       "resourceId": "",
+       "text": "",
+       "desc": "Aktifkan Mode Samaran",
+       "className": "android.widget.Button",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 458,
+        "top": 350,
+        "right": 720,
+        "bottom": 410
+       },
+       "clickable": true,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": [
+        {
+         "resourceId": "",
+         "text": "",
+         "desc": "",
+         "className": "android.widget.ImageView",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 475,
+          "top": 365,
+          "right": 505,
+          "bottom": 395
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        },
+        {
+         "resourceId": "",
+         "text": "Aktifkan Mode Samaran",
+         "desc": "Aktifkan Mode Samaran",
+         "className": "android.view.ViewGroup",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 513,
+          "top": 365,
+          "right": 720,
+          "bottom": 395
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        }
+       ]
+      },
+      {
+       "resourceId": "",
+       "text": "",
+       "desc": "Bagikan channel",
+       "className": "android.widget.Button",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 801,
+        "top": 350,
+        "right": 720,
+        "bottom": 410
+       },
+       "clickable": true,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": [
+        {
+         "resourceId": "",
+         "text": "",
+         "desc": "",
+         "className": "android.widget.ImageView",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 818,
+          "top": 365,
+          "right": 720,
+          "bottom": 395
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        },
+        {
+         "resourceId": "",
+         "text": "Bagikan channel",
+         "desc": "Bagikan channel",
+         "className": "android.view.ViewGroup",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 856,
+          "top": 365,
+          "right": 720,
+          "bottom": 395
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "resourceId": "",
+     "text": "",
+     "desc": "Anda",
+     "className": "android.widget.Button",
+     "packageName": "com.google.android.youtube",
+     "bounds": {
+      "left": 576,
+      "top": 1420,
+      "right": 720,
+      "bottom": 1510
+     },
+     "clickable": true,
+     "enabled": true,
+     "focused": false,
+     "index": 0,
+     "children": [
+      {
+       "resourceId": "com.google.android.youtube:id/thumbnail_layout",
+       "text": "",
+       "desc": "",
+       "className": "android.widget.FrameLayout",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 626,
+        "top": 1429,
+        "right": 671,
+        "bottom": 1474
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": [
+        {
+         "resourceId": "com.google.android.youtube:id/you_tab_border",
+         "text": "",
+         "desc": "",
+         "className": "android.widget.ImageView",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 626,
+          "top": 1429,
+          "right": 671,
+          "bottom": 1474
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        },
+        {
+         "resourceId": "com.google.android.youtube:id/pivot_bar_thumbnail",
+         "text": "",
+         "desc": "",
+         "className": "android.widget.ImageView",
+         "packageName": "com.google.android.youtube",
+         "bounds": {
+          "left": 632,
+          "top": 1435,
+          "right": 665,
+          "bottom": 1468
+         },
+         "clickable": false,
+         "enabled": true,
+         "focused": false,
+         "index": 0,
+         "children": []
+        }
+       ]
+      },
+      {
+       "resourceId": "com.google.android.youtube:id/text",
+       "text": "Anda",
+       "desc": "",
+       "className": "android.widget.TextView",
+       "packageName": "com.google.android.youtube",
+       "bounds": {
+        "left": 624,
+        "top": 1478,
+        "right": 672,
+        "bottom": 1501
+       },
+       "clickable": false,
+       "enabled": true,
+       "focused": false,
+       "index": 0,
+       "children": []
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

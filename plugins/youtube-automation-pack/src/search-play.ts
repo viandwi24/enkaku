@@ -4,6 +4,7 @@ import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
 import { YOUTUBE_PACKAGE, capture, firstMatch, relaunch, sleep, tapNode, waitForTree } from './youtube'
 import { SEARCH_ENTRY, SEARCH_FIELD, openSearchField, adEvidence, clickableFor, hasResultRows, playerEvidence, resultRowsOf, skipControlOf, titleFromRow } from './search-channel'
+import { looksPlayable } from './watch-video'
 import { between, browseComments, keywordBoost, makeRng, pressLike, readableStrings } from './behavior'
 
 /**
@@ -125,8 +126,21 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
     if (!loaded.ok) fail('results', `no result rows appeared within the budget — see artifact 03-results`)
 
     // --- pick from the ranked first page --------------------------------------
-    const rows = resultRowsOf(results)
+    /*
+      Pick from the rows that look like VIDEOS (`looksPlayable`, shared with `watch-video`), and fall
+      back to every row only when none do — so this is never worse than it was.
+
+      It used to pick uniformly from `resultRowsOf`, which on the production fleet (SM-A075F, id-ID,
+      2026-09-21) also returns shelves, channel cards and overflow buttons; the tap opened no player
+      and 13 of 15 runs failed with "a result was tapped but nothing that looks like a player
+      appeared". `watch-video` learned the same lesson on the moto and stopped tapping non-videos;
+      this member had never been given the filter.
+    */
+    const all = resultRowsOf(results)
+    const videos = all.filter(looksPlayable)
+    const rows = videos.length > 0 ? videos : all
     if (rows.length === 0) fail('pick-row', 'the results page reported rows but the walk found none — see artifact 03-results')
+    if (videos.length === 0) ctx.log.warn('no row on the results page looked like a video — picking from every row, as before', { rows: all.length })
     const index = ctx.params.pick === 'top' ? 0 : Math.floor(rng() * rows.length)
     const chosen = rows[index] as UiNode
     const videoTitle = titleFromRow(chosen)
