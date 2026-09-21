@@ -55,6 +55,26 @@ import { PlatformIdSchema, type PlatformId } from './platforms'
 
 export const RECAP_PREFIX = 'recap:'
 
+/** Where the fleet-wide recap pacing lives. One row, read by the router every tick. */
+export const RECAP_SETTINGS_KEY = 'settings:recap'
+
+/**
+ * How many phones read at once, across the WHOLE farm.
+ *
+ * Eight by default, because the owner watched the first version send a read to
+ * every online phone in one tick: *"sya di prod 73 devices itu langsung jalan
+ * semua serentak"*. A concurrency cap rather than a delay between batches — a
+ * delay has to guess how long a read takes, while a cap paces itself, freeing
+ * a slot the moment a phone answers.
+ */
+export const RECAP_CONCURRENCY_DEFAULT = 8
+
+export const RecapSettingsSchema = z.object({
+  version: z.literal(1),
+  concurrency: z.number().int().min(1).max(50).default(RECAP_CONCURRENCY_DEFAULT),
+})
+export type RecapSettings = z.infer<typeof RecapSettingsSchema>
+
 /** One row per phone per platform. The platform is in the key so a scan can read one platform's fleet. */
 export function recapRowKey(platform: PlatformId, deviceId: string): string {
   return `${RECAP_PREFIX}${platform}:${deviceId}`
@@ -400,42 +420,4 @@ function median(values: readonly number[]): number {
   const middle = sorted.length >> 1
   if (sorted.length === 0) return 0
   return sorted.length % 2 === 1 ? (sorted[middle] as number) : ((sorted[middle - 1] as number) + (sorted[middle] as number)) / 2
-}
-
-/** The line an operator reads on a recap row. */
-export function recapSummary(row: RecapRow): string {
-  if (row.state === 'never') return 'not read yet'
-  if (row.state === 'reading') return 'reading…'
-  if (row.state === 'failed') return row.note || 'the last read failed'
-  const inWindow = row.videos.filter((video) => video.rank !== null).length
-  const views = row.videos.reduce((sum, video) => sum + video.views, 0)
-  if (row.videos.length === 0) return 'nothing posted'
-  const known = row.videos.length === inWindow ? `${inWindow}` : `${inWindow} of ${row.videos.length}`
-  return `${known} video${row.videos.length === 1 ? '' : 's'}, ${views.toLocaleString('en-US')} view${views === 1 ? '' : 's'}`
-}
-
-/** Views added since the reading before the last one, across a row. `null` when there is no earlier reading to compare. */
-export function recapGrowth(row: RecapRow): number | null {
-  let growth = 0
-  let any = false
-  for (const video of row.videos) {
-    if (video.history.length < 2) continue
-    const last = video.history[video.history.length - 1]
-    const before = video.history[video.history.length - 2]
-    if (!last || !before) continue
-    growth += last.views - before.views
-    any = true
-  }
-  return any ? growth : null
-}
-
-/** Every platform's row for one phone, added up. */
-export function recapTotals(rows: readonly RecapRow[]): { videos: number; views: number } {
-  let videos = 0
-  let views = 0
-  for (const row of rows) {
-    videos += row.videos.length
-    for (const video of row.videos) views += video.views
-  }
-  return { videos, views }
 }

@@ -54,7 +54,7 @@ export { foreignAppOnTop, touchBlockerOnTop } from './screen'
   three platforms and getting it wrong is a factor-of-a-thousand error, so one
   copy with one test beats three copies that drift.
 */
-export { parseCount, countOf, countBefore } from './counts'
+export { parseCount, countBefore } from './counts'
 export type { CountReading } from './counts'
 /* Stitching the pages of a scrolling list that has no per-item id — same argument, same three callers. */
 export { mergePages } from './grid'
