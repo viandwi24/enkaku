@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { RouterDevice } from './posts'
-import { admitRow, isAdmitted, isRunning, phoneQueueStatus, planAdmissions, queueCounts, stableGap, type QueueRow, type QueueStep } from './warmup-queue'
+import { UNSTABLE_STATUS, admitRow, isAdmitted, isRunning, isUnstable, phoneQueueStatus, planAdmissions, queueCounts, stableGap, type QueueRow, type QueueStep } from './warmup-queue'
 
 const NOW = 1_800_000_000
 
@@ -221,5 +221,25 @@ describe('an account that needs a person', () => {
   test('the State column names the platform', () => {
     const rows: QueueRow[] = [{ ...waitingRow('a', 0), platform: 'instagram' }]
     expect(phoneQueueStatus({ deviceId: 'a', rows, online: true, run: 'running', held: false, now: NOW, startGapSec: [20, 60], runKey: 'g:r', accountBlocked: new Set(['instagram']) })).toEqual({ kind: 'account', platform: 'instagram' })
+  })
+})
+
+describe('a phone that keeps dropping off (flaps)', () => {
+  test('three or more in the window is unstable; none, one or two is not', () => {
+    expect(isUnstable({ flaps: { recent: 3 } })).toBe(true)
+    expect(isUnstable({ flaps: { recent: 2 } })).toBe(false)
+    expect(isUnstable({ flaps: null })).toBe(false)
+    expect(isUnstable({})).toBe(false)
+  })
+
+  test('the router passes it over by name, and the run carries on with a steady phone', () => {
+    const rows = [waitingRow('hub', 0), waitingRow('steady', 1)]
+    const plan = planAdmissions({ rows, devices: fleet({ ...online('hub'), status: UNSTABLE_STATUS }, online('steady')), holding: new Set(), now: NOW, settings: { ...NO_GAP, maxParallel: 1 }, runKey: 'g:r' })
+    expect(plan.admit.map((r) => r.deviceId)).toEqual(['steady'])
+    expect(plan.blocked.get('hub')).toBe('unstable')
+  })
+
+  test('the State column says so', () => {
+    expect(phoneQueueStatus({ deviceId: 'a', rows: [waitingRow('a', 0)], online: true, unstable: true, run: 'running', held: false, now: NOW, startGapSec: [20, 60], runKey: 'g:r' })).toEqual({ kind: 'blocked', reason: 'unstable' })
   })
 })

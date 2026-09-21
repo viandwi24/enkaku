@@ -82,7 +82,7 @@ export function warmupRunIdle(rows: readonly IdleRun[], online: ReadonlySet<stri
   return {
     idle: true,
     waiting: n,
-    reason: `Paused automatically: the ${n} phone${n === 1 ? '' : 's'} with activities still to do ${n === 1 ? 'is' : 'are'} all offline. Connect them and press Start again.`,
+    reason: `Paused automatically: the ${n} phone${n === 1 ? '' : 's'} with activities still to do can do nothing: offline, disconnecting over and over, or waiting on an account that needs a person. Deal with them and press Play.`,
   }
 }
 
@@ -152,6 +152,6 @@ export function postSessionIdle<P extends IdlePost>(
   return {
     idle: true,
     waiting: n,
-    reason: `Paused automatically: the ${n} post${n === 1 ? '' : 's'} still to go ${n === 1 ? 'is' : 'are'} waiting for phones that are all offline. Connect them and press Start again.`,
+    reason: `Paused automatically: the ${n} post${n === 1 ? '' : 's'} still to go can do nothing: their phones are offline, disconnecting over and over, or waiting on an account that needs a person. Deal with them and press Play.`,
   }
 }

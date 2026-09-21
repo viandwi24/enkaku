@@ -28,7 +28,7 @@ import { ACCOUNT_PROBLEM_PREFIX, AccountProblemSchema, accountKey, accountProble
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
 import { WARMUP_PREFIX, WarmupRowSchema, isPermanentDispatchFailure, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRow } from './warmup-rows'
 import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
-import { WARMUP_MAX_PARALLEL_DEFAULT, WARMUP_START_GAP_DEFAULT, admitRow, isAdmitted, isRunning, planAdmissions, stableGap } from './warmup-queue'
+import { UNSTABLE_STATUS, WARMUP_MAX_PARALLEL_DEFAULT, WARMUP_START_GAP_DEFAULT, admitRow, isAdmitted, isRunning, isUnstable, planAdmissions, stableGap } from './warmup-queue'
 import { warmupSequenceDoc } from './warmup-workflow'
 import {
   POST_PREFIX,
@@ -1533,6 +1533,8 @@ const DeviceListOutput = z.object({
       lastControl: z.object({ endedAt: z.number() }).nullable().default(null),
       /** The phone's device group (0.64.0) — what a warm-up's per-group pause is keyed on. */
       group: z.object({ id: z.string(), name: z.string() }).nullable().default(null),
+      /** Recent drop-and-return count (core 0.2.74); `null` from an older core. See `isUnstable`. */
+      flaps: z.object({ recent: z.number().int(), windowSec: z.number().int() }).nullable().default(null),
     }),
   ),
 })
@@ -1834,7 +1836,17 @@ async function runWarmupPass(
     byRun.set(key, list)
   }
   for (const [key, rows] of byRun) {
-    const verdict = warmupRunIdle(rows, online, input.now)
+    /*
+      A phone whose every waiting row is held by an account that needs a person can do no more than
+      an offline one (0.64.0), so for this question it counts as away.
+    */
+    const able = new Set(
+      [...online].filter((deviceId) => {
+        const waiting = rows.filter((row) => row.deviceId === deviceId && row.steps.some((step) => step.state === 'pending'))
+        return waiting.length === 0 || waiting.some((row) => row.platform === null || !input.accounts.has(`${deviceId}:${row.platform}`))
+      }),
+    )
+    const verdict = warmupRunIdle(rows, able, input.now)
     if (!verdict.idle || verdict.reason === null) continue
     const first = rows[0] as WarmupRow
     if (await autoPause(ctx, first.groupId, first.runId, verdict.reason, input.now)) {
@@ -2405,6 +2417,14 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
   let fleet: z.infer<typeof DeviceListOutput>
   try {
     fleet = await ctx.farm.call('device.list', {}, DeviceListOutput)
+    /*
+      A phone that keeps dropping off and coming back is not a phone to send work to (0.64.0). Its
+      status stays `online` through every flap, so it is marked here, once, for the whole tick —
+      posts, warm-ups and recap reads all pass over it, and a session left with only such phones
+      pauses itself like one left with offline ones. On 2026-09-21 a hub of twenty phones flapped
+      every ten to twenty seconds for hours and every job sent to them was reset and failed.
+    */
+    fleet = { items: fleet.items.map((item) => (isUnstable(item) ? { ...item, status: UNSTABLE_STATUS } : item)) }
   } catch (err) {
     // Fatal for a dispatching tick — there is no fleet to route to. Not fatal
     // for a settle-only one: names simply stay as they were, which is what a
@@ -3094,6 +3114,14 @@ export default definePlugin({
     post's platform waits with the reason, a warm-up row is passed over), a session whose phones are
     all offline or all held that way pauses itself, and the pages list the accounts with a "Signed
     in" button that clears them.
+
+    And a phone that keeps dropping off: `device.list` now reports each phone's recent flaps (core
+    0.2.74). Three or more in ten minutes and the router marks the phone unsteady for the tick —
+    posts, warm-ups and recap reads pass over it, the State column says "phone keeps disconnecting",
+    and a session left with only such phones pauses itself. PFB3F2's hub flapped every ten to twenty
+    seconds on 2026-09-21 and every job sent to those phones was reset and failed. A session left
+    with only account-held phones pauses itself too, and the automatic-pause sentence names all three
+    reasons.
   */
   version: '0.64.0',
   icon: 'upload',

@@ -36,6 +36,20 @@ import type { WarmupRow } from './warmup-rows'
  */
 
 export const WARMUP_MAX_PARALLEL_DEFAULT = 8
+
+/**
+ * A phone this many drop-and-returns inside the core's window (10 min) is unsteady (0.64.0). A
+ * phone on a good cable flaps rarely if ever — PFB1's twenty read 0 on 2026-09-21 — while one on a
+ * failing hub read 17 to 25 in fifteen minutes. Three is well clear of both.
+ */
+export const UNSTABLE_FLAPS = 3
+
+/** The status the router gives an unsteady phone for the tick, so every `online` test passes it over. */
+export const UNSTABLE_STATUS = 'unstable'
+
+export function isUnstable(device: { flaps?: { recent: number } | null }): boolean {
+  return (device.flaps?.recent ?? 0) >= UNSTABLE_FLAPS
+}
 export const WARMUP_START_GAP_DEFAULT: readonly [number, number] = [20, 60]
 
 export interface QueueSettings {
@@ -60,7 +74,7 @@ export interface QueueRow {
   platform?: string | null
 }
 
-export type BlockReason = 'offline' | 'busy' | 'earlier-phase' | 'held' | 'account'
+export type BlockReason = 'offline' | 'unstable' | 'busy' | 'earlier-phase' | 'held' | 'account'
 
 /** Anything left for this row to do. */
 export function hasWork(row: QueueRow): boolean {
@@ -185,7 +199,7 @@ export function planAdmissions<R extends QueueRow>(input: {
     }
     const device = devices.get(row.deviceId)
     if (!device || device.status !== 'online') {
-      blocked.set(row.deviceId, 'offline')
+      blocked.set(row.deviceId, device?.status === UNSTABLE_STATUS ? 'unstable' : 'offline')
       continue
     }
     if (holding.has(row.deviceId) || !isDeviceFree(device)) {
@@ -251,7 +265,7 @@ export function queueCounts(rows: readonly QueueRow[]): { running: number; waiti
 export type PhoneQueueStatus =
   | { kind: 'running'; phase: number }
   | { kind: 'queued'; position: number }
-  | { kind: 'blocked'; reason: 'offline' | 'resting' }
+  | { kind: 'blocked'; reason: 'offline' | 'unstable' | 'resting' }
   | { kind: 'account'; platform: string }
   | { kind: 'held' }
   | { kind: 'ready' }
@@ -263,6 +277,8 @@ export function phoneQueueStatus(input: {
   /** Every row of the run — the position is counted across all of them. */
   rows: readonly QueueRow[]
   online: boolean
+  /** Online, but dropping off and coming back too often to be sent anything (`isUnstable`). */
+  unstable?: boolean
   run: 'ready' | 'paused' | 'running'
   held: boolean
   now: number
@@ -284,6 +300,7 @@ export function phoneQueueStatus(input: {
   if (input.held) return { kind: 'held' }
   if (next.platform !== null && next.platform !== undefined && input.accountBlocked?.has(next.platform) === true) return { kind: 'account', platform: next.platform }
   if (!input.online) return { kind: 'blocked', reason: 'offline' }
+  if (input.unstable === true) return { kind: 'blocked', reason: 'unstable' }
   const earlier = own.filter((row) => row.phase < next.phase)
   const settled = Math.max(0, ...earlier.flatMap((row) => row.steps.map((step) => step.settledAt ?? 0)))
   if (settled > 0 && input.now < settled + stableGap(input.startGapSec, `${input.runKey}:${input.deviceId}:${next.phase}`)) return { kind: 'blocked', reason: 'resting' }

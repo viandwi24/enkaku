@@ -98,6 +98,8 @@ export const DeviceSchema = z.object({
   status: z.string(),
   labels: z.array(z.object({ id: z.string(), name: z.string() })).default([]),
   group: z.object({ id: z.string(), name: z.string() }).nullable().default(null),
+  /** Recent drop-and-return count (core 0.2.74); `null` from an older core. */
+  flaps: z.object({ recent: z.number(), windowSec: z.number() }).nullable().default(null),
 })
 export type Device = z.infer<typeof DeviceSchema>
 

@@ -34,7 +34,7 @@ import {
 import { PLATFORM_IDS, type PlatformId } from '../../platforms'
 import { DevicePicker, newPick, pickRefusal, resolvePick, type DevicePick } from './device-picker'
 import { readDuration, rollUpByDevice, runsOf, sessionReport, type DeviceRollup } from '../../warmup-report'
-import { phoneQueueStatus, queueCounts, type PhoneQueueStatus } from '../../warmup-queue'
+import { isUnstable, phoneQueueStatus, queueCounts, type PhoneQueueStatus } from '../../warmup-queue'
 import { deviceName, listDevices, listGroups, listStopMarkers, listStopMarkerInfo, listHolds, listAccountProblems, setGroupHeld, skipWarmupPhone, listWarmupRows, partlyStopped, pickHost, platformLabel, deleteWarmupRun, retryWarmupRun, runMember, runWarmupAgain, setSessionStopped, listAllWarmupRows, stoppedNewestFrom, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
 import type { StopMarker } from '../../session-control'
 import { AccountAlerts } from './account-alerts'
@@ -807,7 +807,10 @@ function QueueState({ status }: { status: PhoneQueueStatus }): ReactElement {
       : status.kind === 'queued'
         ? [`#${status.position} in queue`, 'text-dim']
         : status.kind === 'blocked'
-          ? [status.reason === 'offline' ? 'waiting · phone offline' : 'resting between platforms', status.reason === 'offline' ? 'text-warn' : 'text-faint']
+          ? [
+              status.reason === 'offline' ? 'waiting · phone offline' : status.reason === 'unstable' ? 'waiting · phone keeps disconnecting' : 'resting between platforms',
+              status.reason === 'resting' ? 'text-faint' : 'text-warn',
+            ]
           : status.kind === 'held'
             ? ['waiting · its group is paused', 'text-warn']
             : status.kind === 'ready'
@@ -1334,6 +1337,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
       deviceId,
       rows,
       online: device?.status === 'online',
+      unstable: device !== undefined && isUnstable(device),
       run: runState,
       held: deviceGroup !== null && holds.has(`${runKey}:${deviceGroup}`),
       now: Math.floor(now / 1000),
