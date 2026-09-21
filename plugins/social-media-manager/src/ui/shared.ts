@@ -2,6 +2,7 @@ import { api } from '@enkaku/ui'
 import { z } from 'zod'
 import { HOLD_PREFIX, POST_RUN, STOP_PREFIX, holdKey, holdOf, resumeWarmupRow, stopKey, stopMarkerOf, stopPostRow, stoppedRunOf, stopWarmupRow, type StopMarker } from '../session-control'
 import { retryFailedSteps, withRunSummary } from '../warmup-rows'
+import { ACCOUNT_PROBLEM_PREFIX, AccountProblemSchema, accountKey, type AccountProblem } from '../account-status'
 
 /**
  * The one screen's shared vocabulary: what it reads from the farm, and how.
@@ -658,6 +659,21 @@ export async function retryWarmupRun(groupId: string, runId: string, onlyDevices
     await writeEntry(key, { ...withRunSummary(again), stopped: false, queueSeq: seq, admittedAt: null })
   }
   return requeued
+}
+
+/** Every account that needs a person (0.64.0, `account-status.ts`), oldest first. */
+export async function listAccountProblems(): Promise<AccountProblem[]> {
+  const out: AccountProblem[] = []
+  for (const entry of await readAll(ACCOUNT_PROBLEM_PREFIX)) {
+    const parsed = AccountProblemSchema.safeParse(entry.value)
+    if (parsed.success) out.push(parsed.data)
+  }
+  return out.sort((a, b) => a.at - b.at)
+}
+
+/** "Signed in": somebody dealt with it on the phone, so the router may send to it again. */
+export async function clearAccountProblem(deviceId: string, platform: string): Promise<void> {
+  await deleteEntry(accountKey(deviceId, platform))
 }
 
 /** Every device group paused inside a warm-up run, as `groupId:runId:deviceGroupId` (0.64.0). */

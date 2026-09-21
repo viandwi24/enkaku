@@ -35,8 +35,9 @@ import { PLATFORM_IDS, type PlatformId } from '../../platforms'
 import { DevicePicker, newPick, pickRefusal, resolvePick, type DevicePick } from './device-picker'
 import { readDuration, rollUpByDevice, runsOf, sessionReport, type DeviceRollup } from '../../warmup-report'
 import { phoneQueueStatus, queueCounts, type PhoneQueueStatus } from '../../warmup-queue'
-import { deviceName, listDevices, listGroups, listStopMarkers, listStopMarkerInfo, listHolds, setGroupHeld, skipWarmupPhone, listWarmupRows, partlyStopped, pickHost, platformLabel, deleteWarmupRun, retryWarmupRun, runMember, runWarmupAgain, setSessionStopped, listAllWarmupRows, stoppedNewestFrom, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
+import { deviceName, listDevices, listGroups, listStopMarkers, listStopMarkerInfo, listHolds, listAccountProblems, setGroupHeld, skipWarmupPhone, listWarmupRows, partlyStopped, pickHost, platformLabel, deleteWarmupRun, retryWarmupRun, runMember, runWarmupAgain, setSessionStopped, listAllWarmupRows, stoppedNewestFrom, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
 import type { StopMarker } from '../../session-control'
+import { AccountAlerts } from './account-alerts'
 
 /**
  * The Warm-up screen (plan 900 D5, wave 4).
@@ -287,6 +288,7 @@ export function WarmupPanel({ refreshKey, onOpen, onNew }: { refreshKey: number;
 
   return (
     <div className="flex flex-col gap-2">
+      <AccountAlerts refreshKey={refreshKey + reloadKey} />
       <LiveLine moving={moving} updatedAt={updatedAt} now={now} />
       <div className="overflow-hidden rounded-inner border border-line">
       <Table>
@@ -812,9 +814,11 @@ function QueueState({ status }: { status: PhoneQueueStatus }): ReactElement {
               ? ['ready · waits for Play', 'text-faint']
               : status.kind === 'paused'
                 ? ['paused', 'text-faint']
-                : status.failed > 0
-                  ? [`done · ${status.failed} failed`, 'text-bad']
-                  : ['done', 'text-ok']
+                : status.kind === 'account'
+                  ? [`waiting · ${status.platform} account needs a person`, 'text-warn']
+                  : status.failed > 0
+                    ? [`done · ${status.failed} failed`, 'text-bad']
+                    : ['done', 'text-ok']
   return <span className={cn('text-[12px]', tone)}>{text}</span>
 }
 
@@ -1247,6 +1251,13 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
       .then(setHolds)
       .catch(() => {})
   }, [refresh, tick])
+  /* Accounts that need a person (0.64.0), as `deviceId:platform`. */
+  const [accounts, setAccounts] = useState<ReadonlySet<string>>(new Set())
+  useEffect(() => {
+    listAccountProblems()
+      .then((list) => setAccounts(new Set(list.map((p) => `${p.deviceId}:${p.platform}`))))
+      .catch(() => {})
+  }, [refresh, tick])
 
   /* A second hand for "updated 12s ago" and the elapsed counter — cheap, and never a fetch. */
   useEffect(() => {
@@ -1328,6 +1339,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
       now: Math.floor(now / 1000),
       startGapSec: group?.warmup?.startGapSec ?? [20, 60],
       runKey,
+      accountBlocked: new Set(['tiktok', 'instagram', 'youtube'].filter((platform) => accounts.has(`${deviceId}:${platform}`))),
     })
   }
 
@@ -1361,6 +1373,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
   return (
     <div className="flex flex-col gap-3">
       {header}
+      <AccountAlerts refreshKey={refresh + tick} />
 
       {/*
         The runs of this session, and what can be done to the one on screen.
@@ -1476,7 +1489,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
                         <TableCell />
                         <TableCell colSpan={5}>
                           <PhaseDetail device={device} phases={phases} />
-                          {group !== null && shown !== null && ['queued', 'blocked', 'held', 'ready', 'paused'].includes(statusOf(device.deviceId).kind) ? (
+                          {group !== null && shown !== null && ['queued', 'blocked', 'held', 'ready', 'paused', 'account'].includes(statusOf(device.deviceId).kind) ? (
                             <SkipPhone group={group} runId={shown.runId} deviceId={device.deviceId} onDone={() => setRefresh((n) => n + 1)} />
                           ) : null}
                         </TableCell>

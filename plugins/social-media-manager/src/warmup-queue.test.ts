@@ -201,3 +201,25 @@ describe('phoneQueueStatus — what the State column says', () => {
     expect(phoneQueueStatus({ ...base, deviceId: 'a', rows: [row] })).toEqual({ kind: 'done', failed: 1 })
   })
 })
+
+describe('an account that needs a person', () => {
+  test('its row is passed over and named; the rest of the run carries on', () => {
+    const rows: QueueRow[] = [{ ...waitingRow('signed-out', 0), platform: 'tiktok' }, { ...waitingRow('fine', 1), platform: 'tiktok' }]
+    const plan = planAdmissions({
+      rows,
+      devices: fleet(online('signed-out'), online('fine')),
+      holding: new Set(),
+      now: NOW,
+      settings: NO_GAP,
+      runKey: 'g:r',
+      accountBlocked: (row) => row.deviceId === 'signed-out' && row.platform === 'tiktok',
+    })
+    expect(plan.admit.map((r) => r.deviceId)).toEqual(['fine'])
+    expect(plan.blocked.get('signed-out')).toBe('account')
+  })
+
+  test('the State column names the platform', () => {
+    const rows: QueueRow[] = [{ ...waitingRow('a', 0), platform: 'instagram' }]
+    expect(phoneQueueStatus({ deviceId: 'a', rows, online: true, run: 'running', held: false, now: NOW, startGapSec: [20, 60], runKey: 'g:r', accountBlocked: new Set(['instagram']) })).toEqual({ kind: 'account', platform: 'instagram' })
+  })
+})

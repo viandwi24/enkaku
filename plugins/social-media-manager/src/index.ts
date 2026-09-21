@@ -24,6 +24,7 @@ import { RECAP_CONCURRENCY_DEFAULT, RECAP_PREFIX, RECAP_SETTINGS_KEY, RecapRowSc
 import { planRecapTick } from './recap-tick'
 import { HOLD_PREFIX, POST_RUN, STOP_PREFIX, holdOf, stopKey, stoppedRunOf, type StopMarker } from './session-control'
 import { postSessionIdle, warmupRunIdle } from './session-idle'
+import { ACCOUNT_PROBLEM_PREFIX, AccountProblemSchema, accountKey, accountProblemOf, accountProblemText, type AccountProblem } from './account-status'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
 import { WARMUP_PREFIX, WarmupRowSchema, isPermanentDispatchFailure, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRow } from './warmup-rows'
 import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
@@ -1699,7 +1700,7 @@ function warmupGapsFor(run: WarmupRow): [number, number] {
  */
 async function runWarmupPass(
   ctx: PluginServiceContext,
-  input: { fleet: z.infer<typeof DeviceListOutput>; names: Map<string, string>; claimed: ReadonlySet<string>; now: number; stopped: ReadonlySet<string>; groups: ReadonlyMap<string, Group> },
+  input: { fleet: z.infer<typeof DeviceListOutput>; names: Map<string, string>; claimed: ReadonlySet<string>; now: number; stopped: ReadonlySet<string>; groups: ReadonlyMap<string, Group>; accounts: Map<string, AccountProblem> },
 ): Promise<Set<string>> {
   /*
     The phones this pass actually sent work to. Returned so the recap pass that
@@ -1774,6 +1775,7 @@ async function runWarmupPass(
           settledAt: input.now,
         })
       }
+      if (settled.state === 'failed') await noteAccountProblem(ctx, input.accounts, run.deviceId, run.platform, settled.error, input.now)
       changed = true
     }
     if (!changed) continue
@@ -1859,6 +1861,7 @@ async function runWarmupPass(
   for (const [key, rows] of byQueue) {
     const settings = input.groups.get((rows[0] as WarmupRow).groupId)?.warmup ?? null
     const queue = planAdmissions({
+      accountBlocked: (row) => row.platform !== null && row.platform !== undefined && input.accounts.has(`${row.deviceId}:${row.platform}`),
       held: (deviceId) => {
         const g = deviceGroup.get(deviceId)
         return holds.has('*') || (g !== null && g !== undefined && holds.has(`${key}:${g}`))
@@ -2090,6 +2093,46 @@ async function heldGroups(ctx: PluginServiceContext): Promise<Set<string>> {
     out.add('*')
   }
   return out
+}
+
+/** Every account needing a person, by `deviceId:platform` (0.64.0, `account-status.ts`). */
+async function readAccountProblems(ctx: PluginServiceContext): Promise<Map<string, AccountProblem>> {
+  const out = new Map<string, AccountProblem>()
+  try {
+    let cursor: string | null = null
+    do {
+      const opts: { prefix: string; limit: number; cursor?: string } = { prefix: ACCOUNT_PROBLEM_PREFIX, limit: 500 }
+      if (cursor !== null) opts.cursor = cursor
+      const page = await ctx.storage.global.list(opts)
+      for (const entry of page.items) {
+        const parsed = AccountProblemSchema.safeParse(entry.value)
+        if (parsed.success) out.set(`${parsed.data.deviceId}:${parsed.data.platform}`, parsed.data)
+      }
+      cursor = page.nextCursor
+    } while (cursor !== null)
+  } catch (err) {
+    ctx.log.warn('could not read the accounts that need a person — sending as if none did this tick', { error: messageOf(err) })
+  }
+  return out
+}
+
+/**
+ * Record an account that needs a person, when a failure just SETTLED says so. Only on the
+ * settling tick, never on a re-read of an old failure — otherwise "Signed in" would be undone on the
+ * next tick by the very failure it answered.
+ */
+async function noteAccountProblem(ctx: PluginServiceContext, problems: Map<string, AccountProblem>, deviceId: string, platform: string | null, error: string | null, now: number): Promise<void> {
+  if (platform === null) return
+  const found = accountProblemOf(platform, error)
+  if (found === null || problems.has(`${deviceId}:${platform}`)) return
+  const problem: AccountProblem = { version: 1, deviceId, platform, kind: found.kind, account: found.account, at: now, reason: (error ?? '').slice(0, 400) }
+  try {
+    await ctx.storage.global.set(accountKey(deviceId, platform), problem)
+    problems.set(`${deviceId}:${platform}`, problem)
+    ctx.log.warn('an account needs a person — nothing more goes to it until it is marked signed in', { deviceId, platform, kind: found.kind, account: found.account })
+  } catch (err) {
+    ctx.log.warn('could not record an account that needs a person', { deviceId, platform, error: messageOf(err) })
+  }
 }
 
 async function readGroups(ctx: PluginServiceContext): Promise<Map<string, Group>> {
@@ -2384,7 +2427,7 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
   if (listed.items.length === 0) {
     // No posts is not no work: a warm-up session runs on its own rows.
     const allGroups = await readGroups(ctx)
-    const warmed = await runWarmupPass(ctx, { fleet, names, claimed: new Set(), now: Math.floor(Date.now() / 1000), stopped: stoppedIds(allGroups), groups: allGroups })
+    const warmed = await runWarmupPass(ctx, { fleet, names, claimed: new Set(), now: Math.floor(Date.now() / 1000), stopped: stoppedIds(allGroups), groups: allGroups, accounts: await readAccountProblems(ctx) })
     await runRecapPass(ctx, { fleet, names, claimed: warmed, now: Math.floor(Date.now() / 1000) })
     return
   }
@@ -2418,6 +2461,8 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     both decide there was room for one more.
   */
   const groups = await readGroups(ctx)
+  /** Accounts that need a person (0.64.0) — read once, honoured by posts and warm-ups alike. */
+  const accounts = await readAccountProblems(ctx)
   /** Sessions the operator stopped. Read once, honoured by both halves of the tick. */
   const stopped = stoppedIds(groups)
   /*
@@ -2522,6 +2567,15 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
       nothing new to dispatch would otherwise never be stored at all.
     */
     const reconciled = await reconcilePost(ctx, post)
+    if (reconciled !== null) {
+      // A failure that settled on THIS tick, saying the account needs a person (0.64.0).
+      for (const id of reconciled.platforms) {
+        const before = new Map((post.dispatch[id]?.attempts ?? []).map((a) => [a.jobId, a.state]))
+        for (const attempt of reconciled.dispatch[id]?.attempts ?? []) {
+          if (attempt.state === 'failed' && before.get(attempt.jobId) === 'queued') await noteAccountProblem(ctx, accounts, attempt.deviceId, id, attempt.error, Math.floor(Date.now() / 1000))
+        }
+      }
+    }
     /*
       Then bring the two DISPLAY fields up to date — the phone names and the
       summary line — on whatever the reconciler left behind. Folded into the
@@ -2653,7 +2707,33 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
       if (bare.length === post.platforms.length) continue
     }
     // Only the platforms that have something to post are planned; the held ones keep their note.
-    const planned: Post = bare.length > 0 ? { ...post, platforms: post.platforms.filter((id) => !bare.includes(id)) } : post
+    let planned: Post = bare.length > 0 ? { ...post, platforms: post.platforms.filter((id) => !bare.includes(id)) } : post
+
+    /*
+      A platform whose account on this row's phone needs a person is held, with the reason, and never
+      sent (0.64.0) — the next video would only fail the same way. "Signed in" on the page clears it.
+    */
+    const owner = post.assignedDeviceId
+    const heldByAccount = owner === null ? [] : planned.platforms.filter((id) => accounts.has(`${owner}:${id}`) && stateFor(post, id).state === 'pending')
+    if (owner !== null && heldByAccount.length > 0) {
+      const dispatch: Post['dispatch'] = { ...post.dispatch }
+      let changed = false
+      for (const id of heldByAccount) {
+        const note = `Waiting: ${accountProblemText(accounts.get(`${owner}:${id}`) as AccountProblem)}`
+        const state = stateFor(post, id)
+        if (state.note === note) continue
+        dispatch[id] = withSummary({ ...state, note })
+        changed = true
+      }
+      if (changed) {
+        const written = await ctx.storage.global.setIfVersion(entry.key, { ...post, dispatch }, entry.version)
+        if (!written) continue
+        entry.version += 1
+        post = { ...post, dispatch }
+      }
+      planned = { ...planned, platforms: planned.platforms.filter((id) => !heldByAccount.includes(id)) }
+      if (planned.platforms.length === 0) continue
+    }
 
     /*
       A group row waits for two things before it may send: its own turn
@@ -2803,7 +2883,7 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     const verdict = postSessionIdle(posts, (post, id) => {
       // A platform this build does not know has no phone that could take it.
       const platform = PLATFORMS.find((candidate) => candidate.id === id)
-      return platform !== undefined && phonesFor(post, platform, fleet.items).carriers.some((d) => d.status === 'online')
+      return platform !== undefined && phonesFor(post, platform, fleet.items).carriers.some((d) => d.status === 'online' && !accounts.has(`${d.id}:${id}`))
     }, pauseAt)
     if (!verdict.idle || verdict.reason === null) continue
     if (await autoPause(ctx, groupId, POST_RUN, verdict.reason, pauseAt)) {
@@ -2813,7 +2893,7 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
   }
 
   // Last, and with the post pass's claims: posting is the higher-value work.
-  const warmed = await runWarmupPass(ctx, { fleet, names, claimed, now: Math.floor(Date.now() / 1000), stopped, groups })
+  const warmed = await runWarmupPass(ctx, { fleet, names, claimed, now: Math.floor(Date.now() / 1000), stopped, groups, accounts })
   /*
     And the recap after THAT, with both sets of claims. A recap read is the
     least urgent thing a phone can be asked to do — the numbers it collects are
@@ -3005,6 +3085,15 @@ export default definePlugin({
     are considered in the order Start gave them. A session's video no longer fails itself after 45
     minutes offline: it waits for its phone, the session pauses itself when every phone with work
     left is offline, and Play is the way back. Post sessions have Pause (graceful) beside Stop.
+
+    Accounts that need a person (`account-status.ts`). The same day twelve TikTok accounts were
+    signed out and an Instagram account was held behind "confirm you are human", and every later
+    video and warm-up activity for those phones went out and failed the same way. The first such
+    failure — read from the script's own sentence as it settles — now records
+    `acct:<deviceId>:<platform>`; the router sends nothing more on that platform to that phone (a
+    post's platform waits with the reason, a warm-up row is passed over), a session whose phones are
+    all offline or all held that way pauses itself, and the pages list the accounts with a "Signed
+    in" button that clears them.
   */
   version: '0.64.0',
   icon: 'upload',

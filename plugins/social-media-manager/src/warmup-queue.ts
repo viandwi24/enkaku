@@ -57,9 +57,10 @@ export interface QueueRow {
   steps: readonly QueueStep[]
   queueSeq?: number | null
   admittedAt?: number | null
+  platform?: string | null
 }
 
-export type BlockReason = 'offline' | 'busy' | 'earlier-phase' | 'held'
+export type BlockReason = 'offline' | 'busy' | 'earlier-phase' | 'held' | 'account'
 
 /** Anything left for this row to do. */
 export function hasWork(row: QueueRow): boolean {
@@ -153,6 +154,8 @@ export function planAdmissions<R extends QueueRow>(input: {
   runKey: string
   /** Is this phone's device group paused within the run (`hold:` key)? Absent means none is. */
   held?: (deviceId: string) => boolean
+  /** Does this row's account on its phone need a person (`account-status.ts`)? */
+  accountBlocked?: (row: R) => boolean
 }): AdmissionPlan<R> {
   const { rows, devices, now, settings, runKey } = input
   const holding = new Set(input.holding)
@@ -174,6 +177,10 @@ export function planAdmissions<R extends QueueRow>(input: {
     }
     if (input.held?.(row.deviceId) === true) {
       blocked.set(row.deviceId, 'held')
+      continue
+    }
+    if (input.accountBlocked?.(row) === true) {
+      blocked.set(row.deviceId, 'account')
       continue
     }
     const device = devices.get(row.deviceId)
@@ -245,6 +252,7 @@ export type PhoneQueueStatus =
   | { kind: 'running'; phase: number }
   | { kind: 'queued'; position: number }
   | { kind: 'blocked'; reason: 'offline' | 'resting' }
+  | { kind: 'account'; platform: string }
   | { kind: 'held' }
   | { kind: 'ready' }
   | { kind: 'paused' }
@@ -260,6 +268,8 @@ export function phoneQueueStatus(input: {
   now: number
   startGapSec: readonly [number, number]
   runKey: string
+  /** Platforms whose account on this phone needs a person. */
+  accountBlocked?: ReadonlySet<string>
 }): PhoneQueueStatus {
   const own = input.rows.filter((row) => row.deviceId === input.deviceId).sort((a, b) => a.phase - b.phase)
   const running = own.find(isRunning)
@@ -272,6 +282,7 @@ export function phoneQueueStatus(input: {
   if (input.run === 'ready') return { kind: 'ready' }
   if (input.run === 'paused') return { kind: 'paused' }
   if (input.held) return { kind: 'held' }
+  if (next.platform !== null && next.platform !== undefined && input.accountBlocked?.has(next.platform) === true) return { kind: 'account', platform: next.platform }
   if (!input.online) return { kind: 'blocked', reason: 'offline' }
   const earlier = own.filter((row) => row.phase < next.phase)
   const settled = Math.max(0, ...earlier.flatMap((row) => row.steps.map((step) => step.settledAt ?? 0)))

@@ -66,6 +66,7 @@ import {
   autoPauseOf,
 } from '../shared'
 import { AutoStatus, BulkProgress, ReadinessNote, isWorking, stateOf, useAutoCaptionSetup, useBulkRun, type AutoState } from './autocaption-ui'
+import { AccountAlerts } from './account-alerts'
 
 /**
  * The watching half of the screen, in two places: the **Sessions** tab (every
@@ -928,6 +929,7 @@ export function SessionsPanel({
      * about the window instead.
      */
     <div className="@container flex flex-col gap-3">
+      <AccountAlerts refreshKey={refreshKey} />
       {error !== null && data !== null ? <StaleNotice error={error} /> : null}
 
       {loading && data === null ? (
