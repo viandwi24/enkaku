@@ -5,6 +5,7 @@ import { GROUP_PREFIX, GroupSchema, WarmupSettingsSchema, DEFAULT_WARMUP_KEYWORD
 import { PLATFORM_IDS, PlatformIdSchema, type PlatformId } from './platforms'
 import { WarmupTargetSchema } from './warmup-target'
 import { launchWarmupRun } from './warmup-launch'
+import { stopKey, type StopMarker } from './session-control'
 
 /**
  * Start a warm-up session: draw the plan once, write a row per phone.
@@ -87,6 +88,25 @@ const settingsParams = {
     .describe('How often a phone opens a comment sheet, reads it and closes it. It never types.')
     .meta(ui({ title: 'Comment chance' })),
   keywordBoost: z.number().min(1).max(10).default(3).describe('How much a keyword match raises the like and watch chance.').meta(ui({ title: 'Keyword boost' })),
+  /**
+   * Start the run now, or leave it READY for the operator to press Play (0.64.0). A session made
+   * from the page is looked at before it goes; a schedule has nobody to press anything.
+   */
+  startNow: z
+    .boolean()
+    .default(false)
+    .describe('Start sending activities straight away. Off leaves the run ready, waiting for Play.')
+    .meta(ui({ title: 'Start now' })),
+  maxParallel: z
+    .number()
+    .int()
+    .min(1)
+    .max(500)
+    .default(8)
+    .describe('How many phones warm up at the same time. The rest wait in a queue and go first-in first-out as places free up.')
+    .meta(ui({ title: 'Phones at once' })),
+  startGapMinSec: z.number().int().min(0).max(3_600).default(20).describe('Two phones never start closer together than a random gap between these two.').meta(ui({ title: 'Start gap min (s)' })),
+  startGapMaxSec: z.number().int().min(0).max(3_600).default(60).describe('The other end of that range.').meta(ui({ title: 'Start gap max (s)' })),
   sequenceMode: z
     .enum(['jobs', 'workflow'])
     .default('jobs')
@@ -221,6 +241,8 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       phases: ctx.params.phases,
       like: { chance: ctx.params.likeChance, commentChance: ctx.params.commentChance, keywordBoost: ctx.params.keywordBoost },
       sequenceMode: ctx.params.sequenceMode,
+      maxParallel: ctx.params.maxParallel,
+      startGapSec: [Math.min(ctx.params.startGapMinSec, ctx.params.startGapMaxSec), Math.max(ctx.params.startGapMinSec, ctx.params.startGapMaxSec)],
     })
 
     /* Already made? See `dedupeMinutes`. */
@@ -276,8 +298,9 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       lastRunAt: now,
     })
     await ctx.storage.global.set(groupKeyFor(groupId), group)
+    if (!ctx.params.startNow) await ctx.storage.global.set(stopKey(groupId, launched.runId), { version: 1, at: now, by: 'ready', reason: '' } satisfies StopMarker)
 
-    ctx.log.info('warm-up session made and started', { groupId, runId: launched.runId, title: group.title })
+    ctx.log.info(ctx.params.startNow ? 'warm-up session made and started' : 'warm-up session made — ready, waiting for Play', { groupId, runId: launched.runId, title: group.title })
     return { groupId, title: group.title, devices: launched.devices, activities: launched.activities, phases: launched.phases, skipped: launched.skipped, outOfScope: launched.outOfScope, summary: launched.summary, reused: false }
   },
 }

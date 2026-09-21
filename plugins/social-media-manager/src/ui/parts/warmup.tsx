@@ -15,6 +15,7 @@ import {
   Input,
   LoadingRows,
   PauseIcon,
+  SquareIcon,
   PlayIcon,
   PlusIcon,
   Spinner,
@@ -33,6 +34,7 @@ import {
 import { PLATFORM_IDS, type PlatformId } from '../../platforms'
 import { DevicePicker, newPick, pickRefusal, resolvePick, type DevicePick } from './device-picker'
 import { readDuration, rollUpByDevice, runsOf, sessionReport, type DeviceRollup } from '../../warmup-report'
+import { queueCounts } from '../../warmup-queue'
 import { deviceName, listDevices, listGroups, listStopMarkers, listStopMarkerInfo, listWarmupRows, partlyStopped, pickHost, platformLabel, deleteWarmupRun, retryWarmupRun, runMember, runWarmupAgain, setSessionStopped, listAllWarmupRows, stoppedNewestFrom, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
 import type { StopMarker } from '../../session-control'
 
@@ -355,6 +357,9 @@ interface Draft {
   commentChance: number
   keywordBoost: number
   sequenceMode: 'jobs' | 'workflow'
+  maxParallel: number
+  startGapMinSec: number
+  startGapMaxSec: number
 }
 
 const DEFAULT_DRAFT: Draft = {
@@ -372,6 +377,9 @@ const DEFAULT_DRAFT: Draft = {
   commentChance: 0.05,
   keywordBoost: 3,
   sequenceMode: 'jobs',
+  maxParallel: 8,
+  startGapMinSec: 20,
+  startGapMaxSec: 60,
 }
 
 function NumberField({ label, hint, value, onChange, step = 1, min, max }: { label: string; hint?: string; value: number; onChange: (n: number) => void; step?: number; min?: number; max?: number }): ReactElement {
@@ -510,6 +518,11 @@ export function NewWarmupForm({ onCreated }: { onCreated: (groupId: string | nul
           commentChance: draft.commentChance,
           keywordBoost: draft.keywordBoost,
           sequenceMode: draft.sequenceMode,
+          maxParallel: draft.maxParallel,
+          startGapMinSec: draft.startGapMinSec,
+          startGapMaxSec: draft.startGapMaxSec,
+          // Made READY: the run waits in its queue until Play is pressed on its page.
+          startNow: false,
         },
         host.id,
         AddWarmupResultSchema,
@@ -627,6 +640,9 @@ export function NewWarmupForm({ onCreated }: { onCreated: (groupId: string | nul
             </label>
 
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <NumberField label="Phones at once" hint="the rest wait their turn, first in first out" value={draft.maxParallel} onChange={(n) => set('maxParallel', n)} min={1} max={500} />
+              <NumberField label="Start gap min (s)" hint="between one phone starting and the next" value={draft.startGapMinSec} onChange={(n) => set('startGapMinSec', n)} min={0} max={3600} />
+              <NumberField label="Start gap max (s)" value={draft.startGapMaxSec} onChange={(n) => set('startGapMaxSec', n)} min={0} max={3600} />
               <NumberField label="Platforms per phone" hint="3 covers every one it carries" value={draft.phases} onChange={(n) => set('phases', n)} min={1} max={3} />
               <NumberField label="Watch amount" hint="0.5 short, 2 long" value={draft.amount} onChange={(n) => set('amount', n)} step={0.1} min={0.2} max={3} />
               <NumberField label="Gap min (s)" value={draft.gapMinSec} onChange={(n) => set('gapMinSec', n)} min={0} max={3600} />
@@ -750,11 +766,14 @@ function RunPicker({
   history,
   shownId,
   newestId,
+  markerOf,
   onPick,
 }: {
   history: { runId: string; plannedAt: number; rows: WarmupRow[]; report: { phones: number; successRate: number | null; finished: boolean } }[]
   shownId: string | null
   newestId: string | null
+  /** The run's stop key, if it has one — `ready` for a run never started (0.64.0). */
+  markerOf: (runId: string) => StopMarker | null
   onPick: (runId: string) => void
 }): ReactElement | null {
   if (history.length === 0) return null
@@ -762,13 +781,14 @@ function RunPicker({
     <div className="flex flex-wrap items-center gap-1.5">
       {history.map((entry) => {
         const on = entry.runId === shownId
-        const stopped = entry.rows.some((row) => row.stopped)
+        const marker = markerOf(entry.runId)
+        const stopped = marker !== null || entry.rows.some((row) => row.stopped)
         return (
           <Button key={entry.runId} size="sm" variant={on ? 'default' : 'outline'} onClick={() => onPick(entry.runId)}>
             {entry.plannedAt === 0 ? 'earlier run' : relativeTime(entry.plannedAt * 1000)}
             {entry.runId === newestId && history.length > 1 ? <span className="ml-1 text-[11px] text-faint">newest</span> : null}
             <span className={cn('ml-1.5 text-[11px]', on ? '' : 'text-faint')}>
-              {stopped ? 'stopped' : entry.report.successRate === null ? (entry.report.finished ? 'nothing ran' : 'running') : `${Math.round(entry.report.successRate * 100)}%`}
+              {marker?.by === 'ready' ? 'ready' : stopped ? 'paused' : entry.report.successRate === null ? (entry.report.finished ? 'nothing ran' : 'running') : `${Math.round(entry.report.successRate * 100)}%`}
             </span>
           </Button>
         )
@@ -788,6 +808,10 @@ function RunPicker({
 async function stopRun(group: Group, runId: string): Promise<void> {
   const done = await setSessionStopped(group, 'stop', runId)
   if (done.failed > 0) throw new Error(`${done.failed} row${done.failed === 1 ? '' : 's'} could not be updated. Nothing more goes out for this run; press Stop again to finish tidying it.`)
+}
+
+async function pauseRun(group: Group, runId: string): Promise<void> {
+  await setSessionStopped(group, 'pause', runId)
 }
 
 async function startRun(group: Group, runId: string): Promise<void> {
@@ -835,25 +859,44 @@ function RunControls({ group, runId, rows, markers, pause, onDone }: { group: Gr
     )
   }
 
+  /*
+    Where the run's queue stands (0.64.0): the one line that says why phones are or are not moving.
+    A run is READY (made, never started), PAUSED (by the operator, or by the router with its reason)
+    or RUNNING with so many of its places taken and so many phones waiting their turn.
+  */
+  const counts = queueCounts(rows)
+  const maxParallel = group.warmup?.maxParallel ?? 8
+  const status = !stopped
+    ? `Running ${Math.min(counts.running, maxParallel)}/${maxParallel} at once · ${counts.waiting} waiting · ${counts.over} done`
+    : pause?.by === 'ready'
+      ? `Ready — ${counts.waiting} phone${counts.waiting === 1 ? '' : 's'} queued, ${maxParallel} at once. Nothing is sent until you press Play.`
+      : pause?.by === 'auto' && pause.reason !== ''
+        ? pause.reason
+        : `Paused — ${counts.running} still finishing, ${counts.waiting} waiting. Press Play to carry on.`
+
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      {/* A pause the router made itself (0.63.0) says why, or it reads as a Stop nobody pressed. */}
-      {stopped && pause?.by === 'auto' && pause.reason !== '' ? (
-        <span className="flex items-center gap-1 text-[12px] text-warn">
-          <WarningIcon aria-hidden />
-          {pause.reason}
-        </span>
-      ) : null}
+      <span className={`flex items-center gap-1 text-[12px] ${stopped && pause?.by === 'auto' ? 'text-warn' : 'text-dim'}`}>
+        {stopped && pause?.by === 'auto' ? <WarningIcon aria-hidden /> : null}
+        {status}
+      </span>
       {stopped ? (
-        <Button size="sm" disabled={busy} onClick={() => act('start', () => startRun(group, runId), 'This run was started again — the router sends the rest on its next pass', 'Could not start this run again')}>
+        <Button size="sm" disabled={busy} onClick={() => act('start', () => startRun(group, runId), 'Playing — phones go out of the queue one at a time, up to the cap', 'Could not start this run')}>
           <PlayIcon aria-hidden />
-          Start again
+          Play
         </Button>
-      ) : (
+      ) : null}
+      {stopped ? null : (
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => act('pause', () => pauseRun(group, runId), 'Paused — nothing new goes out; what is running finishes', 'Could not pause this run')}>
+          <PauseIcon aria-hidden />
+          Pause
+        </Button>
+      )}
+      {stopped && pause?.by === 'ready' ? null : (
         <ConfirmDialog
           trigger={
             <Button size="sm" variant="outline" disabled={busy}>
-              <PauseIcon aria-hidden />
+              <SquareIcon aria-hidden />
               Stop
             </Button>
           }
@@ -1147,6 +1190,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
 
   const devices = useMemo(() => sortByNumber(rollUpByDevice(rows), byId), [rows, byId])
   const report = shown?.report ?? null
+  const queue = useMemo(() => queueCounts(shown?.rows ?? []), [shown])
   const phases = useMemo(() => (rows.length === 0 ? 1 : Math.max(1, ...rows.map((row) => row.phase + 1))), [rows])
   const working = devices.filter((device) => !device.idle)
   const idle = devices.filter((device) => device.idle)
@@ -1189,7 +1233,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
         would leave the operator guessing which run they aimed at.
       */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <RunPicker history={history} shownId={shown?.runId ?? null} newestId={history[0]?.runId ?? null} onPick={setOpenRun} />
+        <RunPicker history={history} shownId={shown?.runId ?? null} newestId={history[0]?.runId ?? null} markerOf={(runId) => (group === null ? null : (markerInfo.get(`${group.id}:${runId}`) ?? null))} onPick={setOpenRun} />
         {group !== null && shown !== null ? <RunControls group={group} runId={shown.runId} rows={shown.rows} markers={markers} pause={markerInfo.get(`${group.id}:${shown.runId}`) ?? null} onDone={() => setRefresh((n) => n + 1)} /> : null}
       </div>
 
@@ -1211,10 +1255,10 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
           hint={report.elapsedSec === null ? 'not started' : report.finished ? 'finished' : 'running'}
         />
         <Stat
-          /* The rows know when the next activity is DUE. They do not know how long a script takes, so this is never worded as a finish time. */
-          label="Last due"
-          value={report.lastDueInSec === null ? '—' : report.lastDueInSec === 0 ? 'now' : `in ${readDuration(report.lastDueInSec)}`}
-          hint={report.counts.pending + report.counts.queued === 0 ? 'nothing waiting' : `${report.counts.pending + report.counts.queued} waiting`}
+          /* The queue (0.64.0): a phone's times are drawn when it is let out, so "when is the last one due" no longer has an answer before then. */
+          label="Queue"
+          value={`${queue.running} running · ${queue.waiting} waiting`}
+          hint={`${group?.warmup?.maxParallel ?? 8} at once, first in first out`}
         />
       </Card>
 

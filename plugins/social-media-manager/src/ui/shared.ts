@@ -190,15 +190,23 @@ export const GroupSchema = z.looseObject({
   stopped: z.boolean().default(false),
   /** A warm-up session's settings; `null` on a post session. */
   warmup: z
-    .object({
+    /*
+      Loose (0.64.0): the page writes a group row back whole (Start clears `stopped`), and a plain
+      object here dropped every setting it did not name — `sequenceMode`, `like.commentChance`,
+      and now `maxParallel` — so a Start quietly reset them to the service's defaults.
+    */
+    .looseObject({
       keywords: z.array(z.string()).default([]),
       amount: z.number().default(1),
       gapSec: z.tuple([z.number(), z.number()]).default([8, 20]),
       startJitterSec: z.number().default(120),
       slot: z.number().default(0),
       phases: z.number().default(1),
-      like: z.object({ chance: z.number().default(0.1), keywordBoost: z.number().default(3) }).default({ chance: 0.1, keywordBoost: 3 }),
+      like: z.looseObject({ chance: z.number().default(0.1), keywordBoost: z.number().default(3) }).default({ chance: 0.1, keywordBoost: 3 }),
       styleWeights: z.record(z.string(), z.number()).default({}),
+      /** How many phones of a run warm up at once (0.64.0). */
+      maxParallel: z.number().default(8),
+      startGapSec: z.tuple([z.number(), z.number()]).default([20, 60]),
     })
     .nullable()
     .default(null),
@@ -288,7 +296,7 @@ export async function listWarmupRows(groupId: string): Promise<WarmupRow[]> {
  * SCHEDULE has to be able to do this, and a schedule can only run a script.
  */
 export async function runWarmupAgain(groupId: string, hostDeviceId: string): Promise<void> {
-  await runMember('smm/run-warmup@latest', { groupId, dedupeMinutes: 0 }, hostDeviceId)
+  await runMember('smm/run-warmup@latest', { groupId, dedupeMinutes: 0, startNow: false }, hostDeviceId)
 }
 
 /** A response whose body this caller has no use for. */
@@ -399,11 +407,26 @@ export function startOffsets(deviceIds: readonly string[], jitterSec: number, ra
  */
 export async function setSessionStopped(
   group: Group,
-  action: 'stop' | 'start',
+  action: 'stop' | 'start' | 'pause',
   runId?: string,
 ): Promise<{ cancelled: number; couldNotCancel: number; pulled: number; failed: number }> {
   const stop = action === 'stop'
   const now = Math.floor(Date.now() / 1000)
+
+  /*
+    PAUSE (0.64.0): the marker and nothing else. The router lets nothing new out of the run's queue
+    and sends nothing more, and every activity already on a phone is left to finish — nothing is
+    cancelled and no row is touched. Stop is the one that pulls work back.
+  */
+  if (action === 'pause' && group.kind === 'warmup') {
+    const rows = (await readAll(`warmup:${group.id}:`))
+      .map((row) => WarmupRowSchema.safeParse(row.value))
+      .filter((parsed) => parsed.success)
+      .map((parsed) => parsed.data as WarmupRow)
+    const target = runId ?? newestRunId(rows)
+    if (target !== null) await writeEntry(stopKey(group.id, target), { version: 1, at: now, by: 'operator', reason: '' } satisfies StopMarker)
+    return { cancelled: 0, couldNotCancel: 0, pulled: 0, failed: 0 }
+  }
 
   let cancelled = 0
   let couldNotCancel = 0
@@ -609,14 +632,22 @@ export function newestRunId(rows: readonly WarmupRow[]): string | null {
 export async function retryWarmupRun(groupId: string, runId: string): Promise<number> {
   const now = Math.floor(Date.now() / 1000)
   let requeued = 0
-  for (const row of await readAll(`warmup:${groupId}:`)) {
-    const parsed = WarmupRowSchema.safeParse(row.value)
-    if (!parsed.success || parsed.data.runId !== runId) continue
-    const again = retryFailedSteps(parsed.data, now)
+  const rows = (await readAll(`warmup:${groupId}:`))
+    .map((row) => ({ key: row.key, parsed: WarmupRowSchema.safeParse(row.value) }))
+    .filter((entry) => entry.parsed.success && (entry.parsed.data as WarmupRow).runId === runId)
+    .map((entry) => ({ key: entry.key, row: entry.parsed.data as WarmupRow }))
+  /*
+    A retried row goes to the BACK of its run's queue (0.64.0): it is let out again in turn, under the
+    run's cap, like any other waiting phone — never all at once the moment Retry is pressed.
+  */
+  let seq = Math.max(-1, ...rows.map((entry) => (typeof entry.row.queueSeq === 'number' ? entry.row.queueSeq : -1)))
+  for (const { key, row } of rows) {
+    const again = retryFailedSteps(row, now)
     if (again === null) continue
-    requeued += again.steps.filter((step) => step.state === 'pending').length - parsed.data.steps.filter((step) => step.state === 'pending').length
+    requeued += again.steps.filter((step) => step.state === 'pending').length - row.steps.filter((step) => step.state === 'pending').length
+    seq += 1
     /* Recomputed here, not left to the router: it only writes a row it CHANGES, so a stale `failed` would sit on screen until the activity was dispatched. */
-    await writeEntry(row.key, { ...withRunSummary(again), stopped: false })
+    await writeEntry(key, { ...withRunSummary(again), stopped: false, queueSeq: seq, admittedAt: null })
   }
   return requeued
 }

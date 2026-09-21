@@ -192,6 +192,14 @@ export const WarmupSettingsSchema = z.object({
    * a style off without removing it, so an operator can put it back.
    */
   styleWeights: z.record(z.string().min(1), z.number().min(0).max(10)).default({}),
+  /**
+   * How many phones of one run may be warming up at once (0.64.0, `warmup-queue.ts`). The rest wait
+   * their turn and go first-in first-out as places free up. Defaulted, so a session stored before it
+   * existed gets the cap too — which is the point: that is where the bursts came from.
+   */
+  maxParallel: z.number().int().min(1).max(500).default(8),
+  /** The gap between one phone starting and the next, drawn per start from this range, in seconds (0.64.0). */
+  startGapSec: z.tuple([z.number().int().min(0).max(3_600), z.number().int().min(0).max(3_600)]).default([20, 60]),
 })
 export type WarmupSettings = z.infer<typeof WarmupSettingsSchema>
 

@@ -114,9 +114,19 @@ export async function launchWarmupRun(
   let skipped = 0
   let phaseStart = now
   const all: WarmupRow[] = []
+  /*
+    The queue's order (0.64.0): a shuffle of the phones, drawn once for the run and shared by all of a
+    phone's phases, so the order is random — no phone is always first — and stays what it was.
+  */
+  const order = resolved.chosen.map((item) => item.id)
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[order[i], order[j]] = [order[j] as string, order[i] as string]
+  }
+  const queueSeq = new Map(order.map((id, i) => [id, i]))
   for (let phase = 0; phase < phases; phase++) {
     const assignments = planWarmup({ devices, settings, platforms, phase, nowMs: Date.now(), random: Math.random })
-    const rows = runsFromPlan({ groupId, runId, assignments, phase, startedAt: phaseStart, names, sequence: settings.sequenceMode })
+    const rows = runsFromPlan({ groupId, runId, assignments, phase, startedAt: phaseStart, names, sequence: settings.sequenceMode, queueSeq })
     let longest = 0
     for (const row of rows) {
       await ctx.storage.global.set(warmupRowKey(groupId, runId, phase, row.deviceId), row)

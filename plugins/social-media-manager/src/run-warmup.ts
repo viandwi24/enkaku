@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { GROUP_PREFIX, GroupSchema, groupKeyFor, isWarmup, slotFor, type Group } from './groups'
 import { launchWarmupRun } from './warmup-launch'
 import { describeTarget } from './warmup-target'
+import { stopKey, type StopMarker } from './session-control'
 
 /**
  * Start an existing warm-up session again — a new RUN, with its own progress
@@ -55,6 +56,15 @@ const params = z.object({
     .default(30)
     .describe('If this session was already started within this many minutes, do nothing. Guards a schedule aimed at many phones.')
     .meta(ui({ title: 'Skip if started in the last (min)' })),
+  /**
+   * Start the run now, or leave it READY for the operator to press Play (0.64.0). A session made
+   * from the page is looked at before it goes; a schedule has nobody to press anything.
+   */
+  startNow: z
+    .boolean()
+    .default(true)
+    .describe('Start sending activities straight away. Off leaves the run ready, waiting for Play.')
+    .meta(ui({ title: 'Start now' })),
 })
 
 const result = z.object({
@@ -124,6 +134,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     const launched = await launchWarmupRun(ctx, { groupId: group.id, settings, platforms: group.platforms, target: group.target, now })
 
     await ctx.storage.global.set(groupKeyFor(group.id), { ...group, lastRunAt: now, summary: launched.summary })
+    if (!ctx.params.startNow) await ctx.storage.global.set(stopKey(group.id, launched.runId), { version: 1, at: now, by: 'ready', reason: '' } satisfies StopMarker)
 
     ctx.log.info('warm-up session started again', { groupId: group.id, runId: launched.runId, target: describeTarget(group.target) })
     return {

@@ -27,6 +27,7 @@ import { postSessionIdle, warmupRunIdle } from './session-idle'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
 import { WARMUP_PREFIX, WarmupRowSchema, isPermanentDispatchFailure, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRow } from './warmup-rows'
 import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
+import { WARMUP_MAX_PARALLEL_DEFAULT, WARMUP_START_GAP_DEFAULT, admitRow, isAdmitted, isRunning, planAdmissions } from './warmup-queue'
 import { warmupSequenceDoc } from './warmup-workflow'
 import {
   POST_PREFIX,
@@ -1694,7 +1695,7 @@ function warmupGapsFor(run: WarmupRow): [number, number] {
  */
 async function runWarmupPass(
   ctx: PluginServiceContext,
-  input: { fleet: z.infer<typeof DeviceListOutput>; names: Map<string, string>; claimed: ReadonlySet<string>; now: number; stopped: ReadonlySet<string> },
+  input: { fleet: z.infer<typeof DeviceListOutput>; names: Map<string, string>; claimed: ReadonlySet<string>; now: number; stopped: ReadonlySet<string>; groups: ReadonlyMap<string, Group> },
 ): Promise<Set<string>> {
   /*
     The phones this pass actually sent work to. Returned so the recap pass that
@@ -1835,6 +1836,52 @@ async function runWarmupPass(
       ctx.log.info('paused a warm-up run: every phone with work left is offline', { groupId: first.groupId, runId: first.runId, phones: verdict.waiting })
     }
   }
+  /*
+    The queue (0.64.0, `warmup-queue.ts`). Each run lets out at most `maxParallel` of its rows, in
+    order, one start per drawn gap; only rows let out are sent anything. A phone holding an
+    unfinished item of ANY run takes no second one, which is what keeps one phone to one warm-up.
+  */
+  const holding = new Set<string>([...input.claimed, ...phonesInFlight(runs)])
+  for (const run of runs) if (isRunning(run)) holding.add(run.deviceId)
+  const byQueue = new Map<string, WarmupRow[]>()
+  for (const run of runs) {
+    const key = `${run.groupId}:${run.runId}`
+    const list = byQueue.get(key) ?? []
+    list.push(run)
+    byQueue.set(key, list)
+  }
+  for (const [key, rows] of byQueue) {
+    const settings = input.groups.get((rows[0] as WarmupRow).groupId)?.warmup ?? null
+    const queue = planAdmissions({
+      rows,
+      devices,
+      holding,
+      now: input.now,
+      settings: {
+        maxParallel: settings?.maxParallel ?? WARMUP_MAX_PARALLEL_DEFAULT,
+        startGapSec: settings?.startGapSec ?? WARMUP_START_GAP_DEFAULT,
+      },
+      runKey: key,
+    })
+    for (const row of queue.admit) {
+      const entry = entries.find((candidate) => candidate.run === row)
+      if (!entry) continue
+      const admitted = admitRow(entry.run, input.now)
+      try {
+        const written = await ctx.storage.global.setIfVersion(entry.key, admitted, entry.version)
+        if (written === null) continue
+        entry.version = written.version
+        entry.run = admitted
+        holding.add(admitted.deviceId)
+        ctx.log.info('let a warm-up phone out of the queue', { key: entry.key, running: queue.running, waiting: queue.waiting })
+      } catch (err) {
+        ctx.log.warn('could not let a warm-up phone out of the queue', { key: entry.key, error: messageOf(err) })
+      }
+    }
+  }
+  const liveKeys = new Set(runs.map((run) => `${run.groupId}:${run.runId}`))
+  runs = entries.map((entry) => entry.run).filter((run) => liveKeys.has(`${run.groupId}:${run.runId}`) && isAdmitted(run))
+
   const busy = new Set<string>([...input.claimed, ...phonesInFlight(runs)])
   const plan = planWarmupTick({ runs, devices, claimed: busy, now: input.now })
 
@@ -1959,11 +2006,6 @@ function stoppedIds(groups: ReadonlyMap<string, Group>): Set<string> {
   const out = new Set<string>()
   for (const group of groups.values()) if (group.stopped) out.add(group.id)
   return out
-}
-
-/** The same answer when the tick took the early exit and never read the groups for itself. */
-async function stoppedGroupIds(ctx: PluginServiceContext): Promise<Set<string>> {
-  return stoppedIds(await readGroups(ctx))
 }
 
 /**
@@ -2306,7 +2348,8 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
   }
   if (listed.items.length === 0) {
     // No posts is not no work: a warm-up session runs on its own rows.
-    const warmed = await runWarmupPass(ctx, { fleet, names, claimed: new Set(), now: Math.floor(Date.now() / 1000), stopped: await stoppedGroupIds(ctx) })
+    const allGroups = await readGroups(ctx)
+    const warmed = await runWarmupPass(ctx, { fleet, names, claimed: new Set(), now: Math.floor(Date.now() / 1000), stopped: stoppedIds(allGroups), groups: allGroups })
     await runRecapPass(ctx, { fleet, names, claimed: warmed, now: Math.floor(Date.now() / 1000) })
     return
   }
@@ -2685,7 +2728,7 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
   }
 
   // Last, and with the post pass's claims: posting is the higher-value work.
-  const warmed = await runWarmupPass(ctx, { fleet, names, claimed, now: Math.floor(Date.now() / 1000), stopped })
+  const warmed = await runWarmupPass(ctx, { fleet, names, claimed, now: Math.floor(Date.now() / 1000), stopped, groups })
   /*
     And the recap after THAT, with both sets of claims. A recap read is the
     least urgent thing a phone can be asked to do — the numbers it collects are
@@ -2840,7 +2883,30 @@ export default definePlugin({
     and fail every row on the first tick. And the page no longer drops fields the router keeps on a
     platform's state when it writes a row back — `waitingSince` was one, lost on every Stop.
   */
-  version: '0.63.0',
+  /*
+    0.64.0 — A WARM-UP RUN IS A QUEUE, AND NOTHING GOES UNTIL PLAY.
+
+    Production, 2026-09-21: eighteen phones of group PFB2 were plugged in at 17:53:54 and all eighteen
+    started a warm-up at 17:54:13. Their rows carried absolute times drawn that morning, every one had
+    fallen due while they were away, and a warm-up had no cap on how many ran together — the start
+    jitter was the only spread, long since spent. The owner asked for the other shape: *"per kelompok
+    misalnya 8 devices dulu jalan, kalau sudah satu selesai first in first out … langsung lanjut lagi
+    yang lain"*, and for a run that is started, paused and stopped by a person.
+
+    `warmup-queue.ts`: each row is an item in its run's queue. At most `maxParallel` (default 8) run at
+    once; the rest wait and go first-in first-out, one start per gap drawn from `startGapSec` (default
+    20-60 s); a phone that is offline or busy is passed over without holding up the rest; a phone's
+    next platform waits for its last one. Letting a row out re-times it from now, so no phone inherits
+    a backlog. Rows written before this carry neither new field and still go through the queue — the
+    cap applies to runs already on the farm, where the bursts came from.
+
+    A run made from the page is READY (`by: 'ready'` on its stop key) and sends nothing until Play; a
+    schedule's run starts at once. Pause lets what is running finish and sends nothing new; Stop pulls
+    work back as before. Retry failed puts a row at the back of the queue instead of sending it now.
+    The page's warm-up settings mirror is loose now: writing a session back used to drop every
+    setting it did not name (`sequenceMode`, `commentChance`), and would have dropped the cap.
+  */
+  version: '0.64.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

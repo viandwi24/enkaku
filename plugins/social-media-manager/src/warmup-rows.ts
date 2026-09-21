@@ -179,6 +179,14 @@ export const WarmupRowSchema = z.object({
    * report from them rather than from a record beside them.
    */
   stopped: z.boolean().default(false),
+  /**
+   * This row's place in its run's queue (0.64.0, `warmup-queue.ts`). Drawn once when the run is
+   * made, a shuffle of the phones, so the queue is random but stays the order it was. `null` on a
+   * row written before the queue existed.
+   */
+  queueSeq: z.number().int().nonnegative().nullable().default(null),
+  /** When the queue let this row out (0.64.0). `null` while it is still waiting its turn. */
+  admittedAt: z.number().int().nonnegative().nullable().default(null),
 })
 export type WarmupRow = z.infer<typeof WarmupRowSchema>
 
@@ -199,6 +207,8 @@ export function runsFromPlan(input: {
   startedAt: number
   names?: ReadonlyMap<string, string>
   sequence?: 'jobs' | 'workflow'
+  /** Each phone's place in the run's queue — the same for all of its phases. */
+  queueSeq?: ReadonlyMap<string, number>
 }): WarmupRow[] {
   const { groupId, runId, assignments, phase, startedAt, names } = input
   return assignments.map((assignment) => {
@@ -231,6 +241,8 @@ export function runsFromPlan(input: {
       state: steps.length === 0 ? 'skipped' : 'pending',
       summary: null,
       stopped: false,
+      queueSeq: input.queueSeq?.get(assignment.deviceId) ?? null,
+      admittedAt: null,
     }
     return withRunSummary(run)
   })

@@ -208,7 +208,11 @@ export const POST_RUN = 'post'
 export interface StopMarker {
   version: 1
   at: number
-  by: 'operator' | 'auto'
+  /**
+   * `operator` pressed Stop or Pause; `auto` is the router's own pause (`session-idle.ts`); `ready`
+   * is a run that was made and has not been started yet (0.64.0) — it waits for Play.
+   */
+  by: 'operator' | 'auto' | 'ready'
   reason: string
 }
 
@@ -217,7 +221,7 @@ export function stopMarkerOf(value: unknown): StopMarker {
   return {
     version: 1,
     at: typeof v.at === 'number' ? v.at : 0,
-    by: v.by === 'auto' ? 'auto' : 'operator',
+    by: v.by === 'auto' ? 'auto' : v.by === 'ready' ? 'ready' : 'operator',
     reason: typeof v.reason === 'string' ? v.reason : '',
   }
 }
