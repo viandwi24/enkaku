@@ -32,7 +32,7 @@ describe('the stored shape', () => {
       kind: 'post',
       warmup: null,
       stopped: false,
-      target: { mode: 'all', labels: [], groups: [], deviceIds: [], exceptLabels: [], exceptGroups: [], exceptDeviceIds: [] },
+      target: { mode: 'all', labels: [], groups: [], deviceIds: [], exceptLabels: [], exceptGroups: [], exceptDeviceIds: [], onlineOnly: false },
       lastRunAt: null,
     })
   })

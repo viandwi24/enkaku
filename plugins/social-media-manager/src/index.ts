@@ -2657,7 +2657,27 @@ export default definePlugin({
       3. **A recap is the least urgent work a phone can do.** `runRecapPass` runs after posting AND
          after warm-up, with both their claims, so a read can never take a phone from an upload.
   */
-  version: '0.60.0',
+  /*
+    0.61.0 — PACING, AND "ONLY THE PHONES THAT ARE CONNECTED".
+
+    Two things the owner found by running 0.60.0 on a real fleet the day it shipped.
+
+    **The recap opened every phone at once.** The dispatch loop sent a read to every online
+    phone in one router tick: *"sya di prod 73 devices itu langsung jalan semua serentak"*.
+    `planRecapTick` now holds at most `concurrency` reads in flight across the whole farm,
+    eight by default, in one `settings:recap` row. A CAP rather than a delay between batches —
+    a delay has to guess how long a read takes, while a cap frees a slot the moment a phone
+    answers.
+
+    **73 phones registered, 20 connected.** *"saya mau warm up cuman 20 ini doang"*. A warm-up
+    aimed at every phone wrote a row for all 73, and the 53 that were offline waited — which is
+    right, a warm-up has no deadline to miss — for ever, so the session never finished.
+    `onlineOnly` on the target leaves them out. A FLAG rather than a fifth targeting mode,
+    because "which phones" and "only the connected ones" are different questions and an
+    operator asks both; and resolved at each RUN, so a session started again tonight means
+    tonight's connected phones, not this morning's.
+  */
+  version: '0.61.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',

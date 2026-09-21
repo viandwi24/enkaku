@@ -132,6 +132,11 @@ const params = z.object({
   exceptDeviceIds: z.array(z.string().min(1)).max(500).default([]).describe('Left out whatever the choice above was.').meta(ui({ title: 'Except these phones' })),
   exceptLabels: z.array(z.string().min(1).max(60)).max(20).default([]).describe('Any phone carrying one of these is left out, whatever the choice above was.').meta(ui({ title: 'Except these labels' })),
   exceptGroups: z.array(z.string().min(1).max(60)).max(20).default([]).describe('Any phone in one of these is left out, whatever the choice above was.').meta(ui({ title: 'Except these device groups' })),
+  onlineOnly: z
+    .boolean()
+    .default(false)
+    .describe('Leave out every phone that is not connected right now. Worked out again each time this runs, so it means whoever is connected then.')
+    .meta(ui({ title: 'Connected phones only' })),
   /**
    * Minutes within which a warm-up of the same title is taken as already made.
    *
@@ -241,6 +246,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       exceptLabels: ctx.params.exceptLabels,
       exceptGroups: ctx.params.exceptGroups,
       exceptDeviceIds: ctx.params.exceptDeviceIds,
+      onlineOnly: ctx.params.onlineOnly,
     })
     const groupId = newGroupId(now)
     const platforms = ctx.params.platforms as PlatformId[]
