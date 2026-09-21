@@ -4,10 +4,11 @@ import youFixture from './__fixtures__/screen-you-sm-a075f-id.json'
 import homeFixture from './__fixtures__/screen-home-sm-a075f-id.json'
 import resultsFixture from './__fixtures__/screen-results-sm-a075f-id.json'
 import motoYou from './__fixtures__/screen-you.json'
-import { onYouPage, youTabOf } from './check-profile'
+import { accountNameOf, onYouPage, youTabOf } from './check-profile'
 import { BELL, homeTabOf, notificationsBellOf } from './check-notifications'
 import { looksPlayable } from './watch-video'
 import { resultRowsOf } from './search-channel'
+import { judgeChannel, untitledYet } from './post-video'
 import { flatten, tapTargetOf } from './tree'
 
 /*
@@ -31,6 +32,18 @@ describe('the You page on the production fleet', () => {
 
   test('the moto layout it was first measured on is still recognised', () => {
     expect(onYouPage(motoYou as unknown as UiNode)).toBe(true)
+  })
+
+  test('the account name is read from INSIDE the header card, which carries no label of its own', () => {
+    // Reading only the card's own label found nothing, so `my-videos` called a phone that had just
+    // posted a Short "signed out of YouTube", and `check-profile` returned `signedIn: false`.
+    expect(accountNameOf(you)).toBe('Bitorex Vault')
+    // The handle beside it is not the name, and neither is "Lihat channel".
+    expect(accountNameOf(you)).not.toBe('@BitorexVault')
+  })
+
+  test('the moto layout, whose clickable node carries the name itself, still reads the same', () => {
+    expect(accountNameOf(motoYou as unknown as UiNode)).toBe('Channel Name')
   })
 
   test('its tab is found on the bottom navigation as "Anda"', () => {
@@ -93,5 +106,43 @@ describe('search results on the production fleet', () => {
     const playable = resultRowsOf(results).filter(looksPlayable)
     expect(playable.some((n) => n.desc.includes('Buka channel'))).toBe(true)
     expect(playable.some((n) => /bersponsor/i.test(n.desc))).toBe(false)
+  })
+})
+
+describe('confirming a post on the production fleet', () => {
+  /*
+    Channel cells read by `readChannelCells` on phone #21's own channel before and after a real post
+    (production artifacts yt-02-channel-before and yt-11-channel-after-13, 2026-09-21), copied as
+    they came out. The title was typed in full — the details screen shows it — and the fresh cell
+    still carried no title at all thirteen looks later.
+  */
+  const title = 'Live Trade Sesi Sore: Persiapan Jelang News CPI #livetrade #sesisore #newsCPI'
+  const before = [
+    'Cara Pakai Fair Value Gap Gold di Time Frame 5 Menit #AkademiBitorex #fairvaluegap #xauusd, 142 x ditonton - putar video Shorts · Tindakan lainnya',
+    'Akun Hancur Bukan karena Loss, tapi karena Nggak Terima #AkademiBitorex #trading #psikologitrading, 284 x ditonton - putar video Shorts · Tindakan lainnya',
+    'Cara Baca Candle Engulfing: Anatomi dan Lokasi #AkademiBitorex #engulfing #priceaction, 541 x ditonton - putar video Shorts · Tindakan lainnya',
+  ]
+  const after = ['Tindakan lainnya · Belum ditonton', before[0] as string, before[1] as string]
+
+  test('a fresh cell with no title on it is still processing, not a wrong title', () => {
+    // It used to be `untitled-new`, reported as "the title may not have been typed in full".
+    expect(judgeChannel(before, after, title)).toEqual({ kind: 'processing', words: 'Tindakan lainnya · Belum ditonton', titled: false })
+  })
+
+  test('the moment YouTube draws the title, the post is confirmed', () => {
+    const titled = [`${title}, Belum ditonton - putar video Shorts · Tindakan lainnya`, before[0] as string, before[1] as string]
+    expect(judgeChannel(before, titled, title)).toEqual({ kind: 'new' })
+  })
+
+  test('a fresh cell carrying a DIFFERENT title is still reported as such', () => {
+    // The typing check this used to stand in for is not weakened: a wrong title is still `untitled-new`.
+    const other = ['Something else entirely, Belum ditonton - putar video Shorts · Tindakan lainnya', before[0] as string, before[1] as string]
+    expect(judgeChannel(before, other, title)).toEqual({ kind: 'untitled-new' })
+  })
+
+  test('only view-state words and buttons count as "no title"', () => {
+    expect(untitledYet('Tindakan lainnya · Belum ditonton')).toBe(true)
+    expect(untitledYet('More actions · No views')).toBe(true)
+    expect(untitledYet('Belum ditonton · Live Trade Sesi Sore')).toBe(false)
   })
 })

@@ -126,7 +126,29 @@ export default definePlugin({
         The screenshot of "the account page never appeared" showed the account page; the one file
         that would have named the missed node was never written.
   */
-  version: '0.50.0',
+  /*
+    0.51.0 — A POST THAT WENT OUT, REPORTED AS ONE THAT MIGHT NOT HAVE.
+
+    Read off a live post session on the owner's production fleet (SM-A075F, id-ID, 2026-09-21):
+    five of twenty YouTube posts came back `unverified` with "the title may not have been typed in
+    full". The details screen of each showed the title typed in full. What the confirmation saw was
+    the channel's new cell reading only "Tindakan lainnya · Belum ditonton" — no title at all —
+    for thirteen looks: this build does not draw a fresh Short's title until YouTube has processed
+    it, where the moto g06 draws it at once. A cell with NO title is now judged still processing
+    rather than wrongly titled, so the run waits on the longer budget and, if it still cannot read
+    the title, says that instead of blaming the typing. `new` still needs a cell carrying this
+    title, so nothing can report a post that did not happen.
+
+    And `accountNameOf`, found by a read-only probe of the recap on the same phone: the You page's
+    header on this build is one clickable card with no label of its own, the name a plain child of
+    it. Reading only the card found nothing, so `my-videos` called a phone that had just posted
+    "signed out of YouTube", and `check-profile` returned `signedIn: false`.
+
+    Plus the details screen and the typed title now save the TREE, not only a picture, so the one
+    remaining unexplained failure — a title tap that landed on the thumbnail — carries its own
+    evidence next time.
+  */
+  version: '0.51.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',

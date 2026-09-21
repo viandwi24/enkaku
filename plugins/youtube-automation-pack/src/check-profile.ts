@@ -110,10 +110,23 @@ const ACCOUNT_CONTROL = /^(accounts|akun|switch account|ganti akun|google accoun
 export function accountNameOf(tree: UiNode): string {
   const header = flatten(tree).filter((n) => n.clickable && n.bounds.top < 335 && n.bounds.top >= 154)
   for (const n of header) {
-    const value = n.desc.trim() || n.text.trim()
-    if (value === '' || CHROME.test(value)) continue
-    if (/^(view channel|lihat channel|lihat saluran)$/i.test(value)) continue
-    return value
+    const own = n.desc.trim() || n.text.trim()
+    /*
+      The name may be the clickable node's own label (the moto g06), or a plain child of it. On the
+      owner's production fleet (SM-A075F, id-ID, 2026-09-21) the whole header is ONE clickable card
+      with no label of its own, holding the avatar, the name, the handle, a "•" and "Lihat channel".
+      Reading only the card's own label found nothing there, so `my-videos` reported every one of
+      those phones as signed out of YouTube — on a phone that had posted a Short minutes before —
+      and `check-profile` quietly returned `signedIn: false`.
+    */
+    const candidates = own !== '' ? [own] : flatten(n).slice(1).map((child) => child.desc.trim() || child.text.trim())
+    for (const value of candidates) {
+      if (value === '' || CHROME.test(value)) continue
+      if (/^(view channel|lihat channel|lihat saluran)$/i.test(value)) continue
+      // The handle and the separator beside it are not the name.
+      if (value.startsWith('@') || /^[•·\s]+$/.test(value)) continue
+      return value
+    }
   }
   return ''
 }

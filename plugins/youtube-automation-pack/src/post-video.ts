@@ -664,6 +664,13 @@ const UPLOAD_FAILED = /\bgagal\b|\bfailed\b|dibatalkan|\bcancell?ed\b/i
 const CHANGING_WORDS = [
   /\b\d[\d.,]*\s*(?:rb|jt|ribu|juta|miliar|k|m|b)?\s*(?:x\s*|kali\s*)?(?:ditonton|tayangan|penayangan|views?)\b/gi,
   /\b(?:belum ada|tidak ada|no)\s+(?:tayangan|penayangan|views?)\b/gi,
+  /*
+    "Not yet watched", and the cell's own overflow button. Neither is a title, and on the production
+    fleet (SM-A075F, id-ID, 2026-09-21) they were the ONLY words a freshly uploaded Short's cell
+    carried — see `untitledYet` below.
+  */
+  /\b(?:belum ditonton|not (?:yet )?watched)\b/gi,
+  /\b(?:tindakan lainnya|menu tindakan|more actions|action menu)\b/gi,
   /\b\d+\s*(?:detik|menit|jam|hari|minggu|bulan|tahun|seconds?|minutes?|hours?|days?|weeks?|months?|years?)\s*(?:yang\s+)?(?:lalu|ago)\b/gi,
   /\b\d{1,2}(?::\d{2}){1,2}\b/g,
 ]
@@ -765,8 +772,27 @@ export function judgeChannel(before: string[] | null, after: string[] | null, ti
   }
   const busy = busiest(fresh)
   if (busy) return { kind: 'processing', words: busy, titled: titled(busy) }
+  /*
+    A new cell with NO title on it at all is a title YouTube has not drawn yet, not a wrong one.
+
+    On the production fleet (SM-A075F, id-ID, 2026-09-21) five Shorts in one session went out with
+    their title typed in full — the details screen shows it — and the channel's new cell read only
+    "Tindakan lainnya · Belum ditonton" for thirteen looks. Judged `untitled-new`, each run gave up on
+    the short budget and reported "the title may not have been typed in full", which sent the owner
+    looking at the typing. The moto g06 draws a fresh cell WITH its title ("…, No views"), which is
+    why this never came up there. Treated as still processing, the run keeps looking on the longer
+    budget, and `new` still needs a cell that carries this title — so nothing here can report a post
+    that did not happen.
+  */
+  const blank = fresh.find(untitledYet)
+  if (blank) return { kind: 'processing', words: blank, titled: false }
   if (fresh.length > 0 || after.length > before.length) return { kind: 'untitled-new' }
   return { kind: 'same' }
+}
+
+/** A cell carrying nothing but view-state words and its own buttons: YouTube has not drawn its title. */
+export function untitledYet(cell: string): boolean {
+  return cellTitleKey(cell) === ''
 }
 
 /**
@@ -1706,7 +1732,13 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     }
     // It opens as a header over a spinner; aim nothing until it has finished drawing.
     const still = await waitForStillScreen(ctx, DETAILS_LOAD_MS)
-    await ctx.artifact.screenshot('yt-08-details')
+    /*
+      The TREE as well as the picture (0.51.0). On production (2026-09-21, #31) a tap meant for the
+      title landed on the thumbnail beside it, and the only record of where the title field was drawn
+      was a screenshot: the one file that would have said which node the aim came from was never
+      written. Taken before the title is tapped, so the field's two-second focus is not at stake.
+    */
+    await capture(ctx, 'yt-08-details')
     // A READABLE details screen with its Upload button drawn has finished loading (0.38.1): on production (2026-09-15, 3 runs)
     // its thumbnail preview kept playing, so the screen was never pixel-still and the run failed with the screen ready.
     if (!still.still && !readableDetails(await ctx.device.dump())?.upload) {
@@ -1808,10 +1840,11 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     const typed = await ctx.device.type(title, { via: 'adb', instant: true })
     ctx.log.info('typed the title', { via: typed.via })
     await sleep(1_500)
-    await ctx.artifact.screenshot('yt-09-titled')
     // A tap that missed the field left focus on the thumbnail; the space in the title then opened
     // the thumbnail editor. That is what this catches — and it means nothing was uploaded.
+    // Saved as the very tree this acts on (0.51.0), not a picture taken beside it.
     let afterTyping = await ctx.device.dump()
+    await capture(ctx, 'yt-09-titled', afterTyping)
     const exitEditor = !onDetailsScreen(afterTyping) && onThumbnailEditor(afterTyping) ? thumbnailEditorExit(afterTyping) : null
     if (exitEditor) {
       /*
