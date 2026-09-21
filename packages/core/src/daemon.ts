@@ -9,6 +9,7 @@ import {
   parsePluginSocketPath,
   type ArtifactInfo,
   type DeviceActivity,
+  type DeviceInfo,
   type DeviceEvent,
   type DeviceStatus,
   type FarmSettings,
@@ -298,6 +299,7 @@ import { createScheduler } from './queue/scheduler'
 import { createScheduleRunner } from './schedules/runner'
 import { validateScriptForRun } from './jobs/validate-script'
 import { createDeviceRegistry, listDevicesWithLabels, loadDeclaredMedia, type DeviceActivityState, type DeviceRegistry } from './registry/device-registry'
+import { FLAP_WINDOW_SEC, createFlapRate } from './registry/flap-rate'
 import { createDeviceReconciler, type DeviceReconciler } from './registry/reconcile'
 import { createVmManager, type VmManager } from './vm/manager'
 import { createAvdProvider } from './vm/provider-avd'
@@ -647,6 +649,10 @@ let alwaysOn: AlwaysOn | null = null
   let retention: RetentionSweeper | null = null
 let blobGc: BlobGc | null = null
   let recorder: EventRecorder | null = null
+  /** Recent flaps per device (0.2.74, `registry/flap-rate.ts`), fed from the `device.flap` events below. */
+  const flapRate = createFlapRate()
+  /** `device.list` with each device's recent flaps attached — what a plugin reads to tell a steady phone from one on a failing hub. */
+  const withFlaps = (items: DeviceInfo[]): DeviceInfo[] => items.map((item) => ({ ...item, flaps: { recent: flapRate.recent(item.id), windowSec: FLAP_WINDOW_SEC } }))
   /**
    * The job trace recorder (plan 128 §3.6, step 128.5) — the host end of the
    * runner's tee. Declared out here, beside `recorder`, for the same reason
@@ -1430,6 +1436,17 @@ let blobGc: BlobGc | null = null
         db,
         publish: (deviceId, ev) => publishDeviceEvent?.(deviceId, ev),
       })
+      {
+        // Every `device.flap` also feeds the rolling count `device.list` reports (0.2.74).
+        const base = recorder
+        recorder = {
+          ...base,
+          record: (e) => {
+            if (e.kind === 'device.flap') flapRate.note(e.deviceId)
+            base.record(e)
+          },
+        }
+      }
       // Plan 128 §3.6, §4.2, step 128.5 — the job trace's two host halves,
       // built beside `jobLogBuffer` and `recorder` because they are the same
       // kind of thing: a job's timeline is the log buffer's sibling, and this
@@ -3188,7 +3205,7 @@ let blobGc: BlobGc | null = null
         infoWithTags: (deviceId) => getDeviceOwner(deviceId) ?? { ownerId: null },
         // The same accessor `listDevices` below is wired to — one read for a
         // whole `set-group`, never one per device.
-        listDevices: () => listDevicesWithLabels(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing),
+        listDevices: () => withFlaps(listDevicesWithLabels(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing)),
         // Plan 227 §3.2 — the lane a fan-out queues behind, read fresh on
         // every action. `adb` is reassigned by `stop()`, so this reads the
         // live binding rather than capturing the client.
@@ -3242,7 +3259,7 @@ let blobGc: BlobGc | null = null
       // 4. HTTP and WS come up FIRST so clients can watch provisioning progress
       const app = createApp({
         // Plan 88 §3.6, §4.1, §5 step 88.5 — same accessors every other `listDevicesWithLabels` call in this function gets.
-        listDevices: () => listDevicesWithLabels(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing),
+        listDevices: () => withFlaps(listDevicesWithLabels(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing)),
         deviceCount: () => db.select().from(devices).all().length,
         // Plan 126 §3.5, step 126.5 — the sidebar's farm-health badge, read
         // off the health poll Studio already makes instead of the whole
@@ -3509,7 +3526,7 @@ let blobGc: BlobGc | null = null
           db,
           audit,
           broadcast: (msg) => hub.broadcast(msg as ServerMessage),
-          listDevices: () => listDevicesWithLabels(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing),
+          listDevices: () => withFlaps(listDevicesWithLabels(db, undefined, activitiesOf, settingsStore.get().networkScan.networks, loadDeclaredMedia(endpoints), isPreparing)),
         }),
         // Group CRUD and read-only membership (plan 22.0 §4.4, renamed to
         // `groups` by plan 207 — MVP 15 §0.1 item 3). `/api/topology`'s

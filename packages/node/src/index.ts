@@ -248,6 +248,8 @@ export function createNode(opts: NodeOptions): Node {
               // plane's own battery poller, exactly like battery/quarantine
               // above — a node-owned device reports no sample of its own.
               metrics: null,
+              // Flaps are counted by the control plane's core, not reported by a node (0.2.74).
+              flaps: null,
             })
           }
           hosts?.updateDevices([...snapshots.values()])

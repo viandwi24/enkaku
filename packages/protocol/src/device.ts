@@ -327,6 +327,12 @@ export const DeviceInfoSchema = z.object({
    */
   inUse: DeviceInUseSchema.default(() => ({ control: false, viewers: 0 })),
   /**
+   * How often the device dropped off and came back within the grace in the last `windowSec` (0.2.74).
+   * A flap never changes `status`, so a phone on a failing hub reads `online` throughout; this is the
+   * one number that says it is not steady. `null` where the farm does not count them.
+   */
+  flaps: z.object({ recent: z.number().int().nonnegative(), windowSec: z.number().int().positive() }).nullable().default(null),
+  /**
    * How this device is reached (plan 88 §3.1, §4.1) — computed by
    * `deriveConnection` (`packages/core/src/registry/device-registry.ts`),
    * never by a client. Defaulted so a caller that constructs a `DeviceInfo`
