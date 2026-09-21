@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
 import { UiNodeSchema, type UiNode } from '@enkaku/protocol'
-import { cameraLabelsShowing, captionField, detectScreen, feedNavShowing, findAll, nextButtonIn, pickerCells, pickerSortLabel, postScreenShowing, type ScreenId } from './screens'
+import { cameraLabelsShowing, captionField, detectScreen, feedNavShowing, findAll, nextButtonIn, pickerCells, pickerSortLabel, postScreenShowing, signedOutAccount, type ScreenId } from './screens'
 
 /**
  * `screens.ts` — the six-screen machine (plan 113 §5 step 113.2, §6 criteria 3, 6), tested against
@@ -319,6 +319,22 @@ describe('detectScreen — the Samsung fleet (1.35.0)', () => {
       }
       visit(tree)
       expect({ name, screen: detectScreen(tree) }).toEqual({ name, screen: 'unknown' })
+    }
+  })
+})
+
+describe('signedOutAccount — TikTok has signed the account out (production 2026-09-21)', () => {
+  test('the "Status akun" dialog is a signed-out account, with no name on it', () => {
+    expect(signedOutAccount(loadFixture('screen-signed-out-status.json'))).toEqual({ handle: null })
+  })
+
+  test('the "Selamat datang kembali" sheet names the account it signed out', () => {
+    expect(signedOutAccount(loadFixture('screen-signed-out-welcome.json'))).toEqual({ handle: 'shorts.bitorex' })
+  })
+
+  test('a signed-in screen is not signed out', () => {
+    for (const name of ['screen-camera-wall.json', 'screen-editor.json', 'screen-picker.json', 'screen-post.json', 'screen-feed-samsung-phone-sheet.json']) {
+      expect(signedOutAccount(loadFixture(name))).toBeNull()
     }
   })
 })

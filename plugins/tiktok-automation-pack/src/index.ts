@@ -1724,7 +1724,18 @@ export default definePlugin({
         see this screen, and the guest agent's `ui-tree` is what can. About five minutes, against
         sixty, and the phone is free for the next activity.
   */
-  version: '1.55.0',
+  /*
+    1.56.0 — A SIGNED-OUT ACCOUNT IS SAID BY NAME, NOT BLAMED ON THE CAMERA.
+
+    Production 2026-09-21: seven SM-A075F phones failed a post as "expected the camera screen but the
+    dump reads unknown after 5 settle rounds". TikTok had signed each account out — a "Status akun"
+    dialog ("Anda sudah keluar dari akun"), or a "Selamat datang kembali" sheet naming the account —
+    and the run tapped "+" blind into TikTok's sign-up screen. `signedOutAccount` reads both, and
+    `post-video` now stops at the profile, before any tap, with `E_ACCOUNT_SIGNED_OUT` naming the
+    account: sign in again on the phone, then Retry failed. A script cannot fix it — signing in needs
+    the account's password.
+  */
+  version: '1.56.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

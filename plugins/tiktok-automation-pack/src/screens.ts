@@ -359,3 +359,35 @@ export function nextButtonIn(root: UiNode, screen: ScreenId): UiNode | null {
 
   return findNode(root, isNextButton)
 }
+
+/**
+ * TikTok telling this phone its account is signed out, and which account, or `null` when it is not.
+ *
+ * Production 2026-09-21 (session g-1789978346-81e0): seven SM-A075F phones (#1, #12, #13, #14, #16,
+ * #18, #19) failed a post as *"expected the "camera" screen but the dump reads "unknown" after 5
+ * settle rounds"* — true, and pointing at the camera, which was never the problem. TikTok had signed
+ * each account out and showed one of two things: a "Status akun" dialog (*"Anda sudah keluar dari
+ * akun. Coba masuk lagi."*) or a "Selamat datang kembali" sheet naming the account, with "Masuk" and
+ * "Tambah akun lain" under it. No script can fix that — signing in needs the account's password, which
+ * a person enters on the phone — so the run's job is to say so, by account, and stop.
+ *
+ * Matched on the app's own words, as `feedErrorText` is: the ids are obfuscated and change per build,
+ * the sentences are what an operator reads off the screen. The welcome sheet needs BOTH its greeting
+ * and its "add another account" button, because "Welcome back" alone is too common a phrase to trust.
+ */
+export function signedOutAccount(root: UiNode): { handle: string | null } | null {
+  const label = (n: UiNode): string => (n.text || n.desc).trim()
+  const lower = (n: UiNode): string => label(n).toLowerCase()
+  const SIGNED_OUT = ['anda sudah keluar dari akun', "you've been logged out", 'you have been logged out', "you're logged out"]
+  if (findNode(root, (n) => SIGNED_OUT.some((needle) => lower(n).includes(needle)))) return { handle: null }
+
+  const WELCOME = ['selamat datang kembali', 'welcome back']
+  const ANOTHER = ['tambah akun lain', 'add another account']
+  const labelled = findAll(root, (n) => label(n) !== '')
+  const greeting = labelled.findIndex((n) => WELCOME.includes(lower(n)))
+  if (greeting === -1 || !labelled.some((n) => ANOTHER.includes(lower(n)))) return null
+  // The account the sheet names is the line under the greeting — unless that line is already a button.
+  const next = labelled[greeting + 1]
+  const handle = next !== undefined && !next.clickable ? label(next) : null
+  return { handle }
+}

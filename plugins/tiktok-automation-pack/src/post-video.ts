@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { between, makeRng, planConfirmStep, sleep, type ConfirmMove, type ConfirmPlan, type ConfirmStep } from './human'
 import { pullToRefresh, relaunch } from './gesture'
 import { all, flatten } from './tree'
-import { centreOf, detectScreen, findNode, captionField, nextButtonIn, pickerCells, pickerSortLabel, POST_BUTTON_LABELS, type ScreenId } from './screens'
+import { centreOf, detectScreen, findNode, signedOutAccount, captionField, nextButtonIn, pickerCells, pickerSortLabel, POST_BUTTON_LABELS, type ScreenId } from './screens'
 import { isEditableNode, matchModals, sweepModals, UPLOAD_MODAL_POLICIES, type ModalPolicy } from './modals'
 import { tiktokQueue, type TikTokQueueClaim } from './queue'
 import { readCaptionsFile, pickCaption } from './captions'
@@ -717,6 +717,8 @@ async function enterScreen(
     operator reading that goes looking for a selector bug in a flow that could
     not have run.
   */
+  const signedOut = tree ? signedOutAccount(tree) : null
+  if (signedOut !== null) throw signedOutError(signedOut)
   const offline = feedErrorText(tree)
   if (offline !== null) {
     throw Object.assign(
@@ -1170,6 +1172,7 @@ async function readOwnGrid(
     ctx.log.warn(`the own-profile grid showed no labelled cell and no "no videos" state within ${GRID_LOAD_MS / 1000}s — no reading`)
     return null
   } catch (err) {
+    if ((err as { code?: string }).code === 'E_ACCOUNT_SIGNED_OUT') throw err
     ctx.log.warn('could not read the own-profile grid', { error: String(err) })
     return null
   }
@@ -1263,10 +1266,27 @@ async function openOwnProfile(ctx: ScriptContext<unknown>, frameWidth: number): 
   }
   if (!menuNode) {
     await capture(ctx, 'profile-not-open')
+    // A profile that did not open because the account is signed out (1.56.0) is not a reading to skip: nothing after
+    // it can work, and every tap from here goes into TikTok's sign-up flow. Say so now, by account.
+    const tree = await ctx.device.dump().catch(() => null)
+    const signedOut = tree ? signedOutAccount(tree) : null
+    if (signedOut !== null) throw signedOutError(signedOut)
     ctx.log.warn('the own profile did not open (no on-screen "Menu profil")')
     return null
   }
   return menuNode
+}
+
+/**
+ * The one error for a signed-out account (1.56.0) — see `signedOutAccount`. `E_ACCOUNT_SIGNED_OUT` is its own code so
+ * every reader that swallows a failed profile reading (the baseline, the confirmation) can let THIS one through.
+ */
+function signedOutError(found: { handle: string | null }): Error {
+  const who = found.handle !== null ? `the account "${found.handle}"` : 'its account'
+  return Object.assign(
+    new Error(`TikTok has signed this phone out of ${who}, so nothing could be posted. Sign in again on the phone (TikTok asks for the password), then press Retry failed.`),
+    { code: 'E_ACCOUNT_SIGNED_OUT' },
+  )
 }
 
 /*
