@@ -158,7 +158,19 @@ export default definePlugin({
     `unverified` (nothing here proves the cell is THIS Short), but it now says what it saw: a new
     Short, untitled because unwatched, very likely posted — rather than "still uploading".
   */
-  version: '0.52.0',
+  /*
+    0.53.0 — SEARCH IS FOUND BY ITS NAME, AND STARTED FROM HOME.
+
+    Production (SM-A075F, id-ID, 2026-09-21): `search-play` failed four times in twenty minutes with
+    "the search screen opened with no text field". YouTube had relaunched onto the Shorts player left
+    by `scroll-shorts`, and the first rung of `SEARCH_ENTRY` was the toolbar slot `menu_item_1` —
+    search on the Home feed, but the Short's own "more" menu on the player. The run opened that
+    sheet ("Deskripsi", "Kualitas video", "Tidak tertarik"…) and looked for a text field in it.
+    The description rungs now come first, the slot rung refuses a slot labelled as anything but
+    search, and `search-play`, `watch-video`, `scroll-live` and `search-channel` go to Home first
+    (`homeFeed`, the move `check-notifications` already made for its bell).
+  */
+  version: '0.53.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',

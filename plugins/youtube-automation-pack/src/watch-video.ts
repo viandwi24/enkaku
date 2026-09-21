@@ -2,6 +2,7 @@ import type { PluginMemberScript } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
+import { homeFeed } from './check-notifications'
 import { YOUTUBE_PACKAGE, capture, firstMatch, relaunch, sleep, tapNode, waitForTree } from './youtube'
 import { SEARCH_ENTRY, SEARCH_FIELD, openSearchField, adEvidence, clickableFor, hasResultRows, playerEvidence, resultRowsOf, skipControlOf, titleFromRow } from './search-channel'
 import { between, browseComments, keywordBoost, makeRng, pickWatchMs, pressLike, readableStrings, scrollCommentsRandomised, frameOf } from './behavior'
@@ -278,7 +279,7 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
       const query = pool[Math.floor(rng() * pool.length)] as string
 
       // --- search -------------------------------------------------------------
-      const home = await capture(ctx, tag('home'))
+      const home = await homeFeed(ctx, tag('home'))
       const entry = firstMatch(home, SEARCH_ENTRY)
       if (!entry) fail('open-search', `no search button on the YouTube home screen — see artifact ${tag('home')}`)
       await tapNode(ctx, entry!.node)

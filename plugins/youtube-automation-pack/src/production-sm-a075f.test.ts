@@ -5,11 +5,14 @@ import homeFixture from './__fixtures__/screen-home-sm-a075f-id.json'
 import resultsFixture from './__fixtures__/screen-results-sm-a075f-id.json'
 import motoYou from './__fixtures__/screen-you.json'
 import { accountNameOf, onYouPage, youTabOf } from './check-profile'
-import { BELL, homeTabOf, notificationsBellOf } from './check-notifications'
+import { BELL, homeFeed, homeTabOf, notificationsBellOf } from './check-notifications'
 import { looksPlayable } from './watch-video'
-import { resultRowsOf } from './search-channel'
+import { SEARCH_ENTRY, resultRowsOf } from './search-channel'
 import { judgeChannel, untitledYet } from './post-video'
 import { flatten, tapTargetOf } from './tree'
+import { firstMatch } from './youtube'
+import shortsFixture from './__fixtures__/screen-shorts-player-sm-a075f-id.json'
+import type { ScriptContext } from '@enkaku/sdk'
 
 /*
   The owner's production fleet, 2026-09-21: twenty SM-A075F phones, YouTube in `id-ID`. A warm-up
@@ -144,5 +147,49 @@ describe('confirming a post on the production fleet', () => {
     expect(untitledYet('Tindakan lainnya · Belum ditonton')).toBe(true)
     expect(untitledYet('More actions · No views')).toBe(true)
     expect(untitledYet('Belum ditonton · Live Trade Sesi Sore')).toBe(false)
+  })
+})
+
+describe('the Shorts player a relaunch can land on (production, 2026-09-21)', () => {
+  const shorts = shortsFixture as unknown as UiNode
+
+  test('its search button is found by its name, not by the toolbar slot the Home feed puts search in', () => {
+    // `menu_item_1` here is "Selengkapnya", the Short's own options sheet — what four runs tapped.
+    const entry = firstMatch(shorts, SEARCH_ENTRY)
+    expect(entry?.node.desc).toBe('Telusuri')
+    expect(entry?.node.bounds).toEqual({ left: 540, top: 64, right: 630, bottom: 154 })
+  })
+
+  test('with no label anywhere to go by, the "more" menu is still never taken for search', () => {
+    const unlabelled = JSON.parse(JSON.stringify(shorts).replace('"desc":"Telusuri"', '"desc":""')) as UiNode
+    expect(firstMatch(unlabelled, SEARCH_ENTRY)).toBeNull()
+  })
+
+  test('the Home feed still finds its search button', () => {
+    expect(firstMatch(home, SEARCH_ENTRY)?.node.desc).toMatch(/^(telusuri|search)$/i)
+  })
+
+  test('homeFeed goes Home first: the player has no bell, so its Beranda tab is tapped', async () => {
+    const taps: { x: number; y: number }[] = []
+    let dumps = 0
+    const ctx = {
+      device: {
+        dump: async (): Promise<UiNode> => (dumps++ === 0 ? shorts : home),
+        tap: async (sel: { point: { x: number; y: number } }): Promise<void> => {
+          taps.push(sel.point)
+        },
+      },
+      artifact: { screenshot: async () => {}, file: async () => {} },
+      log: { debug() {}, info() {}, warn() {}, error() {} },
+    } as unknown as ScriptContext<unknown>
+    const tree = await homeFeed(ctx, '01-home')
+    expect(notificationsBellOf(tree)).not.toBeNull()
+    expect(taps).toHaveLength(1)
+    const [tap] = taps
+    // Inside Beranda's own bounds (0,1420 → 144,1510).
+    expect(tap!.x).toBeGreaterThanOrEqual(0)
+    expect(tap!.x).toBeLessThanOrEqual(144)
+    expect(tap!.y).toBeGreaterThanOrEqual(1420)
+    expect(tap!.y).toBeLessThanOrEqual(1510)
   })
 })

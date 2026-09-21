@@ -2,6 +2,7 @@ import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
+import { homeFeed } from './check-notifications'
 import { YOUTUBE_PACKAGE, capture, firstMatch, hasId, isVisible, relaunch, sleep, tapNode, waitForTree } from './youtube'
 import { flatten } from './tree'
 
@@ -146,18 +147,41 @@ function label(node: UiNode): string {
 }
 
 /**
- * The search entry point on the home screen.
+ * The search entry point — on the home screen, or on the Shorts player a relaunch can land on.
  *
- * `menu_item_1` is YouTube's own id for the toolbar's second action and has
- * been the search button for many versions — "has been" is not "is", which is
- * why the description rungs follow it, in both languages this farm might be in.
+ * `menu_item_1` is YouTube's own id for the toolbar's second action and was
+ * the search button on every screen first measured — "was" is not "is": on the
+ * Shorts player it is the Short's "more" menu (see below).
  */
+const SEARCH_WORDS = ['search', 'telusuri', 'cari']
+
+/** A toolbar slot by id, unless something inside it is labelled as something OTHER than search. */
+function searchSlot(n: UiNode, id: string): boolean {
+  if (!hasId(n, id)) return false
+  const labels = flatten(n)
+    .map((d) => (d.desc || d.text).trim().toLowerCase())
+    .filter((l) => l !== '')
+  return labels.every((l) => SEARCH_WORDS.includes(l))
+}
+
+/*
+  The words first, the ids after (0.53.0).
+
+  `menu_item_1` led this list because it was the search button on every screen measured — the Home
+  feed's toolbar is Notifikasi (`menu_item_0`) then Telusuri (`menu_item_1`). The Shorts player's
+  toolbar is Telusuri (`menu_item_0`) then Selengkapnya, the Short's own "more" menu (`menu_item_1`).
+  Production, SM-A075F, id-ID, 2026-09-21: YouTube relaunched onto the Shorts player, `search-play`
+  tapped `menu_item_1`, got the Short's options sheet ("Deskripsi", "Kualitas video", "Tidak
+  tertarik"…), and failed four times in twenty minutes as "the search screen opened with no text
+  field". A description says what the control IS; an id only says where it sits. The id rungs stay
+  for a build that labels nothing, and refuse a slot whose own label names something else.
+*/
 export const SEARCH_ENTRY: readonly { via: string; test: (n: UiNode) => boolean }[] = [
-  { via: 'id:menu_item_1', test: (n: UiNode) => hasId(n, 'menu_item_1') },
-  { via: 'id:search_button', test: (n: UiNode) => hasId(n, 'search_button') },
   { via: 'desc:Search', test: (n: UiNode) => n.desc.trim().toLowerCase() === 'search' },
   { via: 'desc:Telusuri', test: (n: UiNode) => n.desc.trim().toLowerCase() === 'telusuri' },
   { via: 'desc:Cari', test: (n: UiNode) => n.desc.trim().toLowerCase() === 'cari' },
+  { via: 'id:search_button', test: (n: UiNode) => hasId(n, 'search_button') },
+  { via: 'id:menu_item_1', test: (n: UiNode) => searchSlot(n, 'menu_item_1') },
 ] as const
 
 /** The search text field, once the search screen is open. */
@@ -796,7 +820,7 @@ const searchChannelScript: PluginMemberScript<typeof paramsSchema, typeof result
     }
 
     // --- 1. home -----------------------------------------------------------
-    const home = await capture(ctx, '01-home')
+    const home = await homeFeed(ctx, '01-home')
     steps.push('home')
 
     const search = firstMatch(home, SEARCH_ENTRY)

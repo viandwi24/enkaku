@@ -1,4 +1,4 @@
-import type { PluginMemberScript } from '@enkaku/sdk'
+import type { PluginMemberScript, ScriptContext } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
@@ -77,6 +77,31 @@ export function notificationsBellOf(tree: UiNode): UiNode | null {
 /** The bottom navigation's Home item, in both measured languages. */
 export function homeTabOf(tree: UiNode): UiNode | null {
   return flatten(tree).find((n) => n.clickable && (n.packageName === '' || n.packageName === YOUTUBE_PACKAGE) && /^(home|beranda)$/i.test(n.desc.trim())) ?? null
+}
+
+/**
+ * The Home feed, captured as `label`, going to it first when YouTube opened somewhere else (0.53.0).
+ *
+ * A relaunch does not promise Home. On the production fleet (SM-A075F, id-ID, 2026-09-21) YouTube came
+ * back on the Shorts player — left there by the warm-up's own `scroll-shorts` earlier in the same
+ * sequence — and four `search-play` runs in twenty minutes tapped that player's search icon and got
+ * the Short's own options sheet instead ("Deskripsi", "Kualitas video", "Tidak tertarik"…): the icon
+ * and the menu sit side by side over a playing video, and a Short answers a touch that lingers with
+ * exactly that sheet. They failed as "the search screen opened with no text field". The feed's
+ * toolbar has no video under it, so every search starts there.
+ *
+ * Home is recognised by its bell, as `check-notifications` already does. With no Home tab to tap, or a
+ * build whose Home has no bell, the screen is returned as it is and the caller proceeds as before.
+ */
+export async function homeFeed(ctx: ScriptContext<unknown>, label: string): Promise<UiNode> {
+  const first = await capture(ctx, label)
+  if (notificationsBellOf(first) !== null) return first
+  const homeTab = homeTabOf(first)
+  if (homeTab === null) return first
+  ctx.log.info('YouTube did not open on Home (usually the Shorts player) — going to Home before searching')
+  await tapNode(ctx, homeTab)
+  const onHome = await waitForTree(ctx, (t) => notificationsBellOf(t) !== null, { budgetMs: HOME_TIMEOUT_MS })
+  return capture(ctx, `${label}-home`, onHome.tree)
 }
 
 /**
