@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { UiNodeSchema } from '@enkaku/protocol'
 import type { ScriptContext } from '@enkaku/sdk'
 import type { Selector, UiNode } from '@enkaku/protocol'
 import { clearBlockingDialog } from './dialogs'
@@ -163,4 +166,36 @@ describe('firstMatch — the ranking is the list\'s, not the screen\'s', () => {
     const screen = await (ctx.device as unknown as { dump: () => Promise<UiNode> }).dump()
     expect(firstMatch(screen, DENY_SELECTORS)).toBe(null)
   })
+})
+
+describe('clearBlockingDialog — a signed-out account is not a dialog to clear (1.56.0)', () => {
+  const fixture = (name: string): UiNode =>
+    UiNodeSchema.parse((JSON.parse(readFileSync(join(import.meta.dir, '__fixtures__', name), 'utf8')) as { node: unknown }).node)
+
+  for (const [name, handle] of [
+    ['screen-signed-out-status.json', null],
+    ['screen-signed-out-welcome.json', 'shorts.bitorex'],
+  ] as const) {
+    test(`${name}: stops with E_ACCOUNT_SIGNED_OUT, naming the account, and taps nothing`, async () => {
+      const calls = { tap: 0, key: 0 }
+      const ctx = {
+        device: {
+          dump: async (): Promise<UiNode> => fixture(name),
+          tap: async (): Promise<void> => {
+            calls.tap += 1
+          },
+          key: async (): Promise<void> => {
+            calls.key += 1
+          },
+        },
+        artifact: { screenshot: async () => {}, file: async () => {} },
+        log: { debug() {}, info() {}, warn() {}, error() {} },
+      } as unknown as ScriptContext<unknown>
+      const err = (await clearBlockingDialog(ctx).catch((e: unknown) => e)) as Error & { code?: string }
+      expect(err.code).toBe('E_ACCOUNT_SIGNED_OUT')
+      if (handle !== null) expect(err.message).toContain(handle)
+      // The "Status akun" OK is exactly what the ack ladder would have tapped before 1.56.0.
+      expect(calls).toEqual({ tap: 0, key: 0 })
+    })
+  }
 })

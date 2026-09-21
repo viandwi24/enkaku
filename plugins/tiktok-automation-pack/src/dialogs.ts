@@ -3,6 +3,7 @@ import type { Selector, UiNode } from '@enkaku/protocol'
 import { centerOf, matchSelector } from '@enkaku/protocol'
 import { sleep } from './human'
 import { dismissInterruptions } from './interruptions'
+import { signedOutAccount, signedOutError } from './screens'
 
 /**
  * Dialog resilience — lifted verbatim out of `index.ts` (plan 86 §3.1, §4.7, §5 step 1) so
@@ -152,6 +153,18 @@ export async function clearBlockingDialog(ctx: ScriptContext<unknown>, opts?: { 
     screen = interrupted.tree
   } catch {
     ctx.log.warn('the inspector could not read the screen, so no ack or deny button can be found this sweep')
+  }
+  /*
+    A signed-out account is not a dialog to clear (1.56.0). Production 2026-09-21: `auto-scroll` on
+    four phones whose TikTok had signed its account out swept three times — tapping the "Status akun"
+    dialog's OK as an ack, then BACK on the "Selamat datang kembali" sheet — and gave up reporting "a
+    modal (e.g. a policy-consent notice) is likely still covering the screen". The account needs its
+    password typed on the phone, so every member that sweeps stops here and says so, by name.
+  */
+  const signedOut = screen !== null ? signedOutAccount(screen) : null
+  if (signedOut !== null) {
+    await ctx.artifact.screenshot('signed-out').catch(() => {})
+    throw signedOutError(signedOut)
   }
   if (screen !== null) {
     const ack = firstMatch(screen, ACK_SELECTORS)

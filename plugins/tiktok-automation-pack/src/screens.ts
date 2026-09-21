@@ -391,3 +391,15 @@ export function signedOutAccount(root: UiNode): { handle: string | null } | null
   const handle = next !== undefined && !next.clickable ? label(next) : null
   return { handle }
 }
+
+/**
+ * The one error for a signed-out account (1.56.0) — see `signedOutAccount`. Shared by every member that sweeps for dialogs (`clearBlockingDialog`). `E_ACCOUNT_SIGNED_OUT` is its own code so
+ * every reader that swallows a failed profile reading (the baseline, the confirmation) can let THIS one through.
+ */
+export function signedOutError(found: { handle: string | null }): Error {
+  const who = found.handle !== null ? `the account "${found.handle}"` : 'its account'
+  return Object.assign(
+    new Error(`TikTok has signed this phone out of ${who}, so this run could not go on. Sign in again on the phone (TikTok asks for the password), then run it again.`),
+    { code: 'E_ACCOUNT_SIGNED_OUT' },
+  )
+}

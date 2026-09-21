@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { between, makeRng, planConfirmStep, sleep, type ConfirmMove, type ConfirmPlan, type ConfirmStep } from './human'
 import { pullToRefresh, relaunch } from './gesture'
 import { all, flatten } from './tree'
-import { centreOf, detectScreen, findNode, signedOutAccount, captionField, nextButtonIn, pickerCells, pickerSortLabel, POST_BUTTON_LABELS, type ScreenId } from './screens'
+import { centreOf, detectScreen, findNode, signedOutAccount, signedOutError, captionField, nextButtonIn, pickerCells, pickerSortLabel, POST_BUTTON_LABELS, type ScreenId } from './screens'
 import { isEditableNode, matchModals, sweepModals, UPLOAD_MODAL_POLICIES, type ModalPolicy } from './modals'
 import { tiktokQueue, type TikTokQueueClaim } from './queue'
 import { readCaptionsFile, pickCaption } from './captions'
@@ -1277,17 +1277,6 @@ async function openOwnProfile(ctx: ScriptContext<unknown>, frameWidth: number): 
   return menuNode
 }
 
-/**
- * The one error for a signed-out account (1.56.0) — see `signedOutAccount`. `E_ACCOUNT_SIGNED_OUT` is its own code so
- * every reader that swallows a failed profile reading (the baseline, the confirmation) can let THIS one through.
- */
-function signedOutError(found: { handle: string | null }): Error {
-  const who = found.handle !== null ? `the account "${found.handle}"` : 'its account'
-  return Object.assign(
-    new Error(`TikTok has signed this phone out of ${who}, so nothing could be posted. Sign in again on the phone (TikTok asks for the password), then press Retry failed.`),
-    { code: 'E_ACCOUNT_SIGNED_OUT' },
-  )
-}
 
 /*
   Clearing the account's drafts before posting (1.36.0).
