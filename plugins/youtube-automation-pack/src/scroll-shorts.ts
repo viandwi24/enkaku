@@ -2,13 +2,15 @@ import type { PluginMemberScript } from '@enkaku/sdk'
 import { ui } from '@enkaku/sdk'
 import type { UiNode } from '@enkaku/protocol'
 import { z } from 'zod'
-import { YOUTUBE_PACKAGE, relaunch, sleep, tapNode, waitForTree } from './youtube'
+import { YOUTUBE_PACKAGE, capture, relaunch, sleep, tapNode, waitForTree } from './youtube'
 import { flatten } from './tree'
 import { advanceFeedVerified, browseComments, frameOf, makeRng, between, pickWatchMs, pressLike, keywordBoost, readableStrings, swipeDownRandomised } from './behavior'
 import { dismissPopups } from './popups'
 
 /** How long to wait for the Shorts rail after tapping its tab. */
 const SHORTS_ENTER_TIMEOUT_MS = 20_000
+/** And for the one retry on the next Short. */
+const SHORTS_RETRY_TIMEOUT_MS = 12_000
 
 /** How often a Short is scrolled back over and re-watched — the TikTok pack's own measured 5%. */
 const BACK_SCROLL_CHANCE = 0.05
@@ -160,12 +162,31 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
       enough: both devices failed here on 2026-09-08 with YouTube itself up and
       responsive (`youtube ready 1s after launch` in the same log).
     */
-    const entered = await waitForTree(ctx, inShorts, { budgetMs: SHORTS_ENTER_TIMEOUT_MS })
+    let entered = await waitForTree(ctx, inShorts, { budgetMs: SHORTS_ENTER_TIMEOUT_MS })
     tree = entered.tree
-    if (!entered.ok) throw new Error('tapped the Shorts tab but the Shorts rail never appeared — see artifacts')
+    const frame = await frameOf(ctx)
+    if (!entered.ok) {
+      /*
+        A Short playing with no rail over it (0.53.0). Production, Z2472 (en), 2026-09-21: two runs of
+        nine tapped Shorts, the phone showed a Short playing full screen with the bottom navigation
+        under it — and no like, comment or share rail for all twenty seconds, so the run failed with
+        the player plainly on screen. Neither run saved what the reader saw, so the tree is kept now,
+        and the rail is given one more chance on the NEXT Short: a swipe is what this member does
+        next anyway, and a rail that did not draw for one video has been drawn for the one after it.
+      */
+      await capture(ctx, 'yt-shorts-no-rail', tree)
+      ctx.log.warn('the Shorts rail did not appear on the first Short — swiping to the next one and looking again')
+      await advanceFeedVerified(ctx, frame, rng)
+      entered = await waitForTree(ctx, inShorts, { budgetMs: SHORTS_RETRY_TIMEOUT_MS })
+      tree = entered.tree
+      if (!entered.ok) {
+        await capture(ctx, 'yt-shorts-no-rail-2', tree)
+        throw new Error('tapped the Shorts tab but the Shorts rail never appeared, on this Short or the next — see artifacts yt-shorts-no-rail and yt-shorts-no-rail-2')
+      }
+      steps.push('rail appeared on the second Short')
+    }
     ctx.log.info('youtube: inside the Shorts feed')
 
-    const frame = await frameOf(ctx)
     let stuckAt = -1
 
     for (let i = 0; i < ctx.params.videos; i++) {

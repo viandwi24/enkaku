@@ -169,6 +169,10 @@ export default definePlugin({
     The description rungs now come first, the slot rung refuses a slot labelled as anything but
     search, and `search-play`, `watch-video`, `scroll-live` and `search-channel` go to Home first
     (`homeFeed`, the move `check-notifications` already made for its bell).
+
+    `scroll-shorts` now keeps the tree it saw when the Shorts rail does not draw, and gives the rail
+    one more chance on the next Short. Two of nine runs on the Z2472 phones (en) failed with a Short
+    playing full screen and no like/comment rail over it for twenty seconds, and saved no reading.
   */
   version: '0.53.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
