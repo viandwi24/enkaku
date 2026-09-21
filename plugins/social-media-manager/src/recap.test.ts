@@ -5,7 +5,7 @@ const NOW = 1_790_000_000
 const DAY = 86_400
 
 /** A stored video, spelled the short way. */
-function stored(key: string, views: number, rank: number | null, opts?: { title?: string; history?: number[]; firstSeenAt?: number }): RecapVideo {
+function stored(key: string, views: number, rank: number | null, opts?: { title?: string; history?: number[]; firstSeenAt?: number; lastRank?: number | null }): RecapVideo {
   return {
     key,
     title: opts?.title ?? '',
@@ -13,6 +13,7 @@ function stored(key: string, views: number, rank: number | null, opts?: { title?
     viewsText: String(views),
     approx: false,
     rank,
+    lastRank: opts?.lastRank ?? rank,
     firstSeenAt: opts?.firstSeenAt ?? NOW - DAY,
     lastSeenAt: NOW - DAY,
     history: (opts?.history ?? [views]).map((value, i) => ({ at: NOW - DAY * (opts?.history?.length ?? 1) + i * DAY, views: value })),
@@ -20,11 +21,12 @@ function stored(key: string, views: number, rank: number | null, opts?: { title?
 }
 
 /** A reading, newest first. `asked` defaults to 6 — the window the owner named. */
-function reading(views: readonly number[], opts?: { titles?: readonly string[]; asked?: number }): RecapReading {
+function reading(views: readonly number[], opts?: { titles?: readonly string[]; asked?: number; previousComplete?: boolean }): RecapReading {
   return {
     account: '@someone',
     truncated: false,
     asked: opts?.asked ?? 6,
+    previousComplete: opts?.previousComplete ?? true,
     videos: views.map((value, rank) => ({ rank, views: value, viewsText: String(value), approx: false, title: opts?.titles?.[rank] ?? '' })),
   }
 }
@@ -141,7 +143,7 @@ describe('mergeRecap — where the counts cannot decide', () => {
     // Three videos yesterday, four today, every one of them at zero views.
     // Nothing in the numbers separates the shifts; the count of videos does.
     const before = [stored('a', 0, 0), stored('b', 0, 1), stored('c', 0, 2)]
-    const merged = mergeRecap(before, reading([0, 0, 0, 0], { asked: 6 }), NOW)
+    const merged = mergeRecap(before, reading([0, 0, 0, 0], { asked: 6, previousComplete: true }), NOW)
     expect(merged.added).toBe(1)
     expect(merged.videos.slice(1).map((v) => v.key)).toEqual(['a', 'b', 'c'])
   })
@@ -242,6 +244,7 @@ describe('the row an operator reads', () => {
     truncated: false,
     window: 0,
     asked: 6,
+    complete: false,
     ...over,
   })
 
@@ -268,5 +271,66 @@ describe('the row an operator reads', () => {
 
   test('totals add up every platform a phone has', () => {
     expect(recapTotals([row({ videos: [stored('a', 10, 0)] }), row({ platform: 'youtube', videos: [stored('b', 5, 0)] })])).toEqual({ videos: 2, views: 15 })
+  })
+})
+
+describe('mergeRecap — widening the window brings videos back rather than duplicating them', () => {
+  /*
+    The owner's own question found this (2026-09-21). A six-video window on a
+    twelve-video TikTok account, widened to twelve: the six videos that had
+    never been reached arrive, AND the one that had fallen out of the window
+    arrives again with them. Aligning against the window alone could not see it
+    — it was minted as a new video and the account was reported with thirteen
+    videos and its views counted twice.
+  */
+  const account = () => [
+    stored('a', 0, 0),
+    stored('b', 420, 1),
+    stored('c', 73, 2),
+    stored('d', 8, 3),
+    stored('e', 11, 4),
+    stored('f', 71, 5),
+    // Pushed out by the newest post, still known, still counted.
+    stored('g', 1_655, null, { lastRank: 5 }),
+  ]
+
+  test('the video that had fallen out is matched, not minted', () => {
+    const merged = mergeRecap(account(), reading([0, 420, 73, 8, 11, 71, 1_655, 1_188, 12_300, 1_120, 118_500, 140_100], { asked: 12 }), NOW)
+    expect(merged.videos.length).toBe(12)
+    expect(merged.videos[6]?.key).toBe('g')
+    expect(merged.videos[6]?.rank).toBe(6)
+    expect(merged.added).toBe(5)
+  })
+
+  test('its views are counted once', () => {
+    const merged = mergeRecap(account(), reading([0, 420, 73, 8, 11, 71, 1_655, 1_188, 12_300, 1_120, 118_500, 140_100], { asked: 12 }), NOW)
+    expect(merged.videos.reduce((sum, v) => sum + v.views, 0)).toBe(275_446)
+    expect(merged.videos.filter((v) => v.views === 1_655).length).toBe(1)
+  })
+
+  test('narrowing the window again pushes them back out, keeping their last counts', () => {
+    const wide = mergeRecap(account(), reading([0, 420, 73, 8, 11, 71, 1_655, 1_188, 12_300, 1_120, 118_500, 140_100], { asked: 12 }), NOW)
+    const narrow = mergeRecap(wide.videos, reading([0, 420, 73, 8, 11, 71], { asked: 6 }), NOW + DAY)
+    expect(narrow.added).toBe(0)
+    expect(narrow.videos.length).toBe(12)
+    expect(narrow.videos.filter((v) => v.rank === null).length).toBe(6)
+    expect(narrow.videos.reduce((sum, v) => sum + v.views, 0)).toBe(275_446)
+  })
+})
+
+describe('mergeRecap — the length rule is only used when what is stored is everything', () => {
+  test('a longer reading after a CAPPED one is not read as new posts at the front', () => {
+    // Six stored from a window that filled up, then nine read. Those three extra
+    // are videos finally reached at the BACK, not three new posts at the front —
+    // and treating them as new would rename every video on the account.
+    const before = [stored('a', 0, 0), stored('b', 0, 1), stored('c', 0, 2), stored('d', 0, 3), stored('e', 0, 4), stored('f', 0, 5)]
+    const merged = mergeRecap(before, reading([0, 0, 0, 0, 0, 0, 0, 0, 0], { asked: 12, previousComplete: false }), NOW)
+    expect(merged.videos.slice(0, 6).map((v) => v.key)).toEqual(['a', 'b', 'c', 'd', 'e', 'f'])
+    expect(merged.added).toBe(3)
+  })
+
+  test('a reading records whether it covered the whole account', () => {
+    expect(mergeRecap([], reading([1, 2, 3], { asked: 6 }), NOW).complete).toBe(true)
+    expect(mergeRecap([], reading([1, 2, 3, 4, 5, 6], { asked: 6 }), NOW).complete).toBe(false)
   })
 })

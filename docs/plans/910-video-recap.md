@@ -170,12 +170,50 @@ its key and shifted down by exactly one; TikTok's sixth left the six-video
 window and kept its last count in the `Older` column, where 0 + 420 + 73 + 8 +
 11 + 71 + 1,655 still adds to the 2,238 the row reports.
 
+## 4b. The window is not a fence — and the merge has to know it
+
+The owner asked the obvious follow-up (2026-09-21): six videos read, then seven
+known — what about the other five on the account? Raising **Videos per account**
+reads them. That exposed a fault the fixtures could not, because it only appears
+when a window WIDENS.
+
+A video that has fallen out of the window comes back into the reading, at the
+END of it. The merge aligned against the videos in the window and nothing else,
+so the returning video matched nothing and was minted as new: a twelve-video
+account reported as **thirteen videos and 277,101 views where the truth was
+twelve and 275,446**. Double-counting views is the one error that makes this
+whole feature untrustworthy, since the total is the number an operator reads
+first.
+
+Two changes, both about the same thing — the merge must know the WHOLE account,
+not the part currently on screen:
+
+- **`lastRank`.** A video keeps the position it last held after `rank` goes
+  null, so everything known can be laid out as one ordered sequence: the window
+  by rank, then what has fallen out, by the position it last had. A wider window
+  simply reads further down that list, and the returning video is the next
+  entry — matched, not minted.
+- **`complete`.** The length rule ("seven where there were six is one new
+  video") is only sound when what is stored is everything there is. After a
+  reading that FILLED its window, a longer reading later may be longer at the
+  back — videos finally reached — not at the front. Each row now records
+  whether its reading covered the whole account, and the floor is used only
+  when it did. Without that gate, widening the window would have forced a shift
+  and renamed every video on the account.
+
+Verified on the moto: the same account, read at six and then at twelve, gives
+twelve videos and 275,446 views with no repeated count — the same total a
+manual fourteen-video read gives.
+
 ## 5. What this does NOT do
 
 - It cannot tell a TikTok account with no posts AND no drafts from a grid that
   has not drawn yet, so it refuses rather than reporting an empty account. TikTok
   draws an empty-state for that case; it has not been measured, so the pack does
   not claim to recognise it.
+- It cannot PROVE two readings are the same video, on TikTok or Instagram: the
+  grid carries no id, so there is nothing to compare. What it can do is refuse
+  to guess — see D3 and D4 — and say so in the row when the evidence runs out.
 - It reads view counts only. Likes, comments and shares are on the same screens
   for some platforms and not for others, and a column that is populated for one
   platform and blank for two is worse than no column.

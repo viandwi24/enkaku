@@ -87,6 +87,19 @@ export const RecapVideoSchema = z.object({
   approx: z.boolean().default(false),
   /** Position in the last reading, 0 newest. `null` once it has been pushed out of the window. */
   rank: z.number().int().nonnegative().nullable().default(null),
+  /**
+   * The position it held when it was last IN the window, kept after `rank`
+   * goes null.
+   *
+   * This is what lets a video come back. Widening the window brings videos
+   * that had fallen out into the reading again, at the END of it, and without
+   * a remembered position there is no way to line them up — they were minted
+   * as new videos and the account was reported with the same post twice, its
+   * views counted twice (owner's farm, 2026-09-21: a six-video window widened
+   * to twelve reported thirteen videos and 277,101 views where the truth was
+   * twelve and 275,446).
+   */
+  lastRank: z.number().int().nonnegative().nullable().default(null),
   firstSeenAt: z.number().int().nonnegative(),
   lastSeenAt: z.number().int().nonnegative(),
   /** Every reading that CHANGED the count, oldest first, capped — this is the growth an operator reads. */
@@ -116,6 +129,18 @@ export const RecapRowSchema = z.object({
   window: z.number().int().nonnegative().default(0),
   /** How many the next read should ask for. Stored on the row so the router does not need the member's params. */
   asked: z.number().int().min(1).max(30).default(6),
+  /**
+   * True when the last reading covered the WHOLE account rather than filling
+   * its window.
+   *
+   * The merge's length rule — "seven videos where there were six is one new
+   * video" — is only sound when what is stored is everything there is. A
+   * window that filled up says nothing about how many videos the account has,
+   * so a later reading that is longer may be longer at the BACK, not the
+   * front. Recorded here rather than inferred, because it is a fact about the
+   * reading that produced the row and nothing later can recover it.
+   */
+  complete: z.boolean().default(false),
 })
 export type RecapRow = z.infer<typeof RecapRowSchema>
 
@@ -134,6 +159,8 @@ export interface RecapReading {
   truncated: boolean
   /** What the phone was ASKED for. A reading shorter than this covers the whole account. */
   asked: number
+  /** Whether what is already stored is the whole account. Defaults to false, which is the safe answer. */
+  previousComplete?: boolean
 }
 
 /** How many readings of one video to keep. A daily recap keeps two months; an hourly one keeps two days. */
@@ -157,6 +184,8 @@ export interface MergeOutcome {
   added: number
   /** Empty when the merge is sure; otherwise what it could not tell. */
   note: string
+  /** True when this reading covered the whole account — stored for the next merge's length rule. */
+  complete: boolean
 }
 
 /**
@@ -171,28 +200,45 @@ export function mergeRecap(previous: readonly RecapVideo[], reading: RecapReadin
     // Nothing on screen. That is a real answer — an account that has posted
     // nothing — but it is never a reason to forget what was there before, so
     // the stored videos keep their counts and simply leave the window.
-    return { videos: previous.map((video) => ({ ...video, rank: null })), added: 0, note: '' }
+    return { videos: previous.map((video) => ({ ...video, rank: null })), added: 0, note: '', complete: reading.asked > 0 }
   }
 
   const titled = incoming.some((video) => (video.title ?? '').trim() !== '')
-  const inWindow = previous.filter((video) => video.rank !== null).sort((a, b) => (a.rank as number) - (b.rank as number))
-  const outOfWindow = previous.filter((video) => video.rank === null)
+  /*
+    ONE sequence, not a window and a leftover pile.
 
-  const pairs = titled ? matchByTitle(inWindow, incoming) : matchByShift(inWindow, incoming, reading)
+    Everything known about this account, in the order the account itself puts
+    it: the videos in the window by their position, then the ones that have
+    fallen out, by the position they last held. A wider window reads further
+    down that same list, so a video that comes back is simply the next entry —
+    matched, not minted. Aligning against the window alone is what counted the
+    same video twice.
+  */
+  const sequence = [
+    ...previous.filter((video) => video.rank !== null).sort((a, b) => (a.rank as number) - (b.rank as number)),
+    ...previous
+      .filter((video) => video.rank === null)
+      .sort((a, b) => {
+        const left = a.lastRank ?? Number.MAX_SAFE_INTEGER
+        const right = b.lastRank ?? Number.MAX_SAFE_INTEGER
+        return left !== right ? left - right : b.lastSeenAt - a.lastSeenAt
+      }),
+  ]
+
+  const pairs = titled ? matchByTitle(sequence, incoming) : matchByShift(sequence, incoming, reading)
 
   const used = new Set<string>()
   const merged: RecapVideo[] = []
   for (let i = 0; i < incoming.length; i++) {
     const read = incoming[i] as RecapReadingVideo
     const match = pairs.pairing[i] ?? null
-    const stored = match === null ? null : (inWindow[match] as RecapVideo)
+    const stored = match === null ? null : (sequence[match] as RecapVideo)
     if (stored) used.add(stored.key)
     merged.push(fold(stored, read, nowSec))
   }
-  for (const video of inWindow) if (!used.has(video.key)) merged.push({ ...video, rank: null })
-  for (const video of outOfWindow) merged.push(video)
+  for (const video of sequence) if (!used.has(video.key)) merged.push({ ...video, rank: null })
 
-  return { videos: merged, added: pairs.added, note: pairs.note }
+  return { videos: merged, added: pairs.added, note: pairs.note, complete: incoming.length < reading.asked }
 }
 
 /** Update one stored video with what was just read, or mint a new one. */
@@ -206,6 +252,7 @@ function fold(stored: RecapVideo | null, read: RecapReadingVideo, nowSec: number
       viewsText: read.viewsText ?? '',
       approx: read.approx ?? false,
       rank: read.rank,
+      lastRank: read.rank,
       firstSeenAt: nowSec,
       lastSeenAt: nowSec,
       history: [{ at: nowSec, views: read.views }],
@@ -221,6 +268,7 @@ function fold(stored: RecapVideo | null, read: RecapReadingVideo, nowSec: number
     viewsText: read.viewsText ?? stored.viewsText,
     approx: read.approx ?? stored.approx,
     rank: read.rank,
+    lastRank: read.rank,
     lastSeenAt: nowSec,
     history,
   }
@@ -234,13 +282,13 @@ interface Pairing {
 }
 
 /** YouTube: the title IS the identity, so nothing has to be inferred. */
-function matchByTitle(inWindow: readonly RecapVideo[], incoming: readonly RecapReadingVideo[]): Pairing {
+function matchByTitle(known: readonly RecapVideo[], incoming: readonly RecapReadingVideo[]): Pairing {
   const pairing: (number | null)[] = []
   const taken = new Set<number>()
   let added = 0
   for (const read of incoming) {
     const title = (read.title ?? '').trim()
-    const at = title === '' ? -1 : inWindow.findIndex((video, index) => !taken.has(index) && video.title === title)
+    const at = title === '' ? -1 : known.findIndex((video, index) => !taken.has(index) && video.title === title)
     if (at === -1) {
       pairing.push(null)
       added += 1
@@ -258,8 +306,8 @@ function matchByTitle(inWindow: readonly RecapVideo[], incoming: readonly RecapR
  * See this module's header for why a shift is the right shape of answer and
  * why the least-growth one is the true one.
  */
-function matchByShift(inWindow: readonly RecapVideo[], incoming: readonly RecapReadingVideo[], reading: RecapReading): Pairing {
-  if (inWindow.length === 0) {
+function matchByShift(known: readonly RecapVideo[], incoming: readonly RecapReadingVideo[], reading: RecapReading): Pairing {
+  if (known.length === 0) {
     return { pairing: incoming.map(() => null), added: incoming.length, note: '' }
   }
 
@@ -272,17 +320,24 @@ function matchByShift(inWindow: readonly RecapVideo[], incoming: readonly RecapR
     whatever the numbers do. This is what rescues the case the counts cannot
     settle — a whole window still reading zero.
   */
+  /*
+    And only when the STORED side was complete too. A window that filled up
+    says nothing about how many videos the account has, so a longer reading
+    afterwards may be longer at the BACK — five videos this pass finally
+    reached, not five new posts — and a floor derived from it would force the
+    whole list to shift and rename every video on the account.
+  */
   const capped = incoming.length >= reading.asked
-  const floor = capped ? 0 : Math.max(0, incoming.length - inWindow.length)
+  const floor = capped || reading.previousComplete !== true ? 0 : Math.max(0, incoming.length - known.length)
 
   let best: { shift: number; cost: number } | null = null
   let ties = 0
-  const limit = Math.min(incoming.length, inWindow.length + floor)
+  const limit = Math.min(incoming.length, known.length + floor)
   for (let shift = floor; shift <= limit; shift++) {
     const deltas: number[] = []
     let valid = true
     for (let i = shift; i < incoming.length; i++) {
-      const stored = inWindow[i - shift]
+      const stored = known[i - shift]
       if (!stored) break
       const read = incoming[i] as RecapReadingVideo
       if (!withinTolerance(stored.views, read.views)) {
@@ -317,7 +372,7 @@ function matchByShift(inWindow: readonly RecapVideo[], incoming: readonly RecapR
   }
 
   const pairing: (number | null)[] = []
-  for (let i = 0; i < incoming.length; i++) pairing.push(i < best.shift ? null : i - best.shift < inWindow.length ? i - best.shift : null)
+  for (let i = 0; i < incoming.length; i++) pairing.push(i < best.shift ? null : i - best.shift < known.length ? i - best.shift : null)
   const note =
     ties > 0
       ? `${ties + 1} different readings of this list fit equally well (every count in the window is the same), so which videos are new is a guess. It matters only if one of them is.`

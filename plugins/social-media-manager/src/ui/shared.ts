@@ -961,6 +961,7 @@ export const RecapVideoSchema = z.looseObject({
   viewsText: z.string().default(''),
   approx: z.boolean().default(false),
   rank: z.number().nullable().default(null),
+  lastRank: z.number().nullable().default(null),
   firstSeenAt: z.number().default(0),
   lastSeenAt: z.number().default(0),
   history: z.array(z.looseObject({ at: z.number(), views: z.number() })).default([]),
@@ -981,6 +982,7 @@ export const RecapRowSchema = z.looseObject({
   truncated: z.boolean().default(false),
   window: z.number().default(0),
   asked: z.number().default(6),
+  complete: z.boolean().default(false),
 })
 export type RecapRow = z.infer<typeof RecapRowSchema>
 

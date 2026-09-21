@@ -573,13 +573,15 @@ function PlatformMatrix({ rows, fleet, title }: { rows: readonly RecapRow[]; fle
   const lines = rows
     .map((row) => {
       const inWindow = row.videos.filter((video) => video.rank !== null).sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))
-      const older = row.videos.filter((video) => video.rank === null).reduce((sum, video) => sum + video.views, 0)
+      const past = row.videos.filter((video) => video.rank === null)
+      const older = past.reduce((sum, video) => sum + video.views, 0)
       const device = byId.get(row.deviceId)
       return {
         row,
         name: device ? deviceName(device) : row.deviceName || row.deviceId,
         videos: inWindow,
         older,
+        olderCount: past.length,
         total: inWindow.reduce((sum, video) => sum + video.views, 0) + older,
       }
     })
@@ -590,7 +592,8 @@ function PlatformMatrix({ rows, fleet, title }: { rows: readonly RecapRow[]; fle
   }
 
   const columns = Math.max(0, ...lines.map((line) => line.videos.length))
-  const anyOlder = lines.some((line) => line.older > 0)
+  const anyOlder = lines.some((line) => line.olderCount > 0)
+  const olderCountTotal = lines.reduce((sum, line) => sum + line.olderCount, 0)
   const columnTotals = Array.from({ length: columns }, (_, i) => lines.reduce((sum, line) => sum + (line.videos[i]?.views ?? 0), 0))
   const olderTotal = lines.reduce((sum, line) => sum + line.older, 0)
   const grandTotal = lines.reduce((sum, line) => sum + line.total, 0)
@@ -598,7 +601,13 @@ function PlatformMatrix({ rows, fleet, title }: { rows: readonly RecapRow[]; fle
   return (
     <div className="space-y-2">
       <p className="text-[12px] text-faint">
-        Newest first — #1 is each account's most recent post. {columns === 0 ? 'No videos have been read on this platform yet.' : `${columns} column${columns === 1 ? '' : 's'}, because that is what the busiest account has.`}
+        Newest first — #1 is each account's most recent post.{' '}
+        {columns === 0
+          ? 'No videos have been read on this platform yet.'
+          : `${columns} column${columns === 1 ? '' : 's'}, because that is what the busiest account has.`}
+        {anyOlder
+          ? ` ${olderCountTotal} ${olderCountTotal === 1 ? 'video sits' : 'videos sit'} past the window and ${olderCountTotal === 1 ? 'is' : 'are'} summed under Older — raise “Videos per account” above to read ${olderCountTotal === 1 ? 'it' : 'them'} into ${olderCountTotal === 1 ? 'its own column' : 'their own columns'}.`
+          : ''}
       </p>
       <Table>
         <TableHeader>
@@ -609,7 +618,11 @@ function PlatformMatrix({ rows, fleet, title }: { rows: readonly RecapRow[]; fle
                 #{i + 1}
               </TableHead>
             ))}
-            {anyOlder ? <TableHead className="text-right">Older</TableHead> : null}
+            {anyOlder ? (
+              <TableHead className="text-right" title="Videos the read window no longer reaches, with the last count each had. Raise “Videos per account” to bring them back into their own columns.">
+                Older
+              </TableHead>
+            ) : null}
             <TableHead className="text-right">Total</TableHead>
           </TableRow>
         </TableHeader>
@@ -634,7 +647,24 @@ function PlatformMatrix({ rows, fleet, title }: { rows: readonly RecapRow[]; fle
                   </TableCell>
                 )
               })}
-              {anyOlder ? <TableCell className="text-right tabular-nums text-dim">{line.older > 0 ? num(line.older) : '—'}</TableCell> : null}
+              {anyOlder ? (
+                /*
+                  The count, not just the sum. This column collapses every
+                  video past the window into one number, and the owner read a
+                  seven-video account as six because of it (2026-09-21): the
+                  seventh was in here, summed and unnamed. A sum with no count
+                  is not a readable cell.
+                */
+                <TableCell className="text-right tabular-nums text-dim" title={line.olderCount > 0 ? `${line.olderCount} video${line.olderCount === 1 ? '' : 's'} past the window` : undefined}>
+                  {line.olderCount > 0 ? (
+                    <>
+                      {num(line.older)} <span className="text-faint">×{line.olderCount}</span>
+                    </>
+                  ) : (
+                    '—'
+                  )}
+                </TableCell>
+              ) : null}
               <TableCell className="text-right font-medium tabular-nums text-text">{num(line.total)}</TableCell>
             </TableRow>
           ))}
@@ -647,7 +677,11 @@ function PlatformMatrix({ rows, fleet, title }: { rows: readonly RecapRow[]; fle
                 {num(value)}
               </TableCell>
             ))}
-            {anyOlder ? <TableCell className="text-right tabular-nums text-dim">{num(olderTotal)}</TableCell> : null}
+            {anyOlder ? (
+              <TableCell className="text-right tabular-nums text-dim">
+                {num(olderTotal)} <span className="text-faint">×{olderCountTotal}</span>
+              </TableCell>
+            ) : null}
             <TableCell className="text-right font-medium tabular-nums text-text">{num(grandTotal)}</TableCell>
           </TableRow>
         </TableFooter>

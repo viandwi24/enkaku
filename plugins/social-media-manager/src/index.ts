@@ -2086,7 +2086,7 @@ async function runRecapPass(ctx: PluginServiceContext, input: { fleet: z.infer<t
       continue
     }
     const reading = parsed.data
-    const merged = mergeRecap(row.videos, { account: reading.account, videos: reading.videos, truncated: reading.truncated, asked: row.asked }, input.now)
+    const merged = mergeRecap(row.videos, { account: reading.account, videos: reading.videos, truncated: reading.truncated, asked: row.asked, previousComplete: row.complete }, input.now)
     await writeRecap(ctx, entry, {
       ...row,
       state: 'ok',
@@ -2097,6 +2097,7 @@ async function runRecapPass(ctx: PluginServiceContext, input: { fleet: z.infer<t
       videos: merged.videos,
       truncated: reading.truncated,
       window: reading.videos.length,
+      complete: merged.complete,
       note: merged.note,
     })
     if (merged.note !== '') ctx.log.warn('a recap reading could not be lined up with certainty', { key: entry.key, note: merged.note })
