@@ -22,6 +22,7 @@ import runWarmup from './run-warmup'
 import recapVideos from './recap-videos'
 import { RECAP_CONCURRENCY_DEFAULT, RECAP_PREFIX, RECAP_SETTINGS_KEY, RecapRowSchema, RecapSettingsSchema, mergeRecap, type RecapRow } from './recap'
 import { planRecapTick } from './recap-tick'
+import { STOP_PREFIX, stoppedRunOf } from './session-control'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
 import { WARMUP_PREFIX, WarmupRowSchema, isPermanentDispatchFailure, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRow } from './warmup-rows'
 import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
@@ -1440,6 +1441,7 @@ const AUTO_POST_LAST_RUN_KEY = 'state:auto-post-last-run'
  */
 const ROUTER_HEARTBEAT_KEY = 'state:router-last-tick'
 
+
 const AutoPostSettingsSchema = z
   .object({
     version: z.literal(1),
@@ -1803,7 +1805,10 @@ async function runWarmupPass(
     session under the previous model does not find its phones quietly working
     again the moment it upgrades.
   */
-  const runs = entries.map((entry) => entry.run).filter((run) => !run.stopped && !input.stopped.has(run.groupId))
+  const stoppedRuns = await stoppedRunKeys(ctx)
+  const runs = stoppedRuns.has('*')
+    ? []
+    : entries.map((entry) => entry.run).filter((run) => !run.stopped && !input.stopped.has(run.groupId) && !stoppedRuns.has(`${run.groupId}:${run.runId}`))
   const busy = new Set<string>([...input.claimed, ...phonesInFlight(runs)])
   const plan = planWarmupTick({ runs, devices, claimed: busy, now: input.now })
 
@@ -1933,6 +1938,36 @@ function stoppedIds(groups: ReadonlyMap<string, Group>): Set<string> {
 /** The same answer when the tick took the early exit and never read the groups for itself. */
 async function stoppedGroupIds(ctx: PluginServiceContext): Promise<Set<string>> {
   return stoppedIds(await readGroups(ctx))
+}
+
+/**
+ * Every warm-up RUN an operator has stopped, as `groupId:runId` (0.62.0).
+ *
+ * One key per stopped run, written by the page in a single request BEFORE it touches any row, and
+ * honoured here for every row of that run. It replaces relying on each row's own `stopped` flag,
+ * which the page wrote one row at a time: on the owner's farm a Stop cut short after 90 of 219 rows
+ * left phases 1 and 2 of that run due to go out behind a session that read as stopped. A key this
+ * pass cannot read is treated as stopped rather than as absent — the safe way to be wrong.
+ */
+async function stoppedRunKeys(ctx: PluginServiceContext): Promise<Set<string>> {
+  const out = new Set<string>()
+  try {
+    let cursor: string | null = null
+    do {
+      const opts: { prefix: string; limit: number; cursor?: string } = { prefix: STOP_PREFIX, limit: 500 }
+      if (cursor !== null) opts.cursor = cursor
+      const page = await ctx.storage.global.list(opts)
+      for (const entry of page.items) {
+        const run = stoppedRunOf(entry.key)
+        if (run !== null) out.add(run)
+      }
+      cursor = page.nextCursor
+    } while (cursor !== null)
+  } catch (err) {
+    ctx.log.warn('could not read the stopped warm-up runs — sending no warm-up this tick rather than guessing', { error: messageOf(err) })
+    out.add('*')
+  }
+  return out
 }
 
 async function readGroups(ctx: PluginServiceContext): Promise<Map<string, Group>> {
@@ -2687,6 +2722,18 @@ export default definePlugin({
     device list for the durable `#N` (`device_numbers.number`, the one written on the phone's own
     label), shows it the way the Recap tab and every picker already do (`deviceName`), and sorts by
     it, with any phone that has no number after the numbered ones.
+
+    And a Stop that cannot be half done. A Stop pressed at 11:41 the same day wrote `stopped: true`
+    onto the first 90 of a run's 219 rows, in key order, and got no further — the browser `await`ed
+    each write with nothing around it, so one failure abandoned every row after it. Phase 0 stopped
+    for all 73 phones, phase 1 for 17, phase 2 for none: thirty-nine connected phones sat idle while
+    the page offered "Start", and phases 1 and 2 were due to go out on their own behind a session
+    that read as stopped. A run is now stopped by ONE key of its own (`stop:<group>:<run>`), written
+    before any row and honoured by the router for all of them; the row loop after it only tidies up,
+    carries on past a row it cannot write, and says how many. Start lifts the key last, and only when
+    every row was re-timed. The key is its own, not a flag on the group row, because the router
+    rewrites the group row every tick and a flag written between its read and its write would vanish.
+    A run an older build half-stopped is named as such on its page, with both Stop and Start offered.
   */
   version: '0.62.0',
   icon: 'upload',

@@ -4,6 +4,7 @@ import {
   Badge,
   Button,
   Checkbox,
+  WarningIcon,
   CaretDownIcon,
   CaretLeftIcon,
   CaretRightIcon,
@@ -32,7 +33,7 @@ import {
 import { PLATFORM_IDS, type PlatformId } from '../../platforms'
 import { DevicePicker, newPick, pickRefusal, resolvePick, type DevicePick } from './device-picker'
 import { readDuration, rollUpByDevice, runsOf, sessionReport, type DeviceRollup } from '../../warmup-report'
-import { deviceName, listDevices, listGroups, listWarmupRows, pickHost, platformLabel, deleteWarmupRun, retryWarmupRun, runMember, runWarmupAgain, setSessionStopped, listAllWarmupRows, stoppedNewestFrom, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
+import { deviceName, listDevices, listGroups, listStopMarkers, listWarmupRows, partlyStopped, pickHost, platformLabel, deleteWarmupRun, retryWarmupRun, runMember, runWarmupAgain, setSessionStopped, listAllWarmupRows, stoppedNewestFrom, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
 
 /**
  * The Warm-up screen (plan 900 D5, wave 4).
@@ -248,11 +249,11 @@ export function WarmupPanel({ refreshKey, onOpen, onNew }: { refreshKey: number;
   useEffect(() => {
     let live = true
     setError(null)
-    Promise.all([listGroups(), listAllWarmupRows()])
-      .then(([all, rows]) => {
+    Promise.all([listGroups(), listAllWarmupRows(), listStopMarkers()])
+      .then(([all, rows, markers]) => {
         if (!live) return
         setGroups(all.filter((group) => group.kind === 'warmup'))
-        setStoppedNewest(stoppedNewestFrom(rows))
+        setStoppedNewest(stoppedNewestFrom(rows, markers))
         setMoving(isMoving(rows))
         setUpdatedAt(Date.now())
       })
@@ -776,6 +777,24 @@ function RunPicker({
 }
 
 /**
+ * Stop or start a run, and say so when not every row could be written.
+ *
+ * The stop itself is one marker written before any row (`setSessionStopped`), so a failure here
+ * never means the run is still going. It means the tidy-up after it is unfinished — jobs not pulled
+ * back, or on a start, rows not re-timed, in which case the run is deliberately left stopped. Pressing
+ * the same button again finishes it; the toast says exactly that.
+ */
+async function stopRun(group: Group, runId: string): Promise<void> {
+  const done = await setSessionStopped(group, 'stop', runId)
+  if (done.failed > 0) throw new Error(`${done.failed} row${done.failed === 1 ? '' : 's'} could not be updated. Nothing more goes out for this run; press Stop again to finish tidying it.`)
+}
+
+async function startRun(group: Group, runId: string): Promise<void> {
+  const done = await setSessionStopped(group, 'start', runId)
+  if (done.failed > 0) throw new Error(`${done.failed} row${done.failed === 1 ? '' : 's'} could not be re-timed, so the run was left stopped rather than half started. Press Start again.`)
+}
+
+/**
  * What one run can have done to it: stopped or started, retried, removed.
  *
  * All three run in the BROWSER — none of them needs a phone, and the moment
@@ -783,9 +802,11 @@ function RunPicker({
  * being connected. Only STARTING a new run is a member, because a schedule has
  * to be able to do that and a schedule can only run a script.
  */
-function RunControls({ group, runId, rows, onDone }: { group: Group; runId: string; rows: WarmupRow[]; onDone: () => void }): ReactElement {
+function RunControls({ group, runId, rows, markers, onDone }: { group: Group; runId: string; rows: WarmupRow[]; markers: ReadonlySet<string>; onDone: () => void }): ReactElement {
   const { run, isPending } = useAction()
-  const stopped = rows.some((row) => row.stopped)
+  const stopped = markers.has(`${group.id}:${runId}`) || rows.some((row) => row.stopped)
+  /* A Stop that an older build cut short: some rows flagged, the rest still on their way out. */
+  const partial = partlyStopped(rows, markers)
   const busy = isPending(`run:${runId}`)
   const retryable = rows.some((row) => row.steps.some((step) => step.state === 'failed' || step.state === 'skipped'))
 
@@ -794,10 +815,29 @@ function RunControls({ group, runId, rows, onDone }: { group: Group; runId: stri
     void what
   }
 
+  if (partial) {
+    return (
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="flex items-center gap-1 text-[12px] text-warn">
+          <WarningIcon aria-hidden />
+          Only part of this run was stopped — some of it will still go out.
+        </span>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => act('stop', () => stopRun(group, runId), 'This run is now stopped in full', 'This run is stopped, but not every row could be tidied')}>
+          <PauseIcon aria-hidden />
+          Stop all of it
+        </Button>
+        <Button size="sm" disabled={busy} onClick={() => act('start', () => startRun(group, runId), 'This run was started again — the router sends the rest on its next pass', 'Could not start this run again')}>
+          <PlayIcon aria-hidden />
+          Start again
+        </Button>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {stopped ? (
-        <Button size="sm" disabled={busy} onClick={() => act('start', () => setSessionStopped(group, 'start', runId), 'This run was started again — the router sends the rest on its next pass', 'Could not start this run again')}>
+        <Button size="sm" disabled={busy} onClick={() => act('start', () => startRun(group, runId), 'This run was started again — the router sends the rest on its next pass', 'Could not start this run again')}>
           <PlayIcon aria-hidden />
           Start again
         </Button>
@@ -820,7 +860,7 @@ function RunControls({ group, runId, rows, onDone }: { group: Group; runId: stri
               The other runs of this session are untouched.
             </>
           }
-          onConfirm={() => act('stop', () => setSessionStopped(group, 'stop', runId), 'This run was stopped — anything running was cancelled and put back in the queue', 'Could not stop this run')}
+          onConfirm={() => act('stop', () => stopRun(group, runId), 'This run was stopped — anything running was cancelled and put back in the queue', 'This run is stopped, but not every row could be tidied')}
         />
       )}
 
@@ -1025,6 +1065,18 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
       .then(setFleet)
       .catch(() => {})
   }, [refresh])
+
+  /*
+    The stopped runs, read from their one marker key each (0.62.0), so the controls say what the
+    router is actually doing. Re-read with the rows on every poll: a Stop pressed on another screen,
+    or by somebody else, has to show up here without a reload.
+  */
+  const [markers, setMarkers] = useState<ReadonlySet<string>>(new Set())
+  useEffect(() => {
+    listStopMarkers()
+      .then(setMarkers)
+      .catch(() => {})
+  }, [refresh, tick])
   const byId = useMemo(() => new Map(fleet.map((device) => [device.id, device])), [fleet])
 
   /* A second hand for "updated 12s ago" and the elapsed counter — cheap, and never a fetch. */
@@ -1129,7 +1181,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
       */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <RunPicker history={history} shownId={shown?.runId ?? null} newestId={history[0]?.runId ?? null} onPick={setOpenRun} />
-        {group !== null && shown !== null ? <RunControls group={group} runId={shown.runId} rows={shown.rows} onDone={() => setRefresh((n) => n + 1)} /> : null}
+        {group !== null && shown !== null ? <RunControls group={group} runId={shown.runId} rows={shown.rows} markers={markers} onDone={() => setRefresh((n) => n + 1)} /> : null}
       </div>
 
       <LiveLine moving={moving} updatedAt={updatedAt} now={now} />

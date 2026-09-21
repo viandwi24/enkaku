@@ -1,6 +1,6 @@
 import { api } from '@enkaku/ui'
 import { z } from 'zod'
-import { resumeWarmupRow, stopPostRow, stopWarmupRow } from '../session-control'
+import { STOP_PREFIX, resumeWarmupRow, stopKey, stopPostRow, stoppedRunOf, stopWarmupRow } from '../session-control'
 import { retryFailedSteps, withRunSummary } from '../warmup-rows'
 
 /**
@@ -309,6 +309,37 @@ async function writeEntry(key: string, value: unknown): Promise<void> {
   })
 }
 
+async function deleteEntry(key: string): Promise<void> {
+  await api(`${CORE}/api/plugins/smm/data/entry?scope=global&key=${encodeURIComponent(key)}`, Ignored, { method: 'DELETE' })
+}
+
+/**
+ * A stopped warm-up RUN, recorded in one key of its own (0.62.0).
+ *
+ * Stopping a run used to mean writing `stopped: true` onto every one of its rows, one request at a
+ * time, and the router reading those flags. That is not a stop, it is two hundred and nineteen of
+ * them, and any one failing left the rest unwritten: on the owner's production farm (2026-09-21) a
+ * Stop pressed at 11:41 wrote the first 90 rows in key order and got no further — phase 0 stopped
+ * for every phone, phase 1 for 17 of 73, phase 2 for none — so thirty-nine connected phones sat idle
+ * while the page offered "Start", and phases 1 and 2 were set to go out on their own later behind a
+ * session everyone had watched being stopped.
+ *
+ * This key is the stop. It is written FIRST, in one request, and the router honours it for every
+ * row of the run; the per-row loop after it only pulls back jobs already out and tidies the rows.
+ * It lives in a key of its own, never on the group row, because the router rewrites the group row
+ * every tick (its summary) by read-modify-write, and a flag written between that read and that write
+ * would be silently undone.
+ */
+/** Every stopped run on the farm, as `groupId:runId`. */
+export async function listStopMarkers(): Promise<Set<string>> {
+  const out = new Set<string>()
+  for (const entry of await readAll(STOP_PREFIX)) {
+    const run = stoppedRunOf(entry.key)
+    if (run !== null) out.add(run)
+  }
+  return out
+}
+
 /**
  * Stop a session, or start it again — from the BROWSER, with no job at all.
  *
@@ -338,7 +369,11 @@ async function writeEntry(key: string, value: unknown): Promise<void> {
  * rows. Failures to cancel are counted, not thrown: a job that finished a
  * second ago refuses, and the row is owed again either way.
  */
-export async function setSessionStopped(group: Group, action: 'stop' | 'start', runId?: string): Promise<{ cancelled: number; couldNotCancel: number; pulled: number }> {
+export async function setSessionStopped(
+  group: Group,
+  action: 'stop' | 'start',
+  runId?: string,
+): Promise<{ cancelled: number; couldNotCancel: number; pulled: number; failed: number }> {
   const stop = action === 'stop'
   const now = Math.floor(Date.now() / 1000)
 
@@ -368,23 +403,49 @@ export async function setSessionStopped(group: Group, action: 'stop' | 'start', 
     const rows = await readAll(`warmup:${group.id}:`)
     const parsed = rows.map((row) => ({ key: row.key, parsed: WarmupRowSchema.safeParse(row.value) })).filter((entry) => entry.parsed.success)
     const target = runId ?? newestRunId(parsed.map((entry) => entry.parsed.data as WarmupRow))
+    if (target === null) return { cancelled, couldNotCancel, pulled, failed: 0 }
+
+    /*
+      STOP: the marker first. One request, and from the router's next tick no row of this run goes
+      out, whatever happens to the loop below. See `stopKey`.
+    */
+    if (stop) await writeEntry(stopKey(group.id, target), { version: 1, at: now })
+
+    /*
+      Then every row, and a row that cannot be written does not stop the others. This loop used to
+      `await` each write with nothing around it, so the first failure abandoned every row after it.
+      A failure is counted and reported instead; the stop itself no longer depends on this loop.
+    */
+    let failed = 0
     for (const entry of parsed) {
       const row = entry.parsed.data as WarmupRow
       if (row.runId !== target) continue
-      const next = stop ? stopWarmupRow(row, now) : { row: resumeWarmupRow(row, now), cancel: [] as string[], pulled: 0 }
-      pulled += next.pulled
-      await cancelJobs(next.cancel)
-      /* The flag is written even when nothing was pulled back: it is what stops the NEXT activity going out. */
-      await writeEntry(entry.key, { ...withRunSummary(next.row), stopped: stop })
+      try {
+        const next = stop ? stopWarmupRow(row, now) : { row: resumeWarmupRow(row, now), cancel: [] as string[], pulled: 0 }
+        pulled += next.pulled
+        await cancelJobs(next.cancel)
+        /* The flag is still written onto the row: the page reads it, and a farm on an older router honours it. */
+        await writeEntry(entry.key, { ...withRunSummary(next.row), stopped: stop })
+      } catch {
+        failed += 1
+      }
     }
+
     /*
-      The session's own legacy flag is cleared on a start, never set on a stop.
-      It is the older whole-session switch, and leaving it on after somebody
-      started a run would make the run sit there sending nothing with no
-      control on screen that explains why.
+      START: the marker comes off LAST, and only when every row was re-timed. A row that could not
+      be written would otherwise go out on its old schedule the moment the marker lifted; leaving the
+      marker on keeps the whole run stopped, which is the safe way to fail, and pressing Start again
+      finishes the job.
+
+      The session's own legacy flag is cleared on a start, never set on a stop. It is the older
+      whole-session switch, and leaving it on after somebody started a run would make the run sit
+      there sending nothing with no control on screen that explains why.
     */
-    if (!stop && group.stopped) await writeEntry(`group:${group.id}`, { ...group, stopped: false })
-    return { cancelled, couldNotCancel, pulled }
+    if (!stop && failed === 0) {
+      await deleteEntry(stopKey(group.id, target))
+      if (group.stopped) await writeEntry(`group:${group.id}`, { ...group, stopped: false })
+    }
+    return { cancelled, couldNotCancel, pulled, failed }
   }
 
   /* A post session has no runs: the session IS the execution, so the flag stays on it. */
@@ -403,7 +464,7 @@ export async function setSessionStopped(group: Group, action: 'stop' | 'start', 
     }
   }
 
-  return { cancelled, couldNotCancel, pulled }
+  return { cancelled, couldNotCancel, pulled, failed: 0 }
 }
 
 /**
@@ -441,7 +502,7 @@ export async function listAllWarmupRows(): Promise<WarmupRow[]> {
 }
 
 /** Pure: which sessions have a stopped newest run, from rows already in hand. */
-export function stoppedNewestFrom(rows: readonly WarmupRow[]): Set<string> {
+export function stoppedNewestFrom(rows: readonly WarmupRow[], markers: ReadonlySet<string> = new Set()): Set<string> {
   const byGroup = new Map<string, WarmupRow[]>()
   for (const row of rows) {
     const list = byGroup.get(row.groupId)
@@ -452,7 +513,8 @@ export function stoppedNewestFrom(rows: readonly WarmupRow[]): Set<string> {
   const out = new Set<string>()
   for (const [groupId, own] of byGroup) {
     const newest = newestRunId(own)
-    if (newest !== null && own.some((row) => row.runId === newest && row.stopped)) out.add(groupId)
+    if (newest === null) continue
+    if (markers.has(`${groupId}:${newest}`) || own.some((row) => row.runId === newest && row.stopped)) out.add(groupId)
   }
   return out
 }
@@ -505,6 +567,8 @@ export async function deleteWarmupRun(groupId: string, runId: string): Promise<n
     await api(`${CORE}/api/plugins/smm/data/entry?scope=global&key=${encodeURIComponent(row.key)}`, Ignored, { method: 'DELETE' })
     removed += 1
   }
+  // A deleted run's stop marker would otherwise outlive it, naming a run nothing can show any more.
+  await deleteEntry(stopKey(groupId, runId)).catch(() => {})
   return removed
 }
 
@@ -1045,3 +1109,19 @@ export function rowDelta(row: RecapRow): number | null {
 export function rowViews(row: RecapRow): number {
   return row.videos.reduce((sum, video) => sum + video.views, 0)
 }
+
+/**
+ * Is this run stopped only in PART — some rows flagged, some not, and no marker saying the whole run
+ * is? That is exactly what a Stop cut short by an older build left behind, and the page has to say so:
+ * the session reads as stopped while the unflagged rows are still on their way out.
+ */
+export function partlyStopped(rows: readonly WarmupRow[], markers: ReadonlySet<string>): boolean {
+  if (rows.length === 0) return false
+  const first = rows[0] as WarmupRow
+  if (markers.has(`${first.groupId}:${first.runId}`)) return false
+  const flagged = rows.filter((row) => row.stopped).length
+  return flagged > 0 && flagged < rows.length
+}
+
+/** Re-exported so the page's parts import the stop key from the one place it is defined. */
+export { STOP_PREFIX, stopKey }

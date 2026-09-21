@@ -179,3 +179,20 @@ export function resumeWarmupRow<R extends ControlRun>(run: R, now: number): R {
   if (shift <= 0) return run
   return { ...run, steps: run.steps.map((step) => (step.state === 'pending' ? { ...step, notBeforeAt: step.notBeforeAt + shift } : step)) }
 }
+
+/**
+ * A stopped warm-up RUN, recorded in one key of its own (0.62.0). The page writes it in a single
+ * request before touching any row; the router honours it for every row of the run. One definition
+ * here, imported by both, because a router and a page that disagreed on this shape would make Stop
+ * do nothing at all, silently.
+ */
+export const STOP_PREFIX = 'stop:'
+
+export function stopKey(groupId: string, runId: string): string {
+  return `${STOP_PREFIX}${groupId}:${runId}`
+}
+
+/** The `groupId:runId` a stop key names, or `null` for a key that is not one. */
+export function stoppedRunOf(key: string): string | null {
+  return key.startsWith(STOP_PREFIX) ? key.slice(STOP_PREFIX.length) : null
+}
