@@ -44,6 +44,13 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   title: 'Scroll Reels',
   description: 'Browses Instagram Reels with randomised verified swipes. Keywords in caption/author boost like & comment probability.',
   params: paramsSchema,
+  /*
+    Its own memory limit (feed loops, 2026-09-21). Every member on the production fleet starts at about
+    170 MB before it has done anything, and the farm's default limit is 256 MB. A member that scrolls a
+    feed for many minutes, comparing a screenshot before and after every swipe, measured a p90 near
+    250 MB and peaks of 260-278 MB, and was killed for it mid-run. Raised for the feed loops only.
+  */
+  runtime: { maxRssBytes: 512 * 1024 * 1024 },
   result: resultSchema,
   timeout: 45 * 60_000,
 

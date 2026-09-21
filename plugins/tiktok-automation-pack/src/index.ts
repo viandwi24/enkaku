@@ -566,6 +566,13 @@ export const autoScrollScript: PluginMemberScript<typeof paramsSchema, typeof re
   node: { category: 'device', icon: 'activity', summary: ['videos', 'keywords'], keywords: ['scroll', 'feed', 'watch'] },
   result: resultSchema,
   params: paramsSchema,
+  /*
+    Its own memory limit (feed loops, 2026-09-21). Every member on the production fleet starts at about
+    170 MB before it has done anything, and the farm's default limit is 256 MB. A member that scrolls a
+    feed for many minutes, comparing a screenshot before and after every swipe, measured a p90 near
+    250 MB and peaks of 260-278 MB, and was killed for it mid-run. Raised for the feed loops only.
+  */
+  runtime: { maxRssBytes: 512 * 1024 * 1024 },
   // The wall-clock ceiling plus generous slack for launch, settling, and the long-idle bucket.
   timeout: 60 * 60_000,
 
@@ -1744,6 +1751,10 @@ export default definePlugin({
     BACK on the sign-in sheet, and gave up with "a modal (e.g. a policy-consent notice) is likely
     still covering the screen". The sweep now checks the reading it already takes and stops with
     `E_ACCOUNT_SIGNED_OUT`, naming the account, before tapping anything.
+
+    The feed loops also get their own memory limit (`runtime.maxRssBytes`, 512 MB): every member
+    starts at about 170 MB against the farm's 256 MB default. On the production fleet (2026-09-21)
+    `auto-scroll` peaked at 266 MB and was killed mid-run; `keyword-videos` reached 245 MB.
   */
   version: '1.57.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */

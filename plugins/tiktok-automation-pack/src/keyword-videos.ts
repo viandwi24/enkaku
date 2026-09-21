@@ -94,6 +94,13 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   node: { category: 'device', icon: 'search', summary: ['query', 'videos'], keywords: ['search', 'keyword', 'watch'] },
   description: 'Searches a keyword, opens videos from the results grid by measured cell geometry, and watches them with randomised dwell and verified swipes. Never likes, follows, or comments.',
   params: paramsSchema,
+  /*
+    Its own memory limit (feed loops, 2026-09-21). Every member on the production fleet starts at about
+    170 MB before it has done anything, and the farm's default limit is 256 MB. A member that scrolls a
+    feed for many minutes, comparing a screenshot before and after every swipe, measured a p90 near
+    250 MB and peaks of 260-278 MB, and was killed for it mid-run. Raised for the feed loops only.
+  */
+  runtime: { maxRssBytes: 512 * 1024 * 1024 },
   result: resultSchema,
   timeout: 30 * 60_000,
 

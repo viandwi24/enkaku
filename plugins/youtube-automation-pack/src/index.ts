@@ -173,6 +173,10 @@ export default definePlugin({
     `scroll-shorts` now keeps the tree it saw when the Shorts rail does not draw, and gives the rail
     one more chance on the next Short. Two of nine runs on the Z2472 phones (en) failed with a Short
     playing full screen and no like/comment rail over it for twenty seconds, and saved no reading.
+
+    The feed loops also get their own memory limit (`runtime.maxRssBytes`, 512 MB): every member
+    starts at about 170 MB against the farm's 256 MB default, and `scroll-shorts` peaked at 278 MB on
+    the production fleet (2026-09-21) and was killed mid-run.
   */
   version: '0.53.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */

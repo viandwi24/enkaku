@@ -67,7 +67,15 @@ export default definePlugin({
     "View Count" phrase in the cell's description: a reader keyed on that phrase would return zero
     reels on a translated build while looking like an account with nothing posted.
   */
-  version: '0.14.0',
+  /*
+    0.15.0 — THE FEED LOOPS GET THE MEMORY THEY MEASURABLY USE.
+
+    Production, 2026-09-21: every member starts at about 170 MB, the farm's default job limit is
+    256 MB, and `explore-reels`, `scroll-feed` and `scroll-reels` — minutes of scrolling, a screenshot
+    before and after every swipe — peaked at 260-268 MB and were killed mid-run. Each now declares
+    its own `runtime.maxRssBytes` of 512 MB; every other member keeps the farm's default.
+  */
+  version: '0.15.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice. */
   icon: 'activity',
   title: 'Instagram automation pack',

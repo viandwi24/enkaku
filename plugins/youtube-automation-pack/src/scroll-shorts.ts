@@ -134,6 +134,13 @@ const script: PluginMemberScript<typeof paramsSchema, typeof resultSchema> = {
   title: 'Scroll Shorts',
   description: 'Browses the Shorts feed with randomised, verified swipes and human-shaped dwell, with optional likes and comment reading.',
   params: paramsSchema,
+  /*
+    Its own memory limit (feed loops, 2026-09-21). Every member on the production fleet starts at about
+    170 MB before it has done anything, and the farm's default limit is 256 MB. A member that scrolls a
+    feed for many minutes, comparing a screenshot before and after every swipe, measured a p90 near
+    250 MB and peaks of 260-278 MB, and was killed for it mid-run. Raised for the feed loops only.
+  */
+  runtime: { maxRssBytes: 512 * 1024 * 1024 },
   result: resultSchema,
   timeout: 30 * 60_000,
 
