@@ -148,7 +148,17 @@ export default definePlugin({
     remaining unexplained failure — a title tap that landed on the thumbnail — carries its own
     evidence next time.
   */
-  version: '0.51.0',
+  /*
+    0.52.0 — AN UNWATCHED SHORT IS SAID TO BE UNWATCHED, NOT "STILL UPLOADING".
+
+    0.51.0 kept looking at a fresh cell that carried no title ("Tindakan lainnya · Belum ditonton")
+    instead of calling it a wrong title. Production #16 (SM-A075F, id-ID, 2026-09-21) then looked for
+    six minutes: the channel went from 4 videos to 5, the new cell sat at the top, and it never
+    carried a title — this layout draws none on a Short nobody has watched. The run still reports
+    `unverified` (nothing here proves the cell is THIS Short), but it now says what it saw: a new
+    Short, untitled because unwatched, very likely posted — rather than "still uploading".
+  */
+  version: '0.52.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'play',
   title: 'YouTube automation pack',

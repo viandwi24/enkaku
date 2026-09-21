@@ -2096,6 +2096,8 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     const saw =
       confirmError !== null
         ? `confirming it failed (${confirmError.slice(0, 160)}).`
+        : last.kind === 'processing' && !last.titled && untitledYet(last.words)
+          ? `a new Short appeared on the channel, but YouTube draws no title on a Short nobody has watched yet ("${last.words.slice(0, 80)}"), so it could not be matched to this title. It has very likely posted — check the channel.`
         : last.kind === 'processing'
           ? `a new video is still uploading or processing on YouTube ("${last.words.slice(0, 80)}"), and this title could not be read on it yet.`
           : last.kind === 'upload-error'
