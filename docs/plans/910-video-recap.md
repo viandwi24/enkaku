@@ -1,6 +1,6 @@
 # 910 — Video recap: how every posted video is actually doing
 
-> Status: implemented (smm 0.60.0, tiktok 1.54.0, instagram 0.14.0, youtube 0.49.0), verified against real posts on 2026-09-21
+> Status: implemented (smm 0.61.0, tiktok 1.54.0, instagram 0.14.0, youtube 0.49.0), verified against real posts on 2026-09-21
 > Ships: plugins/social-media-manager/src/recap.ts
 
 **Series:** 900 (warm-up in SMM) — the first thing added to the Social Media
@@ -129,6 +129,29 @@ next tick fills it. Two properties the tests pin: a slot freed by a read
 SETTLED this tick is filled in the same tick, and a full farm still expires
 reads whose phone never came back — a spent send budget must never stop the
 pass noticing them.
+
+### D6b — "Only the phones that are connected" is a flag, not a mode
+
+73 phones registered, 20 connected, and the owner wanted to warm up those
+twenty: *"saya mau warm up cuman 20 ini doang"* (2026-09-21). Until then the
+target resolver did not know a phone's status at all — `TargetableDevice` had
+no `status` field — so a session aimed at every phone wrote a row for all 73,
+and the 53 that were offline waited. Correctly: a warm-up has no deadline to
+miss, so `planWarmupTick` skips an offline phone rather than failing it. But
+the session then never finishes, and nothing on the page tells a phone that
+will be back tonight from one that is gone for good.
+
+`onlineOnly` sits beside the exceptions rather than becoming a fifth `mode`,
+for two reasons. "Which phones" and "only the connected ones" are different
+questions, and an operator asks both — the connected phones OF a label is a
+sentence a mode could not say. And it is resolved at each RUN, never frozen
+into a list of ids, because a session is a definition that gets started again:
+started tonight it must mean tonight's twenty.
+
+Applied LAST, after every other exception, so a phone that was never in the
+running says that rather than "was not connected" — two different mistakes, and
+the row has to say which. The same flag is on the recap, where it stops a fleet
+of mostly-absent phones filling the table with rows that say "waiting".
 
 ### D7 — Two dev-only frictions worth writing down
 

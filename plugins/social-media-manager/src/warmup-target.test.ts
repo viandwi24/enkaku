@@ -111,3 +111,65 @@ describe('the "no group" chip', () => {
     expect(ids(resolveWarmupTarget(fleet, target({ exceptGroups: [NO_GROUP] })).chosen)).toEqual(['a', 'b', 'c'])
   })
 })
+
+describe('onlyOnline — warming up just the phones that are connected', () => {
+  /*
+    The owner's production case (2026-09-21): *"ada 73 devices terdaftar tapi
+    ini yang terkoneksi cuman 20, nah saya mau warm up cuman 20 ini doang"*.
+    Before this flag, a session aimed at every phone wrote a row for all 73 and
+    the 53 that were offline waited — correctly, since a warm-up has no
+    deadline to miss — for ever, so the session never finished and nothing on
+    the page told a phone that would come back tonight from one that was gone.
+  */
+  const fleet = [
+    { id: 'a', labels: [{ name: 'tiktok' }], status: 'online' },
+    { id: 'b', labels: [{ name: 'tiktok' }], status: 'offline' },
+    { id: 'c', labels: [{ name: 'youtube' }], status: 'online' },
+    { id: 'd', labels: [], status: 'unauthorized' },
+  ]
+
+  test('off by default, so nothing that worked before changes', () => {
+    const resolved = resolveWarmupTarget(fleet, WarmupTargetSchema.parse({ mode: 'all' }))
+    expect(resolved.chosen.map((d) => d.id)).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  test('on, it keeps only the connected phones', () => {
+    const resolved = resolveWarmupTarget(fleet, WarmupTargetSchema.parse({ mode: 'all', onlineOnly: true }))
+    expect(resolved.chosen.map((d) => d.id)).toEqual(['a', 'c'])
+  })
+
+  test('anything not plainly online is left out, not just "offline"', () => {
+    // `unauthorized` is a phone that cannot take a job either.
+    const resolved = resolveWarmupTarget(fleet, WarmupTargetSchema.parse({ mode: 'all', onlineOnly: true }))
+    expect(resolved.left.map((v) => v.device.id)).toEqual(['b', 'd'])
+  })
+
+  test('it is a flag, not a mode — it narrows whatever was already chosen', () => {
+    // The case a fifth `mode` could not have expressed: the connected phones OF a label.
+    const resolved = resolveWarmupTarget(fleet, WarmupTargetSchema.parse({ mode: 'labels', labels: ['tiktok'], onlineOnly: true }))
+    expect(resolved.chosen.map((d) => d.id)).toEqual(['a'])
+  })
+
+  test('a phone left out by an earlier rule says THAT, not "not connected"', () => {
+    // Two different mistakes to have made, and the row has to say which.
+    const resolved = resolveWarmupTarget(fleet, WarmupTargetSchema.parse({ mode: 'labels', labels: ['youtube'], onlineOnly: true }))
+    expect(resolved.left.find((v) => v.device.id === 'b')?.reason).toContain('carries none of this session')
+    expect(resolved.left.find((v) => v.device.id === 'd')?.reason).toContain('carries none of this session')
+  })
+
+  test('a fleet with no status at all is not silently emptied', () => {
+    // A `device.list` that stops reporting status must not turn "connected only" into "nobody".
+    const noStatus = [{ id: 'a', labels: [] }, { id: 'b', labels: [] }]
+    const resolved = resolveWarmupTarget(noStatus, WarmupTargetSchema.parse({ mode: 'all', onlineOnly: true }))
+    expect(resolved.chosen.map((d) => d.id)).toEqual(['a', 'b'])
+  })
+
+  test('the session line says so', () => {
+    expect(describeTarget(WarmupTargetSchema.parse({ mode: 'all', onlineOnly: true }))).toBe('Every phone — connected phones only')
+    expect(describeTarget(WarmupTargetSchema.parse({ mode: 'all' }))).toBe('Every phone')
+  })
+
+  test('on its own it never means "reach nothing"', () => {
+    expect(reachesNothing(WarmupTargetSchema.parse({ mode: 'all', onlineOnly: true }))).toBe(false)
+  })
+})

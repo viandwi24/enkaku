@@ -3,6 +3,7 @@ import {
   ArrowsClockwiseIcon,
   Badge,
   Button,
+  Checkbox,
   CaretDownIcon,
   CaretLeftIcon,
   CaretRightIcon,
@@ -399,6 +400,7 @@ export function NewWarmupForm({ onCreated }: { onCreated: (groupId: string | nul
   const [fleetKey, setFleetKey] = useState(0)
   /* 'all' by default: the owner's case is the whole farm, and a mode with nothing ticked reaches nobody. */
   const [pick, setPick] = useState<DevicePick>(() => newPick('all'))
+  const [onlineOnly, setOnlineOnly] = useState(false)
   const [advanced, setAdvanced] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -451,13 +453,25 @@ export function NewWarmupForm({ onCreated }: { onCreated: (groupId: string | nul
       label for none of the chosen platforms, because those are the ones whose
       activities are most likely to fail on a signed-out app.
     */
-    const chosen = resolvePick(pick, fleet)
+    // The same narrowing the member applies, so the count on screen is the
+    // count that will actually be planned rather than an optimistic one.
+    const chosen = resolvePick(pick, fleet).filter((device) => !onlineOnly || device.status === 'online')
     const unlabelled = chosen.filter((device) => !draft.platforms.some((id) => device.labels.some((l) => l.name.trim().toLowerCase() === id)))
     const perPhone = draft.activities * Math.min(draft.platforms.length, draft.phases)
     return { chosen: chosen.length, unlabelled: unlabelled.length, total: chosen.length * perPhone, perPhone }
-  }, [fleet, pick, draft.platforms, draft.activities, draft.phases])
+  }, [fleet, pick, onlineOnly, draft.platforms, draft.activities, draft.phases])
 
-  const refusal = useMemo(() => pickRefusal(pick), [pick])
+  const online = useMemo(() => fleet.filter((device) => device.status === 'online').length, [fleet])
+  /*
+    The pick's own refusal, and then the one the connected-only flag can cause.
+    Without the second, ticking it on a farm whose phones are all away left
+    Create enabled and the member answered `E_NO_DEVICES` — a refusal the
+    screen already had every fact needed to give first, in better words.
+  */
+  const refusal = useMemo(
+    () => pickRefusal(pick) ?? (reach.chosen === 0 ? (onlineOnly ? `None of these phones is connected right now (${online} of ${fleet.length} are). Untick "connected phones only" to plan them anyway.` : 'No phone matches — this session would reach nobody.') : null),
+    [pick, reach.chosen, onlineOnly, online, fleet.length],
+  )
 
   const create = useCallback(async () => {
     if (host === null) {
@@ -481,6 +495,7 @@ export function NewWarmupForm({ onCreated }: { onCreated: (groupId: string | nul
           targetLabels: [...pick.labelNames],
           targetGroups: [...pick.groupIds],
           targetDeviceIds: [...pick.deviceIds],
+          onlineOnly,
           activities: draft.activities,
           keywords,
           amount: draft.amount,
@@ -550,6 +565,22 @@ export function NewWarmupForm({ onCreated }: { onCreated: (groupId: string | nul
             onChange={setPick}
             consequence={WARMUP_CONSEQUENCE}
           />
+          {/*
+            The owner's production case (2026-09-21): 73 phones registered, 20
+            connected. Without this, a session aimed at every phone writes a
+            row for all 73 and the 53 that are offline wait — correctly, a
+            warm-up has no deadline to miss — for ever, so the session never
+            finishes. A FLAG rather than a fifth option in the picker above,
+            because "which phones" and "only the connected ones" are different
+            questions and an operator asks both.
+          */}
+          <label className="flex items-center gap-2 text-[12px] text-text-2">
+            <Checkbox checked={onlineOnly} onCheckedChange={(on) => setOnlineOnly(on === true)} />
+            Only the phones connected right now
+            <span className="text-faint">
+              ({online} of {fleet.length} connected). Worked out again each time this session runs.
+            </span>
+          </label>
           <span className="text-[11px] text-faint">
             {reach.chosen} phone{reach.chosen === 1 ? '' : 's'} chosen — {reach.perPhone} activities each, about {reach.total} in all.
             {reach.unlabelled > 0

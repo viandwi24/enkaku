@@ -59,6 +59,21 @@ export const WarmupTargetSchema = z
     exceptLabels: names(20),
     exceptGroups: names(20),
     exceptDeviceIds: names(500),
+    /**
+     * Leave out every phone that is not connected right now.
+     *
+     * A FLAG rather than a fifth `mode`, because "which phones" and "only the
+     * connected ones" are two different questions and an operator asks them
+     * both: *"ada 73 devices terdaftar tapi ini yang terkoneksi cuman 20, nah
+     * saya mau warm up cuman 20 ini doang"* (owner, 2026-09-21) — and just as
+     * often they will want the connected phones OF a label. A mode could only
+     * say one or the other.
+     *
+     * Resolved at each RUN, not stored as a list of ids. A session is a
+     * definition that gets started again, so "the phones connected now" has to
+     * mean now each time — tonight's twenty, not this morning's.
+     */
+    onlineOnly: z.boolean().default(false),
   })
   /* `prefault`, not `default`: the value given here is INPUT, so every field's own default still fills in. */
   .prefault({})
@@ -72,6 +87,8 @@ export interface TargetableDevice {
   label?: string
   labels: readonly { name: string }[]
   group?: { id: string; name: string } | null
+  /** The farm's own word for the connection. Only `'online'` counts as connected. */
+  status?: string
 }
 
 export interface TargetVerdict<D> {
@@ -141,9 +158,16 @@ export function resolveWarmupTarget<D extends TargetableDevice>(devices: readonl
     // even when the start named this very phone.
     const excludedLabel = target.exceptLabels.find((label) => carriesLabel(device.labels, label))
     const excludedGroup = target.exceptGroups.find((group) => inGroup(device, group))
+    /*
+      Connection last, after every other exception. A phone that was never in
+      the running should say so rather than "was not connected" — those are
+      different mistakes, and the whole point of reporting both halves is that
+      a row says which one happened.
+    */
     if (target.exceptDeviceIds.includes(device.id)) left.push({ device, reason: 'was left out of this session by name' })
     else if (excludedLabel !== undefined) left.push({ device, reason: `carries the excluded label "${excludedLabel}"` })
     else if (excludedGroup !== undefined) left.push({ device, reason: `is in the excluded device group "${excludedGroup}"` })
+    else if (target.onlineOnly && device.status !== undefined && device.status !== 'online') left.push({ device, reason: 'was not connected when this run started' })
     else chosen.push(device)
   }
 
@@ -177,5 +201,6 @@ export function describeTarget(target: WarmupTarget): string {
   if (target.exceptDeviceIds.length > 0) except.push(`${target.exceptDeviceIds.length} named ${target.exceptDeviceIds.length === 1 ? 'phone' : 'phones'}`)
   if (target.exceptLabels.length > 0) except.push(`anything labelled ${list(target.exceptLabels)}`)
   if (target.exceptGroups.length > 0) except.push(`anything in ${list(target.exceptGroups)}`)
-  return except.length === 0 ? start : `${start}, except ${except.join(' and ')}`
+  const scoped = except.length === 0 ? start : `${start}, except ${except.join(' and ')}`
+  return target.onlineOnly ? `${scoped} — connected phones only` : scoped
 }

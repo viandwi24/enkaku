@@ -177,13 +177,15 @@ export function RecapPanel({ view, onView }: { view: RecapView; onView: (next: P
     the commonest case the one that takes the most clicks.
   */
   const [pick, setPick] = useState<DevicePick>(() => newPick('all'))
+  const [onlineOnly, setOnlineOnly] = useState(false)
   const [maxVideos, setMaxVideos] = useState(6)
   const [concurrency, setConcurrency] = useState(8)
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
   const [sent, setSent] = useState<string | null>(null)
 
-  const targets = useMemo(() => resolvePick(pick, fleet), [pick, fleet])
+  const targets = useMemo(() => resolvePick(pick, fleet).filter((device) => !onlineOnly || device.status === 'online'), [pick, fleet, onlineOnly])
+  const online = useMemo(() => fleet.filter((device) => device.status === 'online').length, [fleet])
 
   const send = useCallback(async () => {
     const host = pickHost(fleet)
@@ -201,6 +203,7 @@ export function RecapPanel({ view, onView }: { view: RecapView; onView: (next: P
           platforms: [...platforms],
           maxVideos,
           concurrency,
+          onlineOnly,
           targetMode: 'devices',
           targetDeviceIds: targets.map((d) => d.id),
         },
@@ -214,7 +217,7 @@ export function RecapPanel({ view, onView }: { view: RecapView; onView: (next: P
     } finally {
       setSending(false)
     }
-  }, [fleet, platforms, maxVideos, concurrency, targets, reloadRows])
+  }, [fleet, platforms, maxVideos, concurrency, onlineOnly, targets, reloadRows])
 
   const blocked = platforms.size === 0 ? 'Pick at least one platform.' : (pickRefusal(pick) ?? (targets.length === 0 ? 'No phone matches — nothing would be read.' : null))
   const summary = targets.length === 0 ? '' : `${targets.length} phone${targets.length === 1 ? '' : 's'} × ${[...platforms].map((id) => TITLE_OF[id] ?? id).join(', ')}`
@@ -303,6 +306,20 @@ export function RecapPanel({ view, onView }: { view: RecapView; onView: (next: P
           <div className="space-y-1.5">
             <p className="text-[12px] font-medium text-text-2">Which phones</p>
             <DevicePicker fleet={fleet} loading={devices === null} error={loadError} onRetry={load} value={pick} onChange={setPick} />
+            {/*
+              Same flag the warm-up form carries, for the same farm. A read
+              queued for a phone that is not connected waits up to six hours
+              and then gives up by name — honest, but on a fleet where most
+              phones are away most of the time it fills the table with rows
+              that say "waiting" and nothing else.
+            */}
+            <label className="flex items-center gap-2 text-[12px] text-text-2">
+              <Checkbox checked={onlineOnly} onCheckedChange={(on) => setOnlineOnly(on === true)} />
+              Only the phones connected right now
+              <span className="text-faint">
+                ({online} of {fleet.length} connected)
+              </span>
+            </label>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
