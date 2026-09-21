@@ -270,7 +270,7 @@ export type PhoneQueueStatus =
   | { kind: 'held' }
   | { kind: 'ready' }
   | { kind: 'paused' }
-  | { kind: 'done'; failed: number }
+  | { kind: 'done'; failed: number; skipped: number }
 
 export function phoneQueueStatus(input: {
   deviceId: string
@@ -293,7 +293,8 @@ export function phoneQueueStatus(input: {
   const next = own.find(isWaiting)
   if (!next) {
     const failed = own.reduce((n, row) => n + row.steps.filter((step) => step.state === 'failed').length, 0)
-    return { kind: 'done', failed }
+    const skipped = own.reduce((n, row) => n + row.steps.filter((step) => step.state === 'skipped').length, 0)
+    return { kind: 'done', failed, skipped }
   }
   if (input.run === 'ready') return { kind: 'ready' }
   if (input.run === 'paused') return { kind: 'paused' }

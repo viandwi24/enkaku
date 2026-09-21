@@ -11,7 +11,7 @@ import { clearAccountProblem, deviceName, listAccountProblems, listDevices, type
  * sees which, and says it has been dealt with. Nothing is shown when nothing needs a person.
  */
 export function AccountAlerts({ refreshKey }: { refreshKey: number }): ReactElement | null {
-  const [problems, setProblems] = useState<AccountProblem[]>([])
+  const [problems, setProblems] = useState<(AccountProblem & { key: string })[]>([])
   const [fleet, setFleet] = useState<ReadonlyMap<string, Device>>(new Map())
   const [reload, setReload] = useState(0)
   const { run, isPending } = useAction()
@@ -39,7 +39,7 @@ export function AccountAlerts({ refreshKey }: { refreshKey: number }): ReactElem
       </div>
       {problems.map((p) => {
         const device = fleet.get(p.deviceId)
-        const key = `acct:${p.deviceId}:${p.platform}`
+        const key = p.key
         return (
           <div key={key} className="flex flex-wrap items-center gap-2 text-[12px]">
             <Badge variant="outline">{device ? deviceName(device) : p.deviceId.slice(0, 8)}</Badge>
@@ -49,7 +49,7 @@ export function AccountAlerts({ refreshKey }: { refreshKey: number }): ReactElem
               variant="outline"
               disabled={isPending(key)}
               onClick={() =>
-                void run(key, () => clearAccountProblem(p.deviceId, p.platform), {
+                void run(key, () => clearAccountProblem(p), {
                   success: 'Marked signed in — the router sends to it again',
                   failure: 'Could not clear it',
                   onSuccess: () => setReload((n) => n + 1),

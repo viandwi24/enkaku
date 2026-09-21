@@ -1904,6 +1904,31 @@ async function runWarmupPass(
       }
     }
   }
+  /*
+    A row already under way whose account turned out to need a person (0.64.0): its remaining
+    activities are skipped, with the reason, rather than sent to fail the same way — and so the row
+    finishes and gives back its place in the queue and its phone. Retry failed sends them again once
+    the account is marked signed in. Found on the owner's A06 (2026-09-22): TikTok signed it out on
+    the first activity, and the second went out a tick later to fail the same way.
+  */
+  for (const entry of entries) {
+    const run = entry.run
+    if (run.platform === null || !isAdmitted(run) || !input.accounts.has(`${run.deviceId}:${run.platform}`)) continue
+    if (!run.steps.some((step) => step.state === 'pending')) continue
+    const problem = input.accounts.get(`${run.deviceId}:${run.platform}`) as AccountProblem
+    const skipped = withRunSummary({
+      ...run,
+      steps: run.steps.map((step) => (step.state === 'pending' ? { ...step, state: 'skipped' as const, error: `Not sent: ${accountProblemText(problem)}`, settledAt: input.now } : step)),
+    })
+    try {
+      const written = await ctx.storage.global.setIfVersion(entry.key, skipped, entry.version)
+      if (written === null) continue
+      entry.version = written.version
+      entry.run = skipped
+    } catch (err) {
+      ctx.log.warn('could not skip a warm-up row held by its account', { key: entry.key, error: messageOf(err) })
+    }
+  }
   const liveKeys = new Set(runs.map((run) => `${run.groupId}:${run.runId}`))
   runs = entries.map((entry) => entry.run).filter((run) => liveKeys.has(`${run.groupId}:${run.runId}`) && isAdmitted(run))
 

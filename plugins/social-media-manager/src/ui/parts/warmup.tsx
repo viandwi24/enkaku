@@ -1044,8 +1044,8 @@ function RunControls({ group, runId, rows, markers, pause, onDone }: { group: Gr
           confirmLabel="Retry failed"
           description={
             <>
-              Only the activities that <strong>failed</strong>, and the ones a stopped sequence never reached, go again — their turn is now.
-              Anything that already ran is left alone.
+              Only the activities that <strong>failed</strong> or were <strong>skipped</strong> go again. Their phones go to the back of the
+              queue and are let out in turn, under the run's cap. Anything that already ran is left alone.
               <br />
               This run only; the others keep their own history.
             </>

@@ -198,7 +198,7 @@ describe('phoneQueueStatus — what the State column says', () => {
 
   test('a finished phone is done, and says how many of its activities failed', () => {
     const row: QueueRow = { deviceId: 'a', phase: 0, queueSeq: 0, admittedAt: NOW - 600, steps: [success(NOW - 5), { state: 'failed', notBeforeAt: NOW - 300 }] }
-    expect(phoneQueueStatus({ ...base, deviceId: 'a', rows: [row] })).toEqual({ kind: 'done', failed: 1 })
+    expect(phoneQueueStatus({ ...base, deviceId: 'a', rows: [row] })).toEqual({ kind: 'done', failed: 1, skipped: 0 })
   })
 })
 

@@ -664,18 +664,24 @@ export async function retryWarmupRun(groupId: string, runId: string, onlyDevices
 }
 
 /** Every account that needs a person (0.64.0, `account-status.ts`), oldest first. */
-export async function listAccountProblems(): Promise<AccountProblem[]> {
-  const out: AccountProblem[] = []
+export async function listAccountProblems(): Promise<(AccountProblem & { key: string })[]> {
+  const out: (AccountProblem & { key: string })[] = []
   for (const entry of await readAll(ACCOUNT_PROBLEM_PREFIX)) {
     const parsed = AccountProblemSchema.safeParse(entry.value)
-    if (parsed.success) out.push(parsed.data)
+    if (parsed.success) out.push({ ...parsed.data, key: entry.key })
   }
   return out.sort((a, b) => a.at - b.at)
 }
 
-/** "Signed in": somebody dealt with it on the phone, so the router may send to it again. */
-export async function clearAccountProblem(deviceId: string, platform: string): Promise<void> {
-  await deleteEntry(accountKey(deviceId, platform))
+/**
+ * "Signed in": somebody dealt with it on the phone, so the router may send to it again. Deletes the
+ * key the record is ACTUALLY stored under as well as the one it should be: the router honours a
+ * record by what it says, not by its key, so a record under any other key would otherwise hold the
+ * phone with nothing on the page able to clear it.
+ */
+export async function clearAccountProblem(problem: Pick<AccountProblem, 'deviceId' | 'platform'> & { key: string }): Promise<void> {
+  await deleteEntry(problem.key)
+  if (problem.key !== accountKey(problem.deviceId, problem.platform)) await deleteEntry(accountKey(problem.deviceId, problem.platform))
 }
 
 /** Every device group paused inside a warm-up run, as `groupId:runId:deviceGroupId` (0.64.0). */
