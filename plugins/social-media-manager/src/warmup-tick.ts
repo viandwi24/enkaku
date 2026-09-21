@@ -37,14 +37,13 @@ export interface WarmupDispatch {
  *   existed, so it cannot see a job this tick just made.
  * - **a busy or offline phone is skipped, not failed.** It frees itself, and
  *   the step keeps its place in the queue; the next tick tries again.
- * - **posting wins a tie.** The caller passes the phones the post pass already
- *   claimed, so a warm-up never takes a phone out from under a real upload.
- *   A warm-up is the lowest-value work on the farm and should behave like it.
+ * - **an upload already on a phone is never taken from.** The caller passes
+ *   the phones with a post job out, and those wait until it finishes. Since
+ *   0.64.0 the warm-up pass runs BEFORE the post pass and has priority on any
+ *   phone it has begun: posts pass over those until its warm-up is done.
  *
- * Deliberately NOT capped by the session's `concurrency`. The spread is the
- * start jitter — eighty phones each waiting a random 0-120 s — and a second
- * cap on top of it would hold a phone past its turn and stretch the gaps the
- * operator chose into whatever the queue happened to be doing.
+ * Only rows the queue has let out reach this function (0.64.0,
+ * `warmup-queue.ts`), which is where the cap on how many run at once lives.
  */
 export function planWarmupTick(input: {
   runs: readonly WarmupRow[]

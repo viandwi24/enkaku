@@ -2014,7 +2014,25 @@ async function runWarmupPass(
   }
   const over = runs.filter(isRunOver).length
   ctx.log.debug('warm-up pass done', { rows: runs.length, sent: plan.length, finished: over })
-  return sent
+  /*
+    The phones warm-up OWNS for the rest of this tick (0.64.0): the ones it just sent work to, and
+    every phone whose warm-up has begun in a run that is playing and is not finished — through the
+    gaps between its activities and the rest between its platforms. The post pass runs after this and
+    passes over all of them: warm-up has priority on a phone it has started (the owner, 2026-09-22:
+    *"prioritasnya bagian warmup, menunggu warmup selesai baru post jalan di device itu"*). A phone
+    whose turn in the warm-up queue has not come is not owned; a post may use it until then.
+  */
+  const owned = new Set(sent)
+  const begun = new Map<string, { started: boolean; work: boolean }>()
+  for (const run of runs) {
+    const key = `${run.groupId}:${run.runId}:${run.deviceId}`
+    const state = begun.get(key) ?? { started: false, work: false }
+    if (isAdmitted(run) || run.steps.some((step) => step.startedAt !== null)) state.started = true
+    if (run.steps.some((step) => step.state === 'pending' || step.state === 'queued')) state.work = true
+    begun.set(key, state)
+  }
+  for (const [key, state] of begun) if (state.started && state.work) owned.add(key.split(':').pop() as string)
+  return owned
 }
 
 function messageOf(err: unknown): string {
@@ -2494,6 +2512,17 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     if (key === '*') for (const id of groups.keys()) stopped.add(id)
     else if (key.endsWith(`:${POST_RUN}`)) stopped.add(key.slice(0, -(POST_RUN.length + 1)))
   }
+
+  /*
+    Warm-up FIRST (0.64.0). It used to run last, after posting had taken every phone it wanted — and
+    between a warm-up's own activities its phone looks free, so a post could land in the middle of a
+    warm-up. The owner's rule is the other way round: the two stay separate, each under its own cap,
+    and where they meet on one phone, warm-up goes first and the post waits for it to finish. So the
+    warm-up pass takes its phones now, with only the posts already on phones counted against it
+    (nothing is ever cancelled), and every phone it owns is added to the post pass's `claimed`.
+  */
+  const warmed = await runWarmupPass(ctx, { fleet, names, claimed, now: Math.floor(Date.now() / 1000), stopped, groups, accounts })
+  for (const deviceId of warmed) claimed.add(deviceId)
   const groupStates = new Map<string, RowState[]>()
   /** groupId → deviceId → the row key that owns that phone. */
   const ownersByGroup = new Map<string, Map<string, string>>()
@@ -2912,14 +2941,12 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     }
   }
 
-  // Last, and with the post pass's claims: posting is the higher-value work.
-  const warmed = await runWarmupPass(ctx, { fleet, names, claimed, now: Math.floor(Date.now() / 1000), stopped, groups, accounts })
   /*
-    And the recap after THAT, with both sets of claims. A recap read is the
-    least urgent thing a phone can be asked to do — the numbers it collects are
-    hours old by design — so it takes whatever phones the other two passes left.
+    The recap last, with both sets of claims (warm-up's are already in `claimed`). A recap read is the
+    least urgent thing a phone can be asked to do — the numbers it collects are hours old by design —
+    so it takes whatever phones the other two passes left.
   */
-  await runRecapPass(ctx, { fleet, names, claimed: new Set([...claimed, ...warmed]), now: Math.floor(Date.now() / 1000) })
+  await runRecapPass(ctx, { fleet, names, claimed, now: Math.floor(Date.now() / 1000) })
 }
 
 /**
@@ -3122,6 +3149,12 @@ export default definePlugin({
     seconds on 2026-09-21 and every job sent to those phones was reset and failed. A session left
     with only account-held phones pauses itself too, and the automatic-pause sentence names all three
     reasons.
+
+    Warm-up before posts on a shared phone (the owner, 2026-09-22). The two stay separate, each under
+    its own cap; where they meet on one phone, warm-up goes first. The warm-up pass now runs BEFORE
+    the post pass and owns every phone whose warm-up has begun and is not finished — through its gaps
+    and between its platforms — and the post pass passes over those. An upload already on a phone is
+    never cancelled: the warm-up waits for it, then goes ahead of the next post.
   */
   version: '0.64.0',
   icon: 'upload',
