@@ -36,6 +36,7 @@ import type { JobService } from '../services/job-service'
 import type { AuditLogger } from '../auth/audit'
 import type { EventRecorder } from '../events/recorder'
 import type { RecordingService } from '../recording/service'
+import { createTouchCaptureService, type TouchCaptureStatus } from '../device/touch-capture/service'
 import type { Db } from '../db'
 import { devices } from '../db/schema'
 import { canCancelJob, canUseDevice, canUseShell } from '../auth/acl'
@@ -290,6 +291,8 @@ interface ConnState {
   warnedAt: Map<string, number>
   /** Plan 209 §3.2 D7/D8: one record per `${deviceId}:${pointerId}` while a finger is down. */
   touches: Map<string, TouchStream>
+  /** Devices this connection is watching a PHYSICAL touch capture on (plan 1000 §4.6) — released on `touch.capture.stop` and on WS close. */
+  touchCaptures: Set<string>
 }
 
 /** Plan 209 §4.10: tracks one live pointer stream from `down` to `up`, so the core coalesces moves and recovers the recorded shape on `up`. */
@@ -582,6 +585,7 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
         nextStreamId: 1,
         logSubs: new Map(),
         monitorSubs: new Set(),
+        touchCaptures: new Set(),
         shellDevices: new Set(),
         inspectAttached: new Set(),
         warnedAt: new Map(),
@@ -724,6 +728,37 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
   crashWatcher.onJobCrash((_deviceId, jobId, e) =>
     deps.onJobCrash?.(jobId, { package: e.package, exception: e.exception, message: e.message }),
   )
+
+  /**
+   * Fan a capture's strokes out ONLY to the connections watching that
+   * device's capture (plan 1000 §4.6) — the same scoping `monitorTargets`
+   * uses, and for the same reason: a hard drag is a stroke every few
+   * hundred milliseconds, and a tab with nothing to do with this device has
+   * no business paying for it.
+   */
+  const touchCaptureTargets = (deviceId: string): ServerWebSocket<unknown>[] =>
+    [...conns.entries()].filter(([ws, s]) => ws.readyState === 1 && s.touchCaptures.has(deviceId)).map(([ws]) => ws)
+
+  const touchCapture = createTouchCaptureService({
+    shellPort: shellPortFor,
+    log: deps.log.child('touch-capture'),
+    onStroke: (deviceId, stroke) => {
+      for (const ws of touchCaptureTargets(deviceId)) send(ws, { type: 'touch.capture.stroke', payload: { deviceId, stroke } })
+    },
+    onStatus: (status) => {
+      for (const ws of touchCaptureTargets(status.deviceId)) send(ws, { type: 'touch.capture.status', payload: status })
+      // A capture that ended on its own (the stream died, the phone left)
+      // takes its viewers' bookkeeping with it — otherwise a later
+      // `touch.capture.start` from the same tab would look like a rejoin.
+      if (status.state !== 'active' && status.state !== 'starting') {
+        for (const state of conns.values()) state.touchCaptures.delete(status.deviceId)
+      }
+    },
+    // The same readiness hold a monitor stream takes (plan 43 §3.7 table): a
+    // capture is a reason to keep the phone awake, and exactly one hold is
+    // held for the life of the stream, not one per viewer.
+    holdFor: (deviceId) => deps.readiness?.hold(deviceId, 'monitor') ?? Promise.resolve({ release() {} }),
+  })
 
   // Plan 94 §4.9, §5 step 94.3 — the recorder's two pushes, registered once
   // at router construction, the same "one router, one subscriber" shape
@@ -2104,6 +2139,74 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
             return
           }
 
+          case 'touch.capture.start':
+          case 'touch.capture.stop':
+          case 'touch.capture.clear': {
+            const { deviceId } = msg.payload
+
+            // LETTING GO IS NEVER GATED. `stop` runs before the admission
+            // check on purpose: control can be lost while a capture is open
+            // (a job claims the device, another operator takes over), and a
+            // gated `stop` would then refuse the one message that releases
+            // this connection's share of a `getevent` stream — leaving it
+            // running on a phone whose viewer has already walked away. The
+            // same reasoning every other release path here follows.
+            if (msg.type === 'touch.capture.stop') {
+              state.touchCaptures.delete(deviceId)
+              touchCapture.stop(state.clientId, deviceId)
+              send(ws, { type: 'touch.capture.status', ...(msgId ? { id: msgId } : {}), payload: touchCapture.status(deviceId) })
+              return
+            }
+
+            // Everything that OPENS or READS one is gated exactly like
+            // `inspect.*`, and for the same reason (plan 56 §3.7, plan 1000
+            // §3.6): a stream of touch coordinates IS the screen's content
+            // for anything typed on a keypad — a PIN is four positions and
+            // three intervals — so it is control-grade, server-
+            // authoritatively, never merely a hidden tab.
+            const gate = admit(deviceId, state, 'control')
+            if (!gate.ok) {
+              sendError(ws, gate.code, gate.message, msgId)
+              return
+            }
+            if (gate.warning) warnOnce(ws, state, deviceId, gate.warning)
+
+            if (msg.type === 'touch.capture.clear') {
+              const cleared = touchCapture.clear(deviceId)
+              send(ws, { type: 'touch.capture.status', ...(msgId ? { id: msgId } : {}), payload: cleared })
+              return
+            }
+
+            deps.activities.touchControl(deviceId, state.clientId, actorOf(state))
+            // Added BEFORE the await: `start()` resolves only once the probe
+            // and the stream are both up, and a stroke can be emitted on the
+            // very next chunk — a viewer registered after that await misses
+            // whatever landed in between.
+            state.touchCaptures.add(deviceId)
+            let status: TouchCaptureStatus
+            try {
+              status = await touchCapture.start(state.clientId, deviceId)
+            } catch (err) {
+              state.touchCaptures.delete(deviceId)
+              throw err
+            }
+            if (status.state === 'unavailable') state.touchCaptures.delete(deviceId)
+            else if (!state.touchCaptures.has(deviceId)) {
+              // A `stop` that raced in while the probe was still running.
+              touchCapture.stop(state.clientId, deviceId)
+            } else {
+              deps.recorder.record({
+                deviceId,
+                stream: 'main',
+                kind: 'touch.capture.started',
+                actor: state.userId,
+                meta: { sources: status.sources.map((src) => `${src.path} (${src.name})`), viewers: status.viewers },
+              })
+            }
+            send(ws, { type: 'touch.capture.status', ...(msgId ? { id: msgId } : {}), payload: status })
+            return
+          }
+
           case 'inspect.attach':
           case 'inspect.dump':
           case 'inspect.find': {
@@ -2536,6 +2639,10 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
       // this is the call the plan's risk table calls out explicitly).
       monitors.releaseClient(state.clientId)
       state.monitorSubs.clear()
+      // A dropped tab must not leave a `getevent` stream running on a phone
+      // nobody is watching any more (plan 1000 §4.6).
+      touchCapture.releaseClient(state.clientId)
+      state.touchCaptures.clear()
       for (const deviceId of state.shellDevices) shellSessions.release(deviceId)
       state.shellDevices.clear()
       // A control marker is deliberately NOT ended on close (MVP 04 §1.3: it
@@ -2611,6 +2718,9 @@ export function createWsMessageHandler(deps: WsHandlerDeps) {
     /** Device offline / session closed (plan 24 §4.5) — stops its monitor streams regardless of subscriber count. */
     stopMonitorsForDevice(deviceId: string): void {
       monitors.stopForDevice(deviceId)
+      // Same trigger, same reason: the phone is gone, so its capture cannot
+      // be reading anything (plan 1000 §4.6).
+      touchCapture.stopForDevice(deviceId)
       // A stopped monitor stream includes a running crash watch — `unwatch`
       // just drops now-stale bookkeeping (plan 37 §3.3: detection resumes
       // the next time a session opens for this device).
