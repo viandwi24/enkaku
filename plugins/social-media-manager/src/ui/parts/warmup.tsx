@@ -34,8 +34,8 @@ import {
 import { PLATFORM_IDS, type PlatformId } from '../../platforms'
 import { DevicePicker, newPick, pickRefusal, resolvePick, type DevicePick } from './device-picker'
 import { readDuration, rollUpByDevice, runsOf, sessionReport, type DeviceRollup } from '../../warmup-report'
-import { queueCounts } from '../../warmup-queue'
-import { deviceName, listDevices, listGroups, listStopMarkers, listStopMarkerInfo, listWarmupRows, partlyStopped, pickHost, platformLabel, deleteWarmupRun, retryWarmupRun, runMember, runWarmupAgain, setSessionStopped, listAllWarmupRows, stoppedNewestFrom, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
+import { phoneQueueStatus, queueCounts, type PhoneQueueStatus } from '../../warmup-queue'
+import { deviceName, listDevices, listGroups, listStopMarkers, listStopMarkerInfo, listHolds, setGroupHeld, skipWarmupPhone, listWarmupRows, partlyStopped, pickHost, platformLabel, deleteWarmupRun, retryWarmupRun, runMember, runWarmupAgain, setSessionStopped, listAllWarmupRows, stoppedNewestFrom, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
 import type { StopMarker } from '../../session-control'
 
 /**
@@ -797,6 +797,115 @@ function RunPicker({
   )
 }
 
+/** A phone's queue status, in the State column (0.64.0). */
+function QueueState({ status }: { status: PhoneQueueStatus }): ReactElement {
+  const [text, tone] =
+    status.kind === 'running'
+      ? [`running · platform ${status.phase + 1}`, 'text-accent']
+      : status.kind === 'queued'
+        ? [`#${status.position} in queue`, 'text-dim']
+        : status.kind === 'blocked'
+          ? [status.reason === 'offline' ? 'waiting · phone offline' : 'resting between platforms', status.reason === 'offline' ? 'text-warn' : 'text-faint']
+          : status.kind === 'held'
+            ? ['waiting · its group is paused', 'text-warn']
+            : status.kind === 'ready'
+              ? ['ready · waits for Play', 'text-faint']
+              : status.kind === 'paused'
+                ? ['paused', 'text-faint']
+                : status.failed > 0
+                  ? [`done · ${status.failed} failed`, 'text-bad']
+                  : ['done', 'text-ok']
+  return <span className={cn('text-[12px]', tone)}>{text}</span>
+}
+
+/** Take one waiting phone out of the run (0.64.0) — the queue moves on to the next. */
+function SkipPhone({ group, runId, deviceId, onDone }: { group: Group; runId: string; deviceId: string; onDone: () => void }): ReactElement {
+  const { run, isPending } = useAction()
+  return (
+    <div className="mt-2">
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={isPending(`skip:${deviceId}`)}
+        onClick={() => void run(`skip:${deviceId}`, () => skipWarmupPhone(group.id, runId, deviceId), { success: 'This phone was taken out of the run', failure: 'Could not skip this phone', onSuccess: onDone })}
+      >
+        Skip this phone
+      </Button>
+    </div>
+  )
+}
+
+/**
+ * The run, one device group at a time (0.64.0): how many of the group's phones are running, waiting
+ * and done, and a Pause/Play and a Retry that reach THAT group only. On 2026-09-21 a run over 73 phones
+ * had one set of buttons, so starting PFB3F2 also sent PFB1 round again.
+ */
+function GroupControls({ group, runId, rows, byId, holds, onDone }: { group: Group; runId: string; rows: WarmupRow[]; byId: ReadonlyMap<string, Device>; holds: ReadonlySet<string>; onDone: () => void }): ReactElement | null {
+  const { run, isPending } = useAction()
+  const groups = new Map<string, { name: string; rows: WarmupRow[] }>()
+  let ungrouped = 0
+  for (const row of rows) {
+    const g = byId.get(row.deviceId)?.group ?? null
+    if (g === null) {
+      ungrouped += 1
+      continue
+    }
+    const entry = groups.get(g.id) ?? { name: g.name, rows: [] }
+    entry.rows.push(row)
+    groups.set(g.id, entry)
+  }
+  // Only worth drawing when the run spans more than one group — a group plus phones in none counts.
+  if (groups.size === 0 || (groups.size === 1 && ungrouped === 0)) return null
+  return (
+    <div className="flex w-full flex-col gap-1">
+      {[...groups.entries()]
+        .sort((a, b) => a[1].name.localeCompare(b[1].name))
+        .map(([id, entry]) => {
+          const counts = queueCounts(entry.rows)
+          const held = holds.has(`${group.id}:${runId}:${id}`)
+          const failed = entry.rows.some((row) => row.steps.some((step) => step.state === 'failed' || step.state === 'skipped'))
+          const devices = new Set(entry.rows.map((row) => row.deviceId))
+          const key = `grp:${id}`
+          return (
+            <div key={id} className="flex flex-wrap items-center gap-1.5 text-[12px]">
+              <Badge variant="outline">{entry.name}</Badge>
+              <span className={held ? 'text-warn' : 'text-dim'}>
+                {held ? 'paused · ' : ''}
+                {counts.running} running · {counts.waiting} waiting · {counts.over} done
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={isPending(key)}
+                onClick={() =>
+                  void run(key, () => setGroupHeld(group.id, runId, id, !held), {
+                    success: held ? `${entry.name} plays again` : `${entry.name} paused — what is running finishes`,
+                    failure: 'Could not change this group',
+                    onSuccess: onDone,
+                  })
+                }
+              >
+                {held ? <PlayIcon aria-hidden /> : <PauseIcon aria-hidden />}
+                {held ? 'Play group' : 'Pause group'}
+              </Button>
+              {failed ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={isPending(key)}
+                  onClick={() => void run(key, () => retryWarmupRun(group.id, runId, devices), { success: `${entry.name}'s failed activities are back in the queue`, failure: 'Could not retry', onSuccess: onDone })}
+                >
+                  <ArrowsClockwiseIcon aria-hidden />
+                  Retry failed
+                </Button>
+              ) : null}
+            </div>
+          )
+        })}
+    </div>
+  )
+}
+
 /**
  * Stop or start a run, and say so when not every row could be written.
  *
@@ -1115,7 +1224,8 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
     listDevices()
       .then(setFleet)
       .catch(() => {})
-  }, [refresh])
+    // With the poll too since 0.64.0: whether a phone is online is what its queue status says.
+  }, [refresh, tick])
 
   /*
     The stopped runs, read from their one marker key each (0.62.0), so the controls say what the
@@ -1130,6 +1240,13 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
       .catch(() => {})
   }, [refresh, tick])
   const byId = useMemo(() => new Map(fleet.map((device) => [device.id, device])), [fleet])
+  /* Device groups paused inside a run (0.64.0), re-read with everything else. */
+  const [holds, setHolds] = useState<ReadonlySet<string>>(new Set())
+  useEffect(() => {
+    listHolds()
+      .then(setHolds)
+      .catch(() => {})
+  }, [refresh, tick])
 
   /* A second hand for "updated 12s ago" and the elapsed counter — cheap, and never a fetch. */
   useEffect(() => {
@@ -1195,6 +1312,25 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
   const working = devices.filter((device) => !device.idle)
   const idle = devices.filter((device) => device.idle)
 
+  /* Where each phone stands in the run's queue (0.64.0) — the State column. */
+  const runKey = group !== null && shown !== null ? `${group.id}:${shown.runId}` : ''
+  const marker = runKey === '' ? null : (markerInfo.get(runKey) ?? null)
+  const runState: 'ready' | 'paused' | 'running' = marker === null ? 'running' : marker.by === 'ready' ? 'ready' : 'paused'
+  const statusOf = (deviceId: string): PhoneQueueStatus => {
+    const device = byId.get(deviceId)
+    const deviceGroup = device?.group?.id ?? null
+    return phoneQueueStatus({
+      deviceId,
+      rows,
+      online: device?.status === 'online',
+      run: runState,
+      held: deviceGroup !== null && holds.has(`${runKey}:${deviceGroup}`),
+      now: Math.floor(now / 1000),
+      startGapSec: group?.warmup?.startGapSec ?? [20, 60],
+      runKey,
+    })
+  }
+
   const header = (
     <div className="flex flex-wrap items-center gap-2">
       <Button variant="outline" size="sm" onClick={onBack}>
@@ -1235,6 +1371,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
       <div className="flex flex-wrap items-center justify-between gap-2">
         <RunPicker history={history} shownId={shown?.runId ?? null} newestId={history[0]?.runId ?? null} markerOf={(runId) => (group === null ? null : (markerInfo.get(`${group.id}:${runId}`) ?? null))} onPick={setOpenRun} />
         {group !== null && shown !== null ? <RunControls group={group} runId={shown.runId} rows={shown.rows} markers={markers} pause={markerInfo.get(`${group.id}:${shown.runId}`) ?? null} onDone={() => setRefresh((n) => n + 1)} /> : null}
+        {group !== null && shown !== null ? <GroupControls group={group} runId={shown.runId} rows={shown.rows} byId={byId} holds={holds} onDone={() => setRefresh((n) => n + 1)} /> : null}
       </div>
 
       <LiveLine moving={moving} updatedAt={updatedAt} now={now} />
@@ -1325,7 +1462,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
                         <Progress done={device.counts.success} failed={device.counts.failed} total={device.activities} />
                       </TableCell>
                       <TableCell>
-                        <StateBadge state={device.state} />
+                        <QueueState status={statusOf(device.deviceId)} />
                       </TableCell>
                       <TableCell className="text-[12px] text-dim">
                         {device.counts.success > 0 ? <span className="text-ok">{device.counts.success} done</span> : null}
@@ -1339,6 +1476,9 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
                         <TableCell />
                         <TableCell colSpan={5}>
                           <PhaseDetail device={device} phases={phases} />
+                          {group !== null && shown !== null && ['queued', 'blocked', 'held', 'ready', 'paused'].includes(statusOf(device.deviceId).kind) ? (
+                            <SkipPhone group={group} runId={shown.runId} deviceId={device.deviceId} onDone={() => setRefresh((n) => n + 1)} />
+                          ) : null}
                         </TableCell>
                       </TableRow>
                     ) : null}

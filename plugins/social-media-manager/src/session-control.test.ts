@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { PostSchema, type Attempt, type Post } from './posts'
-import { resumeWarmupRow, stopMarkerOf, stopPostRow, stopWarmupRow } from './session-control'
+import { holdKey, holdOf, resumeWarmupRow, stopMarkerOf, stopPostRow, stopWarmupRow } from './session-control'
 import { WarmupRowSchema, type WarmupRow, type WarmupStepRow } from './warmup-rows'
 
 const attempt = (over: Partial<Attempt>): Attempt => ({
@@ -171,5 +171,20 @@ describe('stopMarkerOf', () => {
 
   test('something that is not a marker at all is still read as a stop, never thrown on', () => {
     expect(stopMarkerOf(null).by).toBe('operator')
+  })
+})
+
+describe('hold keys — one device group paused inside a run (0.64.0)', () => {
+  test('round-trip', () => {
+    expect(holdOf(holdKey('g-1', 'r-2', 'grp-3'))).toEqual({ runKey: 'g-1:r-2', deviceGroupId: 'grp-3' })
+  })
+
+  test('anything else is not a hold', () => {
+    expect(holdOf('stop:g-1:r-2')).toBeNull()
+    expect(holdOf('hold:g-1:r-2')).toBeNull()
+  })
+
+  test('a Ready marker is read as ready', () => {
+    expect(stopMarkerOf({ version: 1, at: 1, by: 'ready', reason: '' }).by).toBe('ready')
   })
 })

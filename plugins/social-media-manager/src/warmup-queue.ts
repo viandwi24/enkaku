@@ -59,7 +59,7 @@ export interface QueueRow {
   admittedAt?: number | null
 }
 
-export type BlockReason = 'offline' | 'busy' | 'earlier-phase'
+export type BlockReason = 'offline' | 'busy' | 'earlier-phase' | 'held'
 
 /** Anything left for this row to do. */
 export function hasWork(row: QueueRow): boolean {
@@ -151,6 +151,8 @@ export function planAdmissions<R extends QueueRow>(input: {
   settings: QueueSettings
   /** Stable per run: `groupId:runId`. */
   runKey: string
+  /** Is this phone's device group paused within the run (`hold:` key)? Absent means none is. */
+  held?: (deviceId: string) => boolean
 }): AdmissionPlan<R> {
   const { rows, devices, now, settings, runKey } = input
   const holding = new Set(input.holding)
@@ -169,6 +171,10 @@ export function planAdmissions<R extends QueueRow>(input: {
     if (last > 0 && now < last + gap) {
       nextStartAt = last + gap
       break
+    }
+    if (input.held?.(row.deviceId) === true) {
+      blocked.set(row.deviceId, 'held')
+      continue
     }
     const device = devices.get(row.deviceId)
     if (!device || device.status !== 'online') {
@@ -225,4 +231,51 @@ export function queueCounts(rows: readonly QueueRow[]): { running: number; waiti
     else over += 1
   }
   return { running, waiting, over }
+}
+
+/**
+ * A PHONE's place in its run, in words the page shows (0.64.0).
+ *
+ * One answer per phone, across its phases: what it is doing now, or why it is not. The page has no
+ * router state to read, so this re-derives it from the same rows and the same order the router uses.
+ * `busy` (a job of some other session on the phone) is the one thing it cannot see; such a phone
+ * reads as queued, and the router passes over it until it is free.
+ */
+export type PhoneQueueStatus =
+  | { kind: 'running'; phase: number }
+  | { kind: 'queued'; position: number }
+  | { kind: 'blocked'; reason: 'offline' | 'resting' }
+  | { kind: 'held' }
+  | { kind: 'ready' }
+  | { kind: 'paused' }
+  | { kind: 'done'; failed: number }
+
+export function phoneQueueStatus(input: {
+  deviceId: string
+  /** Every row of the run — the position is counted across all of them. */
+  rows: readonly QueueRow[]
+  online: boolean
+  run: 'ready' | 'paused' | 'running'
+  held: boolean
+  now: number
+  startGapSec: readonly [number, number]
+  runKey: string
+}): PhoneQueueStatus {
+  const own = input.rows.filter((row) => row.deviceId === input.deviceId).sort((a, b) => a.phase - b.phase)
+  const running = own.find(isRunning)
+  if (running) return { kind: 'running', phase: running.phase }
+  const next = own.find(isWaiting)
+  if (!next) {
+    const failed = own.reduce((n, row) => n + row.steps.filter((step) => step.state === 'failed').length, 0)
+    return { kind: 'done', failed }
+  }
+  if (input.run === 'ready') return { kind: 'ready' }
+  if (input.run === 'paused') return { kind: 'paused' }
+  if (input.held) return { kind: 'held' }
+  if (!input.online) return { kind: 'blocked', reason: 'offline' }
+  const earlier = own.filter((row) => row.phase < next.phase)
+  const settled = Math.max(0, ...earlier.flatMap((row) => row.steps.map((step) => step.settledAt ?? 0)))
+  if (settled > 0 && input.now < settled + stableGap(input.startGapSec, `${input.runKey}:${input.deviceId}:${next.phase}`)) return { kind: 'blocked', reason: 'resting' }
+  const order = queueOrder(input.rows.filter(isWaiting))
+  return { kind: 'queued', position: order.indexOf(next) + 1 }
 }

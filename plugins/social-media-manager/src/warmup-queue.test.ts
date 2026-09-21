@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { RouterDevice } from './posts'
-import { admitRow, isAdmitted, isRunning, planAdmissions, queueCounts, stableGap, type QueueRow, type QueueStep } from './warmup-queue'
+import { admitRow, isAdmitted, isRunning, phoneQueueStatus, planAdmissions, queueCounts, stableGap, type QueueRow, type QueueStep } from './warmup-queue'
 
 const NOW = 1_800_000_000
 
@@ -151,5 +151,53 @@ describe('production, 2026-09-21: eighteen phones plugged in at once with a sche
     }
     expect(starts).toHaveLength(8)
     for (let i = 1; i < starts.length; i++) expect((starts[i] as number) - (starts[i - 1] as number)).toBeGreaterThanOrEqual(20)
+  })
+})
+
+describe('a paused device group inside a run', () => {
+  test('its phones are passed over as held, and the rest of the run carries on', () => {
+    const rows = [waitingRow('pfb1-a', 0), waitingRow('pfb3-a', 1)]
+    const plan = planAdmissions({
+      rows,
+      devices: fleet(online('pfb1-a'), online('pfb3-a')),
+      holding: new Set(),
+      now: NOW,
+      settings: NO_GAP,
+      runKey: 'g:r',
+      held: (id) => id.startsWith('pfb1'),
+    })
+    expect(plan.admit.map((r) => r.deviceId)).toEqual(['pfb3-a'])
+    expect(plan.blocked.get('pfb1-a')).toBe('held')
+  })
+})
+
+describe('phoneQueueStatus — what the State column says', () => {
+  const base = { online: true, run: 'running' as const, held: false, now: NOW, startGapSec: [20, 60] as const, runKey: 'g:r' }
+
+  test('a phone out of the queue is running, with its platform', () => {
+    expect(phoneQueueStatus({ ...base, deviceId: 'a', rows: [runningRow('a')] })).toEqual({ kind: 'running', phase: 0 })
+  })
+
+  test('a waiting phone says its place, counted across the whole run', () => {
+    const rows = [waitingRow('a', 0), waitingRow('b', 1), waitingRow('c', 2)]
+    expect(phoneQueueStatus({ ...base, deviceId: 'c', rows })).toEqual({ kind: 'queued', position: 3 })
+  })
+
+  test('the reason a waiting phone is not going wins over its place', () => {
+    const rows = [waitingRow('a', 0)]
+    expect(phoneQueueStatus({ ...base, deviceId: 'a', rows, online: false })).toEqual({ kind: 'blocked', reason: 'offline' })
+    expect(phoneQueueStatus({ ...base, deviceId: 'a', rows, held: true })).toEqual({ kind: 'held' })
+    expect(phoneQueueStatus({ ...base, deviceId: 'a', rows, run: 'ready' })).toEqual({ kind: 'ready' })
+    expect(phoneQueueStatus({ ...base, deviceId: 'a', rows, run: 'paused' })).toEqual({ kind: 'paused' })
+  })
+
+  test('between two platforms a phone is resting, not queued', () => {
+    const done: QueueRow = { deviceId: 'a', phase: 0, queueSeq: 0, admittedAt: NOW - 600, steps: [success(NOW - 5)] }
+    expect(phoneQueueStatus({ ...base, deviceId: 'a', rows: [done, waitingRow('a', 0, 1)] })).toEqual({ kind: 'blocked', reason: 'resting' })
+  })
+
+  test('a finished phone is done, and says how many of its activities failed', () => {
+    const row: QueueRow = { deviceId: 'a', phase: 0, queueSeq: 0, admittedAt: NOW - 600, steps: [success(NOW - 5), { state: 'failed', notBeforeAt: NOW - 300 }] }
+    expect(phoneQueueStatus({ ...base, deviceId: 'a', rows: [row] })).toEqual({ kind: 'done', failed: 1 })
   })
 })

@@ -234,3 +234,25 @@ export function stopKey(groupId: string, runId: string): string {
 export function stoppedRunOf(key: string): string | null {
   return key.startsWith(STOP_PREFIX) ? key.slice(STOP_PREFIX.length) : null
 }
+
+/**
+ * A device GROUP paused inside one warm-up run (0.64.0): `hold:<groupId>:<runId>:<deviceGroupId>`.
+ *
+ * The owner's 2026-09-21 case: one run over 73 phones, and wanting PFB3F2 to go while PFB1 stayed put.
+ * A run-wide Pause could only stop all of them. A held group's phones are not let out of the queue;
+ * what they are already running finishes, and the rest of the run carries on. Its own prefix, apart
+ * from `stop:`, so every reader of stop keys keeps meaning "the whole run".
+ */
+export const HOLD_PREFIX = 'hold:'
+
+export function holdKey(groupId: string, runId: string, deviceGroupId: string): string {
+  return `${HOLD_PREFIX}${groupId}:${runId}:${deviceGroupId}`
+}
+
+/** `groupId:runId` and the device group a hold key names, or `null` for a key that is not one. */
+export function holdOf(key: string): { runKey: string; deviceGroupId: string } | null {
+  if (!key.startsWith(HOLD_PREFIX)) return null
+  const parts = key.slice(HOLD_PREFIX.length).split(':')
+  if (parts.length !== 3 || parts.some((p) => p === '')) return null
+  return { runKey: `${parts[0]}:${parts[1]}`, deviceGroupId: parts[2] as string }
+}

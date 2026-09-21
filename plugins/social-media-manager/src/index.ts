@@ -22,7 +22,7 @@ import runWarmup from './run-warmup'
 import recapVideos from './recap-videos'
 import { RECAP_CONCURRENCY_DEFAULT, RECAP_PREFIX, RECAP_SETTINGS_KEY, RecapRowSchema, RecapSettingsSchema, mergeRecap, type RecapRow } from './recap'
 import { planRecapTick } from './recap-tick'
-import { POST_RUN, STOP_PREFIX, stopKey, stoppedRunOf, type StopMarker } from './session-control'
+import { HOLD_PREFIX, POST_RUN, STOP_PREFIX, holdOf, stopKey, stoppedRunOf, type StopMarker } from './session-control'
 import { postSessionIdle, warmupRunIdle } from './session-idle'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
 import { WARMUP_PREFIX, WarmupRowSchema, isPermanentDispatchFailure, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRow } from './warmup-rows'
@@ -1528,6 +1528,8 @@ const DeviceListOutput = z.object({
        */
       inUse: z.object({ control: z.boolean(), viewers: z.number().int().min(0) }).default({ control: false, viewers: 0 }),
       lastControl: z.object({ endedAt: z.number() }).nullable().default(null),
+      /** The phone's device group (0.64.0) — what a warm-up's per-group pause is keyed on. */
+      group: z.object({ id: z.string(), name: z.string() }).nullable().default(null),
     }),
   ),
 })
@@ -1850,9 +1852,15 @@ async function runWarmupPass(
     list.push(run)
     byQueue.set(key, list)
   }
+  const holds = await heldGroups(ctx)
+  const deviceGroup = new Map(input.fleet.items.map((item) => [item.id, item.group?.id ?? null]))
   for (const [key, rows] of byQueue) {
     const settings = input.groups.get((rows[0] as WarmupRow).groupId)?.warmup ?? null
     const queue = planAdmissions({
+      held: (deviceId) => {
+        const g = deviceGroup.get(deviceId)
+        return holds.has('*') || (g !== null && g !== undefined && holds.has(`${key}:${g}`))
+      },
       rows,
       devices,
       holding,
@@ -2055,6 +2063,31 @@ async function autoPause(ctx: PluginServiceContext, groupId: string, runId: stri
     ctx.log.warn('could not write an automatic pause', { groupId, runId, error: messageOf(err) })
     return false
   }
+}
+
+/**
+ * Every device group paused inside a warm-up run, as `groupId:runId:deviceGroupId` (0.64.0). A read
+ * that fails holds everything for this tick — the same safe way to be wrong as `stoppedRunKeys`.
+ */
+async function heldGroups(ctx: PluginServiceContext): Promise<Set<string>> {
+  const out = new Set<string>()
+  try {
+    let cursor: string | null = null
+    do {
+      const opts: { prefix: string; limit: number; cursor?: string } = { prefix: HOLD_PREFIX, limit: 500 }
+      if (cursor !== null) opts.cursor = cursor
+      const page = await ctx.storage.global.list(opts)
+      for (const entry of page.items) {
+        const hold = holdOf(entry.key)
+        if (hold !== null) out.add(`${hold.runKey}:${hold.deviceGroupId}`)
+      }
+      cursor = page.nextCursor
+    } while (cursor !== null)
+  } catch (err) {
+    ctx.log.warn('could not read the paused device groups — letting no warm-up phone out this tick', { error: messageOf(err) })
+    out.add('*')
+  }
+  return out
 }
 
 async function readGroups(ctx: PluginServiceContext): Promise<Map<string, Group>> {
@@ -2905,6 +2938,14 @@ export default definePlugin({
     work back as before. Retry failed puts a row at the back of the queue instead of sending it now.
     The page's warm-up settings mirror is loose now: writing a session back used to drop every
     setting it did not name (`sequenceMode`, `commentChance`), and would have dropped the cap.
+
+    And the run, one device group at a time: a `hold:<group>:<run>:<deviceGroup>` key pauses ONE
+    device group inside a run — its phones are not let out, the rest carry on — and the page offers
+    Pause/Play group and Retry failed for that group only, because on the same day a run over 73
+    phones had one set of buttons and starting PFB3F2 sent PFB1 round again. The State column says
+    where each phone stands (`phoneQueueStatus`): running, #n in queue, waiting for a phone that is
+    offline, resting between platforms, its group paused, ready, paused, or done with how many
+    failed; a waiting phone can be skipped.
   */
   version: '0.64.0',
   icon: 'upload',

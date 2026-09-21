@@ -1,6 +1,6 @@
 import { api } from '@enkaku/ui'
 import { z } from 'zod'
-import { POST_RUN, STOP_PREFIX, resumeWarmupRow, stopKey, stopMarkerOf, stopPostRow, stoppedRunOf, stopWarmupRow, type StopMarker } from '../session-control'
+import { HOLD_PREFIX, POST_RUN, STOP_PREFIX, holdKey, holdOf, resumeWarmupRow, stopKey, stopMarkerOf, stopPostRow, stoppedRunOf, stopWarmupRow, type StopMarker } from '../session-control'
 import { retryFailedSteps, withRunSummary } from '../warmup-rows'
 
 /**
@@ -629,13 +629,16 @@ export function newestRunId(rows: readonly WarmupRow[]): string | null {
  * night's failures are history, and a Retry that swept them up with tonight's
  * would re-run a phone's whole week.
  */
-export async function retryWarmupRun(groupId: string, runId: string): Promise<number> {
+export async function retryWarmupRun(groupId: string, runId: string, onlyDevices?: ReadonlySet<string>): Promise<number> {
   const now = Math.floor(Date.now() / 1000)
   let requeued = 0
   const rows = (await readAll(`warmup:${groupId}:`))
     .map((row) => ({ key: row.key, parsed: WarmupRowSchema.safeParse(row.value) }))
     .filter((entry) => entry.parsed.success && (entry.parsed.data as WarmupRow).runId === runId)
     .map((entry) => ({ key: entry.key, row: entry.parsed.data as WarmupRow }))
+    // One device group's phones only, when asked (0.64.0) — a retry that reaches the whole run is how
+    // PFB1 went round again on 2026-09-21 when the operator meant PFB3F2.
+    .filter((entry) => onlyDevices === undefined || onlyDevices.has(entry.row.deviceId))
   /*
     A retried row goes to the BACK of its run's queue (0.64.0): it is let out again in turn, under the
     run's cap, like any other waiting phone — never all at once the moment Retry is pressed.
@@ -650,6 +653,44 @@ export async function retryWarmupRun(groupId: string, runId: string): Promise<nu
     await writeEntry(key, { ...withRunSummary(again), stopped: false, queueSeq: seq, admittedAt: null })
   }
   return requeued
+}
+
+/** Every device group paused inside a warm-up run, as `groupId:runId:deviceGroupId` (0.64.0). */
+export async function listHolds(): Promise<Set<string>> {
+  const out = new Set<string>()
+  for (const entry of await readAll(HOLD_PREFIX)) {
+    const hold = holdOf(entry.key)
+    if (hold !== null) out.add(`${hold.runKey}:${hold.deviceGroupId}`)
+  }
+  return out
+}
+
+/** Pause or play ONE device group inside a run (0.64.0). Pausing lets what is running finish. */
+export async function setGroupHeld(groupId: string, runId: string, deviceGroupId: string, held: boolean): Promise<void> {
+  const key = holdKey(groupId, runId, deviceGroupId)
+  if (held) await writeEntry(key, { version: 1, at: Math.floor(Date.now() / 1000) })
+  else await deleteEntry(key)
+}
+
+/**
+ * Take one phone out of a run (0.64.0): whatever it still has waiting is marked skipped, and the queue
+ * moves on to the next phone. Anything already out on it is left to finish.
+ */
+export async function skipWarmupPhone(groupId: string, runId: string, deviceId: string): Promise<number> {
+  let skipped = 0
+  for (const entry of await readAll(`warmup:${groupId}:`)) {
+    const parsed = WarmupRowSchema.safeParse(entry.value)
+    if (!parsed.success) continue
+    const row = parsed.data as WarmupRow
+    if (row.runId !== runId || row.deviceId !== deviceId || !row.steps.some((step) => step.state === 'pending')) continue
+    const steps = row.steps.map((step) => {
+      if (step.state !== 'pending') return step
+      skipped += 1
+      return { ...step, state: 'skipped' as const, error: 'Skipped by the operator.' }
+    })
+    await writeEntry(entry.key, withRunSummary({ ...row, steps }))
+  }
+  return skipped
 }
 
 /**
