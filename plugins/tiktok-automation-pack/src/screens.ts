@@ -393,7 +393,7 @@ export function signedOutAccount(root: UiNode): { handle: string | null } | null
 }
 
 /**
- * The one error for a signed-out account (1.56.0) — see `signedOutAccount`. Shared by every member that sweeps for dialogs (`clearBlockingDialog`). `E_ACCOUNT_SIGNED_OUT` is its own code so
+ * The one error for a signed-out account (1.56.0) — see `signedOutAccount`. Shared since 1.57.0 by every member that sweeps for dialogs (`clearBlockingDialog`). `E_ACCOUNT_SIGNED_OUT` is its own code so
  * every reader that swallows a failed profile reading (the baseline, the confirmation) can let THIS one through.
  */
 export function signedOutError(found: { handle: string | null }): Error {

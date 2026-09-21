@@ -1734,14 +1734,18 @@ export default definePlugin({
     `post-video` now stops at the profile, before any tap, with `E_ACCOUNT_SIGNED_OUT` naming the
     account: sign in again on the phone, then Retry failed. A script cannot fix it — signing in needs
     the account's password.
-
-    And every warm-up member that sweeps for dialogs (`clearBlockingDialog`: auto-scroll, search,
-    the comment sheet, live-browse, notification-activity) stops the same way. On the same farm
-    `auto-scroll` on four of those phones tapped the "Status akun" OK as if it were a notice, pressed
-    BACK on the sign-in sheet, and gave up with "a modal (e.g. a policy-consent notice) is likely
-    still covering the screen".
   */
-  version: '1.56.0',
+  /*
+    1.57.0 — EVERY MEMBER THAT SWEEPS FOR DIALOGS STOPS ON A SIGNED-OUT ACCOUNT.
+
+    1.56.0 taught `post-video`. The warm-up members sweep through `clearBlockingDialog` (auto-scroll,
+    search, the comment sheet, live-browse, notification-activity), and on the same farm `auto-scroll`
+    on four of those signed-out phones tapped the "Status akun" OK as if it were a notice, pressed
+    BACK on the sign-in sheet, and gave up with "a modal (e.g. a policy-consent notice) is likely
+    still covering the screen". The sweep now checks the reading it already takes and stops with
+    `E_ACCOUNT_SIGNED_OUT`, naming the account, before tapping anything.
+  */
+  version: '1.57.0',
   /** Plan 310 §3.3 — shown wherever this plugin is offered as a choice (the script palette's plugin page, the Plugins rail). */
   icon: 'activity',
   title: 'TikTok automation pack',

@@ -168,7 +168,7 @@ describe('firstMatch — the ranking is the list\'s, not the screen\'s', () => {
   })
 })
 
-describe('clearBlockingDialog — a signed-out account is not a dialog to clear (1.56.0)', () => {
+describe('clearBlockingDialog — a signed-out account is not a dialog to clear (1.57.0)', () => {
   const fixture = (name: string): UiNode =>
     UiNodeSchema.parse((JSON.parse(readFileSync(join(import.meta.dir, '__fixtures__', name), 'utf8')) as { node: unknown }).node)
 
@@ -194,7 +194,7 @@ describe('clearBlockingDialog — a signed-out account is not a dialog to clear 
       const err = (await clearBlockingDialog(ctx).catch((e: unknown) => e)) as Error & { code?: string }
       expect(err.code).toBe('E_ACCOUNT_SIGNED_OUT')
       if (handle !== null) expect(err.message).toContain(handle)
-      // The "Status akun" OK is exactly what the ack ladder would have tapped before 1.56.0.
+      // The "Status akun" OK is exactly what the ack ladder would have tapped before 1.57.0.
       expect(calls).toEqual({ tap: 0, key: 0 })
     })
   }

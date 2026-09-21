@@ -26,7 +26,7 @@ import notificationActivity from './notification-activity'
 describe('tiktok-automation-pack manifest', () => {
   test('version matches package.json', async () => {
     const pkg = (await Bun.file(new URL('../package.json', import.meta.url)).json()) as { version: string }
-    expect(plugin.version).toBe('1.56.0')
+    expect(plugin.version).toBe('1.57.0')
     expect(plugin.version).toBe(pkg.version)
   })
 })

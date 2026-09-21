@@ -155,7 +155,7 @@ export async function clearBlockingDialog(ctx: ScriptContext<unknown>, opts?: { 
     ctx.log.warn('the inspector could not read the screen, so no ack or deny button can be found this sweep')
   }
   /*
-    A signed-out account is not a dialog to clear (1.56.0). Production 2026-09-21: `auto-scroll` on
+    A signed-out account is not a dialog to clear (1.57.0). Production 2026-09-21: `auto-scroll` on
     four phones whose TikTok had signed its account out swept three times — tapping the "Status akun"
     dialog's OK as an ack, then BACK on the "Selamat datang kembali" sheet — and gave up reporting "a
     modal (e.g. a policy-consent notice) is likely still covering the screen". The account needs its
