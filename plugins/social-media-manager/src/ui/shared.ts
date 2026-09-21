@@ -1,6 +1,6 @@
 import { api } from '@enkaku/ui'
 import { z } from 'zod'
-import { STOP_PREFIX, resumeWarmupRow, stopKey, stopPostRow, stoppedRunOf, stopWarmupRow } from '../session-control'
+import { POST_RUN, STOP_PREFIX, resumeWarmupRow, stopKey, stopMarkerOf, stopPostRow, stoppedRunOf, stopWarmupRow, type StopMarker } from '../session-control'
 import { retryFailedSteps, withRunSummary } from '../warmup-rows'
 
 /**
@@ -332,11 +332,39 @@ async function deleteEntry(key: string): Promise<void> {
  */
 /** Every stopped run on the farm, as `groupId:runId`. */
 export async function listStopMarkers(): Promise<Set<string>> {
-  const out = new Set<string>()
+  return new Set((await listStopMarkerInfo()).keys())
+}
+
+/**
+ * The same, with what each marker says (0.63.0): who stopped the run, and — for a pause the router
+ * made on its own because every phone with work left was offline — why. A post session's marker is
+ * `groupId:post` (`POST_RUN`).
+ */
+export async function listStopMarkerInfo(): Promise<Map<string, StopMarker>> {
+  const out = new Map<string, StopMarker>()
   for (const entry of await readAll(STOP_PREFIX)) {
     const run = stoppedRunOf(entry.key)
-    if (run !== null) out.add(run)
+    if (run !== null) out.set(run, stopMarkerOf(entry.value))
   }
+  return out
+}
+
+/** Pure: a post session's own marker, from markers already in hand. */
+export function postStopMarker(markers: ReadonlyMap<string, StopMarker>, groupId: string): StopMarker | null {
+  return markers.get(`${groupId}:${POST_RUN}`) ?? null
+}
+
+/**
+ * One offset per PHONE for a Start, inside the session's start jitter (0.63.0).
+ *
+ * The same phone gets the same offset for every row of the run, so its phases keep their order and
+ * their gaps; different phones get different ones, so a run started again after a pause does not have
+ * every phone due in the same tick. Exported so the rule can be read, not tested: `random` is passed
+ * in for that reason.
+ */
+export function startOffsets(deviceIds: readonly string[], jitterSec: number, random: () => number = Math.random): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const id of deviceIds) if (!out.has(id)) out.set(id, Math.floor(random() * (Math.max(0, jitterSec) + 1)))
   return out
 }
 
@@ -409,7 +437,13 @@ export async function setSessionStopped(
       STOP: the marker first. One request, and from the router's next tick no row of this run goes
       out, whatever happens to the loop below. See `stopKey`.
     */
-    if (stop) await writeEntry(stopKey(group.id, target), { version: 1, at: now })
+    if (stop) await writeEntry(stopKey(group.id, target), { version: 1, at: now, by: 'operator', reason: '' } satisfies StopMarker)
+    const offsets = stop
+      ? new Map<string, number>()
+      : startOffsets(
+          parsed.map((entry) => entry.parsed.data as WarmupRow).filter((row) => row.runId === target).map((row) => row.deviceId),
+          group.warmup?.startJitterSec ?? 120,
+        )
 
     /*
       Then every row, and a row that cannot be written does not stop the others. This loop used to
@@ -421,7 +455,7 @@ export async function setSessionStopped(
       const row = entry.parsed.data as WarmupRow
       if (row.runId !== target) continue
       try {
-        const next = stop ? stopWarmupRow(row, now) : { row: resumeWarmupRow(row, now), cancel: [] as string[], pulled: 0 }
+        const next = stop ? stopWarmupRow(row, now) : { row: resumeWarmupRow(row, now, offsets.get(row.deviceId) ?? 0), cancel: [] as string[], pulled: 0 }
         pulled += next.pulled
         await cancelJobs(next.cancel)
         /* The flag is still written onto the row: the page reads it, and a farm on an older router honours it. */
@@ -448,11 +482,16 @@ export async function setSessionStopped(
     return { cancelled, couldNotCancel, pulled, failed }
   }
 
-  /* A post session has no runs: the session IS the execution, so the flag stays on it. */
-  await writeEntry(`group:${group.id}`, { ...group, stopped: stop })
+  /*
+    A post session has no runs: the session IS the execution. Its stop is the marker
+    `stop:<groupId>:post` (0.63.0), for the same two reasons a warm-up's is — one request, and a key
+    the router's per-tick rewrite of the group row cannot undo — and it is the same marker the router
+    writes when it pauses the session itself. The group's own flag is still written, for a farm whose
+    router is older than the marker.
+  */
   if (stop) {
-    // Starting a post session pulls nothing back: its rows keep the turns
-    // `start-group` stamped, and the flag alone decides whether they go.
+    await writeEntry(stopKey(group.id, POST_RUN), { version: 1, at: now, by: 'operator', reason: '' } satisfies StopMarker)
+    await writeEntry(`group:${group.id}`, { ...group, stopped: true })
     for (const row of await readAll('post:')) {
       const parsed = PostSchema.safeParse(row.value)
       if (!parsed.success || parsed.data.groupId !== group.id) continue
@@ -462,9 +501,39 @@ export async function setSessionStopped(
       await cancelJobs(next.cancel)
       await writeEntry(row.key, next.row)
     }
+    return { cancelled, couldNotCancel, pulled, failed: 0 }
   }
 
-  return { cancelled, couldNotCancel, pulled, failed: 0 }
+  /*
+    START. Nothing is pulled back — the rows keep the turns `start-group` stamped. What IS reset is
+    each waiting platform's `waitingSince`: the clock both the 45-minute give-up and the automatic
+    pause read. A session paused because its phones were offline would otherwise come back already
+    "offline for an hour" and fail every row on the first tick. Then the flags come off, marker last,
+    and only when every row was written — the warm-up's rule, for the warm-up's reason.
+  */
+  let failed = 0
+  for (const row of await readAll('post:')) {
+    const parsed = PostSchema.safeParse(row.value)
+    if (!parsed.success || parsed.data.groupId !== group.id) continue
+    let changed = false
+    const dispatch = { ...parsed.data.dispatch }
+    for (const [platform, state] of Object.entries(dispatch)) {
+      if (state?.state !== 'pending' || state.waitingSince == null) continue
+      dispatch[platform] = { ...state, waitingSince: null }
+      changed = true
+    }
+    if (!changed) continue
+    try {
+      await writeEntry(row.key, { ...parsed.data, dispatch })
+    } catch {
+      failed += 1
+    }
+  }
+  if (failed === 0) {
+    if (group.stopped) await writeEntry(`group:${group.id}`, { ...group, stopped: false })
+    await deleteEntry(stopKey(group.id, POST_RUN))
+  }
+  return { cancelled, couldNotCancel, pulled, failed }
 }
 
 /**
@@ -651,8 +720,15 @@ export const PostSchema = z.looseObject({
   createdAt: z.number(),
   dispatch: z.record(
     z.string(),
-    z.object({
+    /*
+      Loose, like the row itself (0.63.0). This was a plain object, so every write the page made from a
+      parsed row — Stop's pull-back among them — silently dropped whatever the router keeps here that
+      this schema did not name, `waitingSince` included.
+    */
+    z.looseObject({
       state: z.string(),
+      /** When the router first found this platform unable to go. Start clears it (`setSessionStopped`). */
+      waitingSince: z.number().nullable().optional(),
       /** When this platform was last dispatched. */
       at: z.number().nullable().default(null),
       deviceCount: z.number().default(0),
@@ -687,12 +763,28 @@ async function readAll(prefix: string): Promise<{ key: string; value: unknown }[
 }
 
 /** The sessions, newest first. A row this build cannot parse is skipped, never shown half-read. */
-export async function listGroups(): Promise<Group[]> {
-  const rows = await readAll('group:')
-  const groups: Group[] = []
+/**
+ * A session as the page lists it: the stored row, plus the marker a POST session is stopped by
+ * (0.63.0). `stopped` is folded in from that marker, so every control that already reads
+ * `group.stopped` sees a session the router paused on its own the same way it sees one an operator
+ * stopped; `pause` carries who and why, for the one line that says so.
+ */
+export type ListedGroup = Group & { pause: StopMarker | null }
+
+/** The router's own pause on a listed session, or `null` — for a component typed with the plain `Group`. */
+export function autoPauseOf(group: Group): StopMarker | null {
+  const pause = (group as Partial<ListedGroup>).pause ?? null
+  return pause !== null && pause.by === 'auto' ? pause : null
+}
+
+export async function listGroups(): Promise<ListedGroup[]> {
+  const [rows, markers] = await Promise.all([readAll('group:'), listStopMarkerInfo().catch(() => new Map<string, StopMarker>())])
+  const groups: ListedGroup[] = []
   for (const row of rows) {
     const parsed = GroupSchema.safeParse(row.value)
-    if (parsed.success) groups.push(parsed.data)
+    if (!parsed.success) continue
+    const pause = parsed.data.kind === 'warmup' ? null : postStopMarker(markers, parsed.data.id)
+    groups.push({ ...parsed.data, stopped: parsed.data.stopped || pause !== null, pause })
   }
   return groups.sort((a, b) => b.createdAt - a.createdAt)
 }

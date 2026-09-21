@@ -10,7 +10,7 @@ import {
   type PlatformCaptions,
 } from './platform-captions'
 import { SKIPPED_BY_HAND } from './excludes'
-import { PLATFORM_IDS, PlatformIdSchema, deviceCarriesPlatform, platformById, type PlatformId } from './platforms'
+import { PLATFORM_IDS, PlatformIdSchema, deviceCarriesPlatform, platformById, type PlatformId, type Platform } from './platforms'
 
 /**
  * One "post" — a video an operator uploaded once, plus what is to happen to it
@@ -1188,6 +1188,24 @@ export function isDeviceInUse(device: Pick<RouterDevice, 'inUse' | 'lastControl'
 }
 
 /**
+ * Which phones may take one platform of one post, before anything about whether they are free.
+ *
+ * `allowed` is the phones the row may go to at all — its own phone when paired, the phones it names,
+ * or the whole fleet — and `carriers` those of them that may actually post this platform (a named
+ * phone always may; the fleet only where the platform's label is on it). Lifted out of `planDispatch`
+ * (0.63.0) so the auto-pause check asks exactly the question the router answers: a second copy of
+ * this rule would drift, and a pause decided on a different rule from the sending would pause a
+ * session the router could still have sent.
+ */
+export function phonesFor<D extends RouterDevice>(post: Post, platform: Platform, devices: readonly D[]): { explicit: boolean; allowed: D[]; carriers: D[] } {
+  const assigned = post.assignedDeviceId
+  const explicit = assigned !== null || post.deviceIds.length > 0
+  const allowed = assigned !== null ? devices.filter((d) => d.id === assigned) : explicit ? devices.filter((d) => post.deviceIds.includes(d.id)) : [...devices]
+  const carriers = allowed.filter((d) => explicit || deviceCarriesPlatform(d.labels, platform))
+  return { explicit, allowed, carriers }
+}
+
+/**
  * Decide what to dispatch for ONE post, given the fleet as it is right now.
  *
  * Pure and total: it never throws, never calls anything, and returns the empty
@@ -1307,9 +1325,8 @@ export function planDispatch(input: {
       their phones.
     */
     const assigned = post.assignedDeviceId
-    const explicit = assigned !== null || post.deviceIds.length > 0
-    const allowed = assigned !== null ? devices.filter((d) => d.id === assigned) : explicit ? devices.filter((d) => post.deviceIds.includes(d.id)) : devices
-    const eligible = allowed.filter((d) => isDeviceFree(d) && !busy.has(d.id) && !taken.has(d.id) && (explicit || deviceCarriesPlatform(d.labels, platform)))
+    const { explicit, allowed, carriers } = phonesFor(post, platform, devices)
+    const eligible = carriers.filter((d) => isDeviceFree(d) && !busy.has(d.id) && !taken.has(d.id))
     if (eligible.length === 0) {
       const note = assigned !== null
         ? allowed.length === 0

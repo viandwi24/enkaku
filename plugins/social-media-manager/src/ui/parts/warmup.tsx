@@ -33,7 +33,8 @@ import {
 import { PLATFORM_IDS, type PlatformId } from '../../platforms'
 import { DevicePicker, newPick, pickRefusal, resolvePick, type DevicePick } from './device-picker'
 import { readDuration, rollUpByDevice, runsOf, sessionReport, type DeviceRollup } from '../../warmup-report'
-import { deviceName, listDevices, listGroups, listStopMarkers, listWarmupRows, partlyStopped, pickHost, platformLabel, deleteWarmupRun, retryWarmupRun, runMember, runWarmupAgain, setSessionStopped, listAllWarmupRows, stoppedNewestFrom, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
+import { deviceName, listDevices, listGroups, listStopMarkers, listStopMarkerInfo, listWarmupRows, partlyStopped, pickHost, platformLabel, deleteWarmupRun, retryWarmupRun, runMember, runWarmupAgain, setSessionStopped, listAllWarmupRows, stoppedNewestFrom, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
+import type { StopMarker } from '../../session-control'
 
 /**
  * The Warm-up screen (plan 900 D5, wave 4).
@@ -802,7 +803,7 @@ async function startRun(group: Group, runId: string): Promise<void> {
  * being connected. Only STARTING a new run is a member, because a schedule has
  * to be able to do that and a schedule can only run a script.
  */
-function RunControls({ group, runId, rows, markers, onDone }: { group: Group; runId: string; rows: WarmupRow[]; markers: ReadonlySet<string>; onDone: () => void }): ReactElement {
+function RunControls({ group, runId, rows, markers, pause, onDone }: { group: Group; runId: string; rows: WarmupRow[]; markers: ReadonlySet<string>; pause: StopMarker | null; onDone: () => void }): ReactElement {
   const { run, isPending } = useAction()
   const stopped = markers.has(`${group.id}:${runId}`) || rows.some((row) => row.stopped)
   /* A Stop that an older build cut short: some rows flagged, the rest still on their way out. */
@@ -836,6 +837,13 @@ function RunControls({ group, runId, rows, markers, onDone }: { group: Group; ru
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
+      {/* A pause the router made itself (0.63.0) says why, or it reads as a Stop nobody pressed. */}
+      {stopped && pause?.by === 'auto' && pause.reason !== '' ? (
+        <span className="flex items-center gap-1 text-[12px] text-warn">
+          <WarningIcon aria-hidden />
+          {pause.reason}
+        </span>
+      ) : null}
       {stopped ? (
         <Button size="sm" disabled={busy} onClick={() => act('start', () => startRun(group, runId), 'This run was started again — the router sends the rest on its next pass', 'Could not start this run again')}>
           <PlayIcon aria-hidden />
@@ -1071,10 +1079,11 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
     router is actually doing. Re-read with the rows on every poll: a Stop pressed on another screen,
     or by somebody else, has to show up here without a reload.
   */
-  const [markers, setMarkers] = useState<ReadonlySet<string>>(new Set())
+  const [markerInfo, setMarkerInfo] = useState<ReadonlyMap<string, StopMarker>>(new Map())
+  const markers = useMemo<ReadonlySet<string>>(() => new Set(markerInfo.keys()), [markerInfo])
   useEffect(() => {
-    listStopMarkers()
-      .then(setMarkers)
+    listStopMarkerInfo()
+      .then(setMarkerInfo)
       .catch(() => {})
   }, [refresh, tick])
   const byId = useMemo(() => new Map(fleet.map((device) => [device.id, device])), [fleet])
@@ -1181,7 +1190,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
       */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <RunPicker history={history} shownId={shown?.runId ?? null} newestId={history[0]?.runId ?? null} onPick={setOpenRun} />
-        {group !== null && shown !== null ? <RunControls group={group} runId={shown.runId} rows={shown.rows} markers={markers} onDone={() => setRefresh((n) => n + 1)} /> : null}
+        {group !== null && shown !== null ? <RunControls group={group} runId={shown.runId} rows={shown.rows} markers={markers} pause={markerInfo.get(`${group.id}:${shown.runId}`) ?? null} onDone={() => setRefresh((n) => n + 1)} /> : null}
       </div>
 
       <LiveLine moving={moving} updatedAt={updatedAt} now={now} />

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { PostSchema, type Attempt, type Post } from './posts'
-import { resumeWarmupRow, stopPostRow, stopWarmupRow } from './session-control'
+import { resumeWarmupRow, stopMarkerOf, stopPostRow, stopWarmupRow } from './session-control'
 import { WarmupRowSchema, type WarmupRow, type WarmupStepRow } from './warmup-rows'
 
 const attempt = (over: Partial<Attempt>): Attempt => ({
@@ -144,5 +144,32 @@ describe('resumeWarmupRow', () => {
   test('a finished run is returned untouched', () => {
     const before = run([step({ activityId: 'a1', state: 'success' })])
     expect(resumeWarmupRow(before, 100_000)).toBe(before)
+  })
+})
+
+describe('a start spread across the fleet (0.63.0)', () => {
+  test('a phone given an offset starts that much later, and keeps its gaps', () => {
+    const now = 100_000
+    const resumed = resumeWarmupRow(run([step({ activityId: 'a1', state: 'pending', notBeforeAt: 1_000 }), step({ activityId: 'a2', state: 'pending', notBeforeAt: 1_060 })]), now, 45)
+    expect(resumed.steps.map((s) => s.notBeforeAt)).toEqual([now + 45, now + 105])
+  })
+
+  test('a negative offset is read as none', () => {
+    const resumed = resumeWarmupRow(run([step({ activityId: 'a1', state: 'pending', notBeforeAt: 1_000 })]), 100_000, -30)
+    expect(resumed.steps[0]?.notBeforeAt).toBe(100_000)
+  })
+})
+
+describe('stopMarkerOf', () => {
+  test('a marker from before 0.63.0 is still an operator stop', () => {
+    expect(stopMarkerOf({ version: 1, at: 5 })).toEqual({ version: 1, at: 5, by: 'operator', reason: '' })
+  })
+
+  test('the router\'s own pause keeps its reason', () => {
+    expect(stopMarkerOf({ version: 1, at: 5, by: 'auto', reason: 'why' })).toEqual({ version: 1, at: 5, by: 'auto', reason: 'why' })
+  })
+
+  test('something that is not a marker at all is still read as a stop, never thrown on', () => {
+    expect(stopMarkerOf(null).by).toBe('operator')
   })
 })

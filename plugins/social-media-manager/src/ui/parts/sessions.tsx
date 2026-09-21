@@ -62,6 +62,7 @@ import {
   type Group,
   type Post,
   setSessionStopped,
+  autoPauseOf,
 } from '../shared'
 import { AutoStatus, BulkProgress, ReadinessNote, isWorking, stateOf, useAutoCaptionSetup, useBulkRun, type AutoState } from './autocaption-ui'
 
@@ -3227,9 +3228,11 @@ function SessionRow({
         {/* Said on the row, not only by the absence of a Stop button: a stopped session that still shows "4 waiting" otherwise reads as one that is stuck. */}
         {group.stopped ? (
           <Badge variant="outline" className="ml-1.5 align-middle text-warn">
-            stopped
+            {autoPauseOf(group) !== null ? 'paused' : 'stopped'}
           </Badge>
         ) : null}
+        {/* A pause the router made itself says why, or it reads as a stop nobody pressed. */}
+        {autoPauseOf(group)?.reason ? <div className="mt-0.5 text-[11px] text-warn">{autoPauseOf(group)?.reason}</div> : null}
         <div className="mt-0.5 text-[11px] text-faint">{relativeTime(group.createdAt)}</div>
         <div className="text-[11px] text-faint @2xl:hidden">{platforms}</div>
         <div className="text-[11px] text-faint @5xl:hidden">{pacing}</div>

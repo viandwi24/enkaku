@@ -171,11 +171,17 @@ export function stopWarmupRow<R extends ControlRun>(run: R, now: number): StopRe
  * Returns the row unchanged when nothing is waiting or nothing is overdue,
  * so a session started again within its own pacing keeps the plan it had.
  */
-export function resumeWarmupRow<R extends ControlRun>(run: R, now: number): R {
+export function resumeWarmupRow<R extends ControlRun>(run: R, now: number, offsetSec = 0): R {
   const waiting = run.steps.filter((step) => step.state === 'pending')
   if (waiting.length === 0) return run
   const earliest = Math.min(...waiting.map((step) => step.notBeforeAt))
-  const shift = now - earliest
+  /*
+    `offsetSec` spreads a start across the fleet (0.63.0). Every row used to resume at exactly `now`,
+    so a run started again after hours paused had every phone due in the same tick — the stampede
+    the owner saw when fifty-three phones came back at once. The caller draws one offset per PHONE
+    (the same for all of its phases) inside the session's own start jitter, as the first launch did.
+  */
+  const shift = now + Math.max(0, offsetSec) - earliest
   if (shift <= 0) return run
   return { ...run, steps: run.steps.map((step) => (step.state === 'pending' ? { ...step, notBeforeAt: step.notBeforeAt + shift } : step)) }
 }
@@ -187,6 +193,34 @@ export function resumeWarmupRow<R extends ControlRun>(run: R, now: number): R {
  * do nothing at all, silently.
  */
 export const STOP_PREFIX = 'stop:'
+
+/**
+ * The run id a POST session's marker uses (0.63.0). A post session has no runs — the session is the
+ * execution — so its one marker is `stop:<groupId>:post`.
+ */
+export const POST_RUN = 'post'
+
+/**
+ * What a marker says: who stopped the run, when, and — for a pause the router made itself — why.
+ * Read loosely by both sides: a marker from an older build carries only `{ version, at }`, and it is
+ * still a stop.
+ */
+export interface StopMarker {
+  version: 1
+  at: number
+  by: 'operator' | 'auto'
+  reason: string
+}
+
+export function stopMarkerOf(value: unknown): StopMarker {
+  const v = value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+  return {
+    version: 1,
+    at: typeof v.at === 'number' ? v.at : 0,
+    by: v.by === 'auto' ? 'auto' : 'operator',
+    reason: typeof v.reason === 'string' ? v.reason : '',
+  }
+}
 
 export function stopKey(groupId: string, runId: string): string {
   return `${STOP_PREFIX}${groupId}:${runId}`

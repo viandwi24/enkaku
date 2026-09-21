@@ -22,7 +22,8 @@ import runWarmup from './run-warmup'
 import recapVideos from './recap-videos'
 import { RECAP_CONCURRENCY_DEFAULT, RECAP_PREFIX, RECAP_SETTINGS_KEY, RecapRowSchema, RecapSettingsSchema, mergeRecap, type RecapRow } from './recap'
 import { planRecapTick } from './recap-tick'
-import { STOP_PREFIX, stoppedRunOf } from './session-control'
+import { POST_RUN, STOP_PREFIX, stopKey, stoppedRunOf, type StopMarker } from './session-control'
+import { postSessionIdle, warmupRunIdle } from './session-idle'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
 import { WARMUP_PREFIX, WarmupRowSchema, isPermanentDispatchFailure, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRow } from './warmup-rows'
 import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
@@ -32,6 +33,7 @@ import {
   PostSchema,
   deviceDisplayName,
   planDispatch,
+  phonesFor,
   postSummary,
   refreshPost,
   rollUp,
@@ -1806,9 +1808,33 @@ async function runWarmupPass(
     again the moment it upgrades.
   */
   const stoppedRuns = await stoppedRunKeys(ctx)
-  const runs = stoppedRuns.has('*')
+  let runs = stoppedRuns.has('*')
     ? []
     : entries.map((entry) => entry.run).filter((run) => !run.stopped && !input.stopped.has(run.groupId) && !stoppedRuns.has(`${run.groupId}:${run.runId}`))
+  /*
+    A run with nothing any connected phone can do pauses itself (0.63.0) — see `session-idle.ts`.
+    Otherwise the offline phones' activities keep falling due, and the moment those phones are
+    plugged back in, every one of them starts at once. The pause is the same marker an operator's
+    Stop writes, so the page shows it as stopped, says why, and Start is the one way back — which
+    re-times what is left and spreads it, rather than releasing the pile.
+  */
+  const online = new Set(input.fleet.items.filter((item) => item.status === 'online').map((item) => item.id))
+  const byRun = new Map<string, WarmupRow[]>()
+  for (const run of runs) {
+    const key = `${run.groupId}:${run.runId}`
+    const list = byRun.get(key) ?? []
+    list.push(run)
+    byRun.set(key, list)
+  }
+  for (const [key, rows] of byRun) {
+    const verdict = warmupRunIdle(rows, online, input.now)
+    if (!verdict.idle || verdict.reason === null) continue
+    const first = rows[0] as WarmupRow
+    if (await autoPause(ctx, first.groupId, first.runId, verdict.reason, input.now)) {
+      runs = runs.filter((run) => `${run.groupId}:${run.runId}` !== key)
+      ctx.log.info('paused a warm-up run: every phone with work left is offline', { groupId: first.groupId, runId: first.runId, phones: verdict.waiting })
+    }
+  }
   const busy = new Set<string>([...input.claimed, ...phonesInFlight(runs)])
   const plan = planWarmupTick({ runs, devices, claimed: busy, now: input.now })
 
@@ -1968,6 +1994,25 @@ async function stoppedRunKeys(ctx: PluginServiceContext): Promise<Set<string>> {
     out.add('*')
   }
   return out
+}
+
+/**
+ * Write the marker for a pause the router made itself (0.63.0). Created only if absent: an
+ * operator's own Stop, already there, is never overwritten with the router's reason. `true` when
+ * the run is now stopped either way; `false` only when the write failed, so the caller keeps
+ * treating the run as live rather than assuming a pause that did not happen.
+ */
+async function autoPause(ctx: PluginServiceContext, groupId: string, runId: string, reason: string, now: number): Promise<boolean> {
+  const marker: StopMarker = { version: 1, at: now, by: 'auto', reason }
+  try {
+    const key = stopKey(groupId, runId)
+    if ((await ctx.storage.global.getRaw(key)) !== null) return true
+    await ctx.storage.global.set(key, marker)
+    return true
+  } catch (err) {
+    ctx.log.warn('could not write an automatic pause', { groupId, runId, error: messageOf(err) })
+    return false
+  }
 }
 
 async function readGroups(ctx: PluginServiceContext): Promise<Map<string, Group>> {
@@ -2297,6 +2342,15 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
   const groups = await readGroups(ctx)
   /** Sessions the operator stopped. Read once, honoured by both halves of the tick. */
   const stopped = stoppedIds(groups)
+  /*
+    And the post sessions stopped by MARKER (0.63.0): `stop:<groupId>:post`, written by the page's
+    Stop and by the automatic pause below. A marker this tick could not read stops every session for
+    one tick — the safe way to be wrong about something that posts to real accounts.
+  */
+  for (const key of await stoppedRunKeys(ctx)) {
+    if (key === '*') for (const id of groups.keys()) stopped.add(id)
+    else if (key.endsWith(`:${POST_RUN}`)) stopped.add(key.slice(0, -(POST_RUN.length + 1)))
+  }
   const groupStates = new Map<string, RowState[]>()
   /** groupId → deviceId → the row key that owns that phone. */
   const ownersByGroup = new Map<string, Map<string, string>>()
@@ -2600,6 +2654,36 @@ async function runTick(ctx: PluginServiceContext, settings: AutoPostSettings, op
     if (sent.length > 0) ctx.log.info('dispatched a post', { key: entry.key, platforms: sent.join(','), summary: postSummary(next) })
   }
 
+  /*
+    A post session with nothing any connected phone can post pauses itself (0.63.0), as a warm-up run
+    does — see `session-idle.ts`. Without it, a session pinned to offline phones waits its 45 minutes
+    and then turns every row red ("offline for 45 minutes"), and any that come back before then all
+    post in the same few ticks. Paused, the rows keep their place, and Start is the way back.
+    Read from this tick's listing: a row written during the tick is seen as it was, and the rule only
+    ever errs towards NOT pausing on a stale reading (a `waitingSince` it cannot yet see).
+  */
+  const pauseAt = Math.floor(Date.now() / 1000)
+  const postsByGroup = new Map<string, Post[]>()
+  for (const entry of listed.items) {
+    const parsed = PostSchema.safeParse(entry.value)
+    if (!parsed.success || parsed.data.groupId === null || stopped.has(parsed.data.groupId) || !groups.has(parsed.data.groupId)) continue
+    const list = postsByGroup.get(parsed.data.groupId) ?? []
+    list.push(parsed.data)
+    postsByGroup.set(parsed.data.groupId, list)
+  }
+  for (const [groupId, posts] of postsByGroup) {
+    const verdict = postSessionIdle(posts, (post, id) => {
+      // A platform this build does not know has no phone that could take it.
+      const platform = PLATFORMS.find((candidate) => candidate.id === id)
+      return platform !== undefined && phonesFor(post, platform, fleet.items).carriers.some((d) => d.status === 'online')
+    }, pauseAt)
+    if (!verdict.idle || verdict.reason === null) continue
+    if (await autoPause(ctx, groupId, POST_RUN, verdict.reason, pauseAt)) {
+      stopped.add(groupId)
+      ctx.log.info('paused a post session: every phone with a post still to go is offline', { groupId, posts: verdict.waiting })
+    }
+  }
+
   // Last, and with the post pass's claims: posting is the higher-value work.
   const warmed = await runWarmupPass(ctx, { fleet, names, claimed, now: Math.floor(Date.now() / 1000), stopped })
   /*
@@ -2735,7 +2819,28 @@ export default definePlugin({
     rewrites the group row every tick and a flag written between its read and its write would vanish.
     A run an older build half-stopped is named as such on its page, with both Stop and Start offered.
   */
-  version: '0.62.0',
+  /*
+    0.63.0 — A SESSION THAT CAN DO NOTHING PAUSES ITSELF, AND A START THAT DOES NOT STAMPEDE.
+
+    The owner, on a warm-up over 73 phones with 20 connected (2026-09-21): the twenty ran and
+    finished, the other fifty-three waited for ever, and the moment they were plugged back in every
+    one of them had overdue activities and they all went at once. What they asked for: detect that
+    nothing can be worked on and pause, for warm-ups and posts alike, and let THEM decide when it starts.
+
+    `session-idle.ts` is the rule: work left, nothing in flight, not one waiting phone connected, for
+    ten minutes (`AUTO_PAUSE_AFTER_SEC` — longer than a phone's routine drop-out). The router then
+    writes the same stop marker an operator's Stop writes, marked `by: 'auto'` with the reason, so
+    the page shows the run or session as paused and says why, and Start is the one way back. A warm-up
+    Start now re-times each phone to now PLUS its own offset inside the session's start jitter, so a
+    run coming back after hours does not have every phone due in one tick.
+
+    Post sessions are stopped by marker too now (`stop:<group>:post`), for the warm-up's reasons; the
+    group flag is still written for an older router. Start clears each waiting platform's
+    `waitingSince`, or a session paused for its offline phones would come back "offline for an hour"
+    and fail every row on the first tick. And the page no longer drops fields the router keeps on a
+    platform's state when it writes a row back — `waitingSince` was one, lost on every Stop.
+  */
+  version: '0.63.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
