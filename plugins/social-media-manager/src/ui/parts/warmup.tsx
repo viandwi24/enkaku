@@ -32,7 +32,7 @@ import {
 import { PLATFORM_IDS, type PlatformId } from '../../platforms'
 import { DevicePicker, newPick, pickRefusal, resolvePick, type DevicePick } from './device-picker'
 import { readDuration, rollUpByDevice, runsOf, sessionReport, type DeviceRollup } from '../../warmup-report'
-import { listDevices, listGroups, listWarmupRows, pickHost, platformLabel, deleteWarmupRun, retryWarmupRun, runMember, runWarmupAgain, setSessionStopped, listAllWarmupRows, stoppedNewestFrom, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
+import { deviceName, listDevices, listGroups, listWarmupRows, pickHost, platformLabel, deleteWarmupRun, retryWarmupRun, runMember, runWarmupAgain, setSessionStopped, listAllWarmupRows, stoppedNewestFrom, type Device, type Group, type WarmupRow, type WarmupStep } from '../shared'
 
 /**
  * The Warm-up screen (plan 900 D5, wave 4).
@@ -969,6 +969,30 @@ function PhaseDetail({ device, phases }: { device: DeviceRollup<WarmupRow>; phas
  * summary line carries the count and the reason, and opens if anyone wants the
  * names.
  */
+/**
+ * What a phone is called in a warm-up table: `#N name` from the live farm, the same words the Recap
+ * tab and every device picker use (`deviceName`), falling back to the name the row was planned with
+ * for a phone the farm no longer lists.
+ */
+function labelOf(device: { deviceId: string; deviceName: string | null }, byId: ReadonlyMap<string, Device>): string {
+  const live = byId.get(device.deviceId)
+  return live ? deviceName(live) : (device.deviceName ?? device.deviceId)
+}
+
+/**
+ * Phones in the order they are numbered on the rack — #1, #2, #3 — and the ones with no number after
+ * them, by name. A copy, never an in-place sort of what the roll-up returned.
+ */
+function sortByNumber<T extends { deviceId: string; deviceName: string | null }>(devices: readonly T[], byId: ReadonlyMap<string, Device>): T[] {
+  const numberOf = (device: T): number => byId.get(device.deviceId)?.number ?? Number.POSITIVE_INFINITY
+  return [...devices].sort((a, b) => {
+    const left = numberOf(a)
+    const right = numberOf(b)
+    if (left !== right) return left - right
+    return labelOf(a, byId).localeCompare(labelOf(b, byId), undefined, { numeric: true })
+  })
+}
+
 export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string; refreshKey: number; onBack: () => void }): ReactElement {
   const [group, setGroup] = useState<Group | null>(null)
   /** Which run is on screen. `null` means the newest, which is what somebody opening a session wants nine times out of ten. */
@@ -984,6 +1008,24 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
   /** When the last read landed, and a clock for the relative times on screen. */
   const [updatedAt, setUpdatedAt] = useState<number | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  /*
+    The farm's own device list, for one thing only: the durable `#N` each phone carries on its label
+    (`device_numbers.number`). A warm-up row stores the phone's NAME at plan time and never its
+    number, so without this the table could only say "SM-A075F" twenty times over, in the order the
+    rows happened to be stored — which is by device UUID, i.e. no order at all. The owner asked for
+    the phones in number order with the number shown (2026-09-21), which is how they are labelled
+    on the rack.
+
+    Loaded alongside the rows and not polled on its own: a number does not change while a run is
+    going, and a failed load simply leaves the table in its old order rather than blanking it.
+  */
+  const [fleet, setFleet] = useState<Device[]>([])
+  useEffect(() => {
+    listDevices()
+      .then(setFleet)
+      .catch(() => {})
+  }, [refresh])
+  const byId = useMemo(() => new Map(fleet.map((device) => [device.id, device])), [fleet])
 
   /* A second hand for "updated 12s ago" and the elapsed counter — cheap, and never a fetch. */
   useEffect(() => {
@@ -1042,7 +1084,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
     return () => clearInterval(timer)
   }, [moving])
 
-  const devices = useMemo(() => rollUpByDevice(rows), [rows])
+  const devices = useMemo(() => sortByNumber(rollUpByDevice(rows), byId), [rows, byId])
   const report = shown?.report ?? null
   const phases = useMemo(() => (rows.length === 0 ? 1 : Math.max(1, ...rows.map((row) => row.phase + 1))), [rows])
   const working = devices.filter((device) => !device.idle)
@@ -1138,7 +1180,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
                     <TableRow className="cursor-pointer" onClick={() => toggle(device.deviceId)}>
                       <TableCell className="text-faint">{isOpen ? <CaretDownIcon aria-hidden /> : <CaretRightIcon aria-hidden />}</TableCell>
                       <TableCell>
-                        <div className="font-medium">{device.deviceName ?? device.deviceId}</div>
+                        <div className="font-medium">{labelOf(device, byId)}</div>
                         {device.covered.length > 1 ? (
                           <div className="text-[11px] text-faint">
                             {device.covered.length} platform{device.covered.length === 1 ? '' : 's'}
@@ -1211,7 +1253,7 @@ export function WarmupDetail({ groupId, refreshKey, onBack }: { groupId: string;
                     ? idle.map((device) => (
                         <TableRow key={device.deviceId} className="hover:bg-transparent">
                           <TableCell />
-                          <TableCell className="text-[12px] text-dim">{device.deviceName ?? device.deviceId}</TableCell>
+                          <TableCell className="text-[12px] text-dim">{labelOf(device, byId)}</TableCell>
                           <TableCell colSpan={4} className="text-[12px] text-faint">
                             {device.note ?? 'Nothing to do'}
                           </TableCell>

@@ -2677,7 +2677,18 @@ export default definePlugin({
     operator asks both; and resolved at each RUN, so a session started again tonight means
     tonight's connected phones, not this morning's.
   */
-  version: '0.61.0',
+  /*
+    0.62.0 — A WARM-UP'S PHONES IN RACK ORDER, WITH THEIR NUMBERS.
+
+    The owner, looking at a session over twenty production phones (2026-09-21): sort them by
+    number, #1, #2, #3, and show the number. The table said "SM-A075F" twenty times over, in the
+    order the rows were stored — by device UUID, which is no order at all — because a warm-up row
+    keeps the phone's NAME from plan time and never its number. The detail page now reads the farm's
+    device list for the durable `#N` (`device_numbers.number`, the one written on the phone's own
+    label), shows it the way the Recap tab and every picker already do (`deviceName`), and sorts by
+    it, with any phone that has no number after the numbered ones.
+  */
+  version: '0.62.0',
   icon: 'upload',
   title: 'Social Media Manager',
   description: 'Upload a folder of videos and send them across the phones labelled for each platform, paced so they do not all move at once. TikTok, YouTube and Instagram post today.',
