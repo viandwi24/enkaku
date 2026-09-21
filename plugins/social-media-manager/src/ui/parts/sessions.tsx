@@ -1202,6 +1202,14 @@ export function SessionDetail({ groupId, refreshKey, onBack }: { groupId: string
             />
           </Card>
 
+          {/* Why this session is not moving, when it is not (0.64.0): paused by the operator, or by the router with its reason. */}
+          {group.stopped ? (
+            <div className="rounded-card border border-line px-3.5 py-2.5 text-[12px] text-warn">
+              {autoPauseOf(group)?.reason || 'Paused — nothing new goes out until you press Play. A video already posting finishes.'}
+            </div>
+          ) : null}
+          <AccountAlerts refreshKey={refreshKey + (updatedAt ?? 0)} />
+
           <LiveLine moving={moving} updatedAt={updatedAt} posts={posts} now={now} />
 
           {deletedVideos > 0 ? (
