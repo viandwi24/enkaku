@@ -728,13 +728,14 @@ function RunAgainButton({ group, onDone }: { group: Group; onDone: () => void })
           New run
         </Button>
       }
-      title={`Start a new run of “${group.title}”?`}
+      title={`Make a new run of “${group.title}”?`}
       destructive={false}
-      confirmLabel="Start it"
+      confirmLabel="Make it"
       description={
         <>
-          A new run starts now, with this session’s own phones and settings. Everything random is drawn again — which platform each phone gets,
-          which activities, in what order, how long it waits — so two runs are two different evenings rather than one repeated.
+          A new run is made with this session’s own phones and settings, and waits, ready, until you press Play. Everything random is drawn
+          again — which platform each phone gets, which activities, the queue order — so two runs are two different evenings rather than one
+          repeated.
           <br />
           The runs before it are kept, each with its own progress.
         </>
@@ -748,7 +749,7 @@ function RunAgainButton({ group, onDone }: { group: Group; onDone: () => void })
             return runWarmupAgain(group.id, host.id)
           },
           {
-            success: `“${group.title}” started again — this run keeps its own progress beside the ones before it`,
+            success: `A new run of “${group.title}” is ready — press Play to start it`,
             failure: `Could not start “${group.title}” again`,
             onSuccess: onDone,
           },
@@ -820,8 +821,10 @@ function QueueState({ status }: { status: PhoneQueueStatus }): ReactElement {
                 : status.kind === 'account'
                   ? [`waiting · ${status.platform} account needs a person`, 'text-warn']
                   : status.failed > 0
-                    ? [`done · ${status.failed} failed`, 'text-bad']
-                    : ['done', 'text-ok']
+                    ? [`done · ${status.failed} failed${status.skipped > 0 ? ` · ${status.skipped} skipped` : ''}`, 'text-bad']
+                    : status.skipped > 0
+                      ? [`done · ${status.skipped} skipped`, 'text-warn']
+                      : ['done', 'text-ok']
   return <span className={cn('text-[12px]', tone)}>{text}</span>
 }
 

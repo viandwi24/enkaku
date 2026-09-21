@@ -490,7 +490,13 @@ export async function setSessionStopped(
         pulled += next.pulled
         await cancelJobs(next.cancel)
         /* The flag is still written onto the row: the page reads it, and a farm on an older router honours it. */
-        await writeEntry(entry.key, { ...withRunSummary(next.row), stopped: stop })
+        /*
+          A stopped row that still owes work goes back into the queue (0.64.0), keeping its place: what
+          Stop pulled back was cancelled, not left finishing, and on Play the row is let out again in
+          turn and re-timed from then.
+        */
+        const requeue = stop && next.row.steps.some((step) => step.state === 'pending') ? { admittedAt: null } : {}
+        await writeEntry(entry.key, { ...withRunSummary(next.row), stopped: stop, ...requeue })
       } catch {
         failed += 1
       }
