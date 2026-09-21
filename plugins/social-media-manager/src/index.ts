@@ -20,7 +20,8 @@ import retryFailed from './retry-failed'
 import addWarmup from './add-warmup'
 import runWarmup from './run-warmup'
 import recapVideos from './recap-videos'
-import { RECAP_PREFIX, RecapRowSchema, mergeRecap, recapSummary, type RecapRow } from './recap'
+import { RECAP_CONCURRENCY_DEFAULT, RECAP_PREFIX, RECAP_SETTINGS_KEY, RecapRowSchema, RecapSettingsSchema, mergeRecap, type RecapRow } from './recap'
+import { planRecapTick } from './recap-tick'
 import { PLATFORMS, PLATFORM_IDS } from './platforms'
 import { WARMUP_PREFIX, WarmupRowSchema, isPermanentDispatchFailure, isRunOver, sequenceOutcome, settleWarmupStep, warmupProgress, warmupSummary, withRunSummary, type WarmupRow } from './warmup-rows'
 import { phonesInFlight, planWarmupTick, queuedSteps, withStepState } from './warmup-tick'
@@ -2104,31 +2105,46 @@ async function runRecapPass(ctx: PluginServiceContext, input: { fleet: z.infer<t
   }
 
   // --- send what is still wanted ---------------------------------------------
-  const online = new Set(input.fleet.items.filter((item) => item.status === 'online').map((item) => item.id))
-  const busy = new Set<string>(input.claimed)
-  for (const entry of entries) if (entry.row.state === 'reading' && entry.row.jobId !== '') busy.add(entry.row.deviceId)
+  let limit = RECAP_CONCURRENCY_DEFAULT
+  try {
+    const stored = await ctx.storage.global.get(RECAP_SETTINGS_KEY, RecapSettingsSchema)
+    if (stored) limit = stored.concurrency
+  } catch (err) {
+    // A settings row this build cannot read must never mean "no limit at all".
+    ctx.log.warn('could not read the recap pacing — using the default', { error: messageOf(err), concurrency: limit })
+  }
 
-  for (const entry of entries) {
+  /*
+    Every decision about WHICH reads go out is `planRecapTick`'s, where a test
+    can ask it directly; this function owns only the calls and the writes. The
+    same split `runWarmupPass` keeps, for the same reason.
+  */
+  const plan = planRecapTick({
+    rows: entries.map((entry) => ({ key: entry.key, deviceId: entry.row.deviceId, state: entry.row.state, jobId: entry.row.jobId, readAt: entry.row.readAt })),
+    online: new Set(input.fleet.items.filter((item) => item.status === 'online').map((item) => item.id)),
+    claimed: input.claimed,
+    limit,
+    now: input.now,
+    waitMaxSec: RECAP_WAIT_MAX_SEC,
+  })
+
+  for (const stale of plan.expire) {
+    const entry = entries.find((candidate) => candidate.key === stale.key)
+    if (!entry) continue
+    await writeRecap(ctx, entry, {
+      ...entry.row,
+      state: 'failed',
+      readAt: input.now,
+      note: `This phone did not come online in the ${Math.round(RECAP_WAIT_MAX_SEC / 3_600)} hours after the read was asked for.`,
+    })
+  }
+
+  if (plan.send.length > 0) ctx.log.info('sending recap reads', { sending: plan.send.length, outstanding: plan.outstanding, limit })
+
+  for (const due of plan.send) {
+    const entry = entries.find((candidate) => candidate.key === due.key)
+    if (!entry) continue
     const row = entry.row
-    if (row.state !== 'reading' || row.jobId !== '') continue
-    if (!online.has(row.deviceId)) {
-      /*
-        A read waits for its phone rather than being refused on the spot — a
-        fleet is never all online at once, and a phone that appears in an hour
-        should be read then. But it cannot wait for ever: a recap aimed at
-        every phone would otherwise leave a row saying "waiting" for each
-        phone that has gone for good, and nothing on the page could tell those
-        from the ones still to come.
-      */
-      if (input.now - row.readAt > RECAP_WAIT_MAX_SEC) {
-        await writeRecap(ctx, entry, { ...row, state: 'failed', readAt: input.now, note: `This phone did not come online in the ${Math.round(RECAP_WAIT_MAX_SEC / 3_600)} hours after the read was asked for.` })
-      }
-      continue
-    }
-    // One read per phone per tick: the three platforms queue behind each other
-    // rather than three apps fighting over one screen.
-    if (busy.has(row.deviceId)) continue
-    busy.add(row.deviceId)
     let jobId: string
     try {
       const job = await ctx.farm.call('job.run', { scriptRef: `${row.platform}/my-videos@latest`, deviceId: row.deviceId, params: { maxVideos: row.asked } }, JobRunOutput)
@@ -2145,7 +2161,6 @@ async function runRecapPass(ctx: PluginServiceContext, input: { fleet: z.infer<t
       } else {
         ctx.log.warn('could not send a recap read', { key: entry.key, error: why })
       }
-      busy.delete(row.deviceId)
       continue
     }
     await writeRecap(ctx, entry, { ...row, jobId, readAt: input.now })

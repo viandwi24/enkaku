@@ -5,7 +5,7 @@ import { PLATFORM_IDS, PlatformIdSchema, platformById, type PlatformId } from '.
 import { WarmupTargetSchema } from './warmup-target'
 import { describeTarget, reachesNothing, resolveWarmupTarget } from './warmup-target'
 import { DeviceListOutput } from './warmup-launch'
-import { RecapRowSchema, recapRowKey, type RecapRow } from './recap'
+import { RECAP_SETTINGS_KEY, RecapRowSchema, RecapSettingsSchema, recapRowKey, type RecapRow } from './recap'
 
 /**
  * `recap-videos` — ask a fleet how its posted videos are doing.
@@ -49,6 +49,14 @@ const params = z.object({
     .default(6)
     .describe('How many of the newest videos to read per account. Videos pushed out of this window keep their last known count.')
     .meta(ui({ title: 'Videos per account' })),
+  concurrency: z
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .default(8)
+    .describe('How many phones read at once, across the whole farm. The rest wait their turn; a slot frees the moment a phone answers.')
+    .meta(ui({ title: 'Phones at a time' })),
   targetMode: z
     .enum(['all', 'labels', 'groups', 'devices'])
     .default('all')
@@ -106,6 +114,14 @@ const script: PluginMemberScript<typeof params, typeof result> = {
       throw Object.assign(new Error(why), { code: 'E_NO_DEVICES' })
     }
 
+    /*
+      The pacing is a property of the FARM, not of this run, so it lives in one
+      settings row the router reads each tick rather than on eighty rows that
+      could disagree. Written before any row is marked wanted, so the very
+      first tick after this member already honours it.
+    */
+    await ctx.storage.global.set(RECAP_SETTINGS_KEY, RecapSettingsSchema.parse({ version: 1, concurrency: ctx.params.concurrency }))
+
     const platforms = ctx.params.platforms as PlatformId[]
     let reads = 0
     let alreadyReading = 0
@@ -159,7 +175,7 @@ const script: PluginMemberScript<typeof params, typeof result> = {
     }
 
     const names = platforms.map((id) => platformById(id)?.title ?? id).join(', ')
-    const summary = `${resolved.chosen.length} phone${resolved.chosen.length === 1 ? '' : 's'} × ${names} — ${reads} read${reads === 1 ? '' : 's'} queued${alreadyReading > 0 ? `, ${alreadyReading} already out` : ''}`
+    const summary = `${resolved.chosen.length} phone${resolved.chosen.length === 1 ? '' : 's'} × ${names} — ${reads} read${reads === 1 ? '' : 's'} queued, ${ctx.params.concurrency} at a time${alreadyReading > 0 ? `, ${alreadyReading} already out` : ''}`
     ctx.log.info('recap queued', { devices: resolved.chosen.length, reads, alreadyReading, target: describeTarget(target) })
     return { devices: resolved.chosen.length, reads, alreadyReading, outOfScope: resolved.left.length, summary }
   },

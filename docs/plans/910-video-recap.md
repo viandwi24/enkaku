@@ -109,6 +109,27 @@ both their claims: a recap is the least urgent thing a phone can be doing and
 must never take one from an upload. It is a member rather than a button because
 a schedule can only run a script, and a daily recap is the whole point.
 
+### D6a — The fleet is paced by a CAP on reads in flight, not by a delay
+
+The first version sent a read to every online phone in one router tick. The
+owner watched it on production: *"sya di prod 73 devices itu langsung jalan
+semua serentak"* — seventy-three apps, seventy-three inspector sessions and
+seventy-three jobs at one instant, for the least urgent work this plugin does.
+
+`planRecapTick` (pure, tested, split out for the reason `warmup-tick.ts` was)
+now holds at most `concurrency` reads in flight across the whole farm, eight by
+default, set on the member and stored in one `settings:recap` row the router
+reads each tick.
+
+A cap rather than a sleep between batches. A delay has to guess how long a read
+takes — too short and the next batch lands on top of the last, too long and the
+farm idles between them, and the right guess differs per platform and per
+phone. A cap needs no guess: a slot frees the moment a phone answers and the
+next tick fills it. Two properties the tests pin: a slot freed by a read
+SETTLED this tick is filled in the same tick, and a full farm still expires
+reads whose phone never came back — a spent send budget must never stop the
+pass noticing them.
+
 ### D7 — Two dev-only frictions worth writing down
 
 Running from source embeds no packs, so `seedEmbeddedPacks` is a no-op and a new

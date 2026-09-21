@@ -178,6 +178,7 @@ export function RecapPanel({ view, onView }: { view: RecapView; onView: (next: P
   */
   const [pick, setPick] = useState<DevicePick>(() => newPick('all'))
   const [maxVideos, setMaxVideos] = useState(6)
+  const [concurrency, setConcurrency] = useState(8)
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
   const [sent, setSent] = useState<string | null>(null)
@@ -199,6 +200,7 @@ export function RecapPanel({ view, onView }: { view: RecapView; onView: (next: P
         {
           platforms: [...platforms],
           maxVideos,
+          concurrency,
           targetMode: 'devices',
           targetDeviceIds: targets.map((d) => d.id),
         },
@@ -212,7 +214,7 @@ export function RecapPanel({ view, onView }: { view: RecapView; onView: (next: P
     } finally {
       setSending(false)
     }
-  }, [fleet, platforms, maxVideos, targets, reloadRows])
+  }, [fleet, platforms, maxVideos, concurrency, targets, reloadRows])
 
   const blocked = platforms.size === 0 ? 'Pick at least one platform.' : (pickRefusal(pick) ?? (targets.length === 0 ? 'No phone matches — nothing would be read.' : null))
   const summary = targets.length === 0 ? '' : `${targets.length} phone${targets.length === 1 ? '' : 's'} × ${[...platforms].map((id) => TITLE_OF[id] ?? id).join(', ')}`
@@ -277,6 +279,24 @@ export function RecapPanel({ view, onView }: { view: RecapView; onView: (next: P
                 </Button>
               ))}
               <span className="text-[12px] text-dim">The newest ones. Anything older keeps the count it had when it was last seen.</span>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <p className="text-[12px] font-medium text-text-2">Phones at a time</p>
+            <div className="flex flex-wrap items-center gap-2">
+              {[4, 8, 16, 32].map((n) => (
+                <Button key={n} size="sm" variant={concurrency === n ? 'default' : 'outline'} onClick={() => setConcurrency(n)}>
+                  {n}
+                </Button>
+              ))}
+              {/*
+                The owner watched a fleet-wide refresh open every phone at once
+                on 73 devices. This is a cap on reads IN FLIGHT rather than a
+                delay between batches: a slot frees the moment a phone answers,
+                so the farm is never idle and never all at once.
+              */}
+              <span className="text-[12px] text-dim">The rest wait their turn. A slot frees the moment a phone answers.</span>
             </div>
           </div>
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { countBefore, countOf, parseCount } from './counts'
+import { countBefore, parseCount } from './counts'
 
 /*
   Every form below was read off the owner's moto g06 power on 2026-09-21 and is
@@ -58,19 +58,19 @@ describe('parseCount — a magnitude word means the number was rounded', () => {
 
 describe('parseCount — the number is found inside the sentence around it', () => {
   test('TikTok video page, id-ID', () => {
-    expect(countOf('8 penayangan')).toBe(8)
+    expect(parseCount('8 penayangan').value).toBe(8)
   })
 
   test('Instagram profile Reels tab', () => {
     // `preview_clip_thumbnail`: "Reel by bitorex.bkk. View Count 140. Double tap to play or pause."
-    expect(countOf('View Count 140.')).toBe(140)
+    expect(parseCount('View Count 140.').value).toBe(140)
   })
 
   test('a title with its own numbers is exactly why `parseCount` must not be handed a sentence', () => {
     // A real YouTube Shorts cell. `parseCount` reads the FIRST number it finds,
     // which here is the year in the title — the caller's job is to hand it the
     // right fragment, and `countBefore` below is how.
-    expect(countOf('2026 Solar Eclipse @ 50,000 Feet, 246 thousand views - play Short')).toBe(2026)
+    expect(parseCount('2026 Solar Eclipse @ 50,000 Feet, 246 thousand views - play Short').value).toBe(2026)
   })
 })
 

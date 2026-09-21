@@ -93,10 +93,6 @@ export function parseCount(text: string): CountReading {
   return { value: Math.round(base * factor), approx: true }
 }
 
-/** The number alone, or `null`. For callers that do not care how it was rounded. */
-export function countOf(text: string): number | null {
-  return parseCount(text).value
-}
 
 /**
  * The count that sits immediately BEFORE a word — `246 thousand views`.
