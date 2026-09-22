@@ -127,7 +127,7 @@ export function createUiServerComponent(deps: UiServerComponentDeps): Preparatio
         return { state: 'failed', version: null, reason }
       }
 
-      // An older build, kept (0.2.74): usable, recorded with its OWN version so the Update list can
+      // An older build, kept (0.2.75): usable, recorded with its OWN version so the Update list can
       // see it differs, and replaced only by an operator's Update.
       const kept = mismatch.current
       if (kept?.kept === true) {

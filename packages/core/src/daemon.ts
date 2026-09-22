@@ -652,7 +652,7 @@ let alwaysOn: AlwaysOn | null = null
   let retention: RetentionSweeper | null = null
 let blobGc: BlobGc | null = null
   let recorder: EventRecorder | null = null
-  /** Recent flaps per device (0.2.74, `registry/flap-rate.ts`), fed from the `device.flap` events below. */
+  /** Recent flaps per device (0.2.75, `registry/flap-rate.ts`), fed from the `device.flap` events below. */
   const flapRate = createFlapRate()
   /** `device.list` with each device's recent flaps attached — what a plugin reads to tell a steady phone from one on a failing hub. */
   const withFlaps = (items: DeviceInfo[]): DeviceInfo[] => items.map((item) => ({ ...item, flaps: { recent: flapRate.recent(item.id), windowSec: FLAP_WINDOW_SEC } }))
@@ -1440,7 +1440,7 @@ let blobGc: BlobGc | null = null
         publish: (deviceId, ev) => publishDeviceEvent?.(deviceId, ev),
       })
       {
-        // Every `device.flap` also feeds the rolling count `device.list` reports (0.2.74).
+        // Every `device.flap` also feeds the rolling count `device.list` reports (0.2.75).
         const base = recorder
         recorder = {
           ...base,
@@ -2869,7 +2869,7 @@ let blobGc: BlobGc | null = null
         log: log.child('preparation'),
       })
       preparationRunnerRef = preparationRunner
-      // Devices → Update devices (0.2.74): preparation keeps a differing build, this replaces it
+      // Devices → Update devices (0.2.75): preparation keeps a differing build, this replaces it
       // when an operator asks, DEVICE_UPDATE_CONCURRENCY phones at a time, never mid-job.
       const deviceUpdates = createDeviceUpdates({
         db,

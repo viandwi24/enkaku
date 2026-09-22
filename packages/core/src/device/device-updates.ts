@@ -15,7 +15,7 @@ import { loadDeviceNumbers } from '../registry/device-number'
 import type { Logger } from '../util/logger'
 
 /**
- * Devices → Update devices (0.2.74).
+ * Devices → Update devices (0.2.75).
  *
  * Preparation installs what a phone LACKS on its own — the first time it connects, ui-server and
  * the guest agent go on without anyone asking. What it no longer does on its own is REPLACE a build

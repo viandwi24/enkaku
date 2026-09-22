@@ -41,7 +41,7 @@ export interface PreparationComponent {
    * rather than throw, but the runner does not crash a whole pass over one
    * component's surprise either way.
    *
-   * `upgrade` (0.2.74): only an operator's Update replaces an INSTALLED build that differs from the
+   * `upgrade` (0.2.75): only an operator's Update replaces an INSTALLED build that differs from the
    * expectation. Without it a component installs what is missing and keeps what is there, reporting
    * the installed version, so the Update list can compare it with the expected one.
    */

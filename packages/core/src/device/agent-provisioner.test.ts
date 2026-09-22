@@ -483,7 +483,7 @@ describe('createAgentProvisioner (plan 90 §3.8, §4.3, fixes F7, F9, F10)', () 
       expect(helloCalls).toBe(2)
     })
 
-    test('without an upgrade, an agent too old to answer is reported outdated and NOT reinstalled (0.2.74)', async () => {
+    test('without an upgrade, an agent too old to answer is reported outdated and NOT reinstalled (0.2.75)', async () => {
       let ensureInstalledCalls = 0
       const { deps, db } = fakeDeps({
         makeLauncher: fakeMakeLauncher({
@@ -845,7 +845,7 @@ describe('createAgentProvisionerRoutes (plan 90 §4.7)', () => {
   })
 })
 
-describe('the local build\'s hash (0.2.74)', () => {
+describe('the local build\'s hash (0.2.75)', () => {
   async function withApk(content: string): Promise<string> {
     const dir = `${import.meta.dir}/.test-fixtures-apk`
     const path = `${dir}/guest-agent-${Math.random().toString(36).slice(2)}.apk`

@@ -6,7 +6,7 @@ import type { DeviceUpdates } from '../device/device-updates'
 import { EnkakuError } from '../util/errors'
 
 /**
- * Devices → Update devices (0.2.74). Its own prefix, `/api/device-updates`, because under
+ * Devices → Update devices (0.2.75). Its own prefix, `/api/device-updates`, because under
  * `/api/devices` the device router's `/:id` would read `updates` as a device id.
  */
 export function createDeviceUpdateRoutes(deps: { updates: DeviceUpdates }): { routes: Hono<AuthEnv> } {

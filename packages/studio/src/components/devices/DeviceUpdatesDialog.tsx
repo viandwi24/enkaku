@@ -22,7 +22,7 @@ const ACTIVE_POLL_MS = 2_000
 const IDLE_POLL_MS = 60_000
 
 /**
- * Devices → Update devices (0.2.74). Preparation installs what a phone lacks on its own, but no
+ * Devices → Update devices (0.2.75). Preparation installs what a phone lacks on its own, but no
  * longer REPLACES a build already there — so after a core upgrade the phones keep the build they
  * had, and this is where an operator replaces it, one phone or all of them, a few at a time.
  */

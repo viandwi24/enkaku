@@ -60,7 +60,7 @@ export interface PreparationRunner {
   /** One pass across every registered component for this device, in registry order. Idempotent; safe to call on every hook. */
   ensure(deviceId: string, opts?: { force?: boolean }): Promise<DevicePreparation>
   /** One pass for exactly one component — the operator-facing "Retry" (plan 106 §3.3): passing `{ force: true }` clears that component's exhausted bound. */
-  /** `upgrade` (0.2.74): replace an installed build that differs from the expectation — the operator's Update. */
+  /** `upgrade` (0.2.75): replace an installed build that differs from the expectation — the operator's Update. */
   ensureComponent(deviceId: string, componentId: string, opts?: { force?: boolean; upgrade?: boolean }): Promise<PreparationComponentStatus>
   /** The persisted row, Zod-validated — never issues an adb call of its own. */
   status(deviceId: string): Promise<DevicePreparation>

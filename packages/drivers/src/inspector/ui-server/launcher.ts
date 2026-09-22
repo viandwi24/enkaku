@@ -129,7 +129,7 @@ export interface UiServerStartHooks {
 export interface UiServerLauncher {
   /**
    * Install when missing. An installed build that differs from the expectation is KEPT unless
-   * `upgrade` is set (0.2.74) — see the guest agent launcher's `ensureInstalled` for the rule.
+   * `upgrade` is set (0.2.75) — see the guest agent launcher's `ensureInstalled` for the rule.
    */
   ensureInstalled(opts?: { upgrade?: boolean }): Promise<void>
   start(localPort: number, hooks?: UiServerStartHooks): Promise<void>
@@ -366,7 +366,7 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
         return
       }
 
-      // version_mismatch or signature_mismatch. Kept unless an upgrade was asked for (0.2.74): the
+      // version_mismatch or signature_mismatch. Kept unless an upgrade was asked for (0.2.75): the
       // session runs on the installed build, and Devices → Update devices is where it is replaced.
       if (!opts?.upgrade) {
         deps.onLog?.(

@@ -200,7 +200,7 @@ export interface GuestAgentLauncher {
    */
   /**
    * Install when missing. An installed build that differs from the expectation is KEPT unless
-   * `upgrade` is set (0.2.74): the owner's rule is that a phone that already has the agent is only
+   * `upgrade` is set (0.2.75): the owner's rule is that a phone that already has the agent is only
    * updated when an operator asks — Devices → Update devices — never on its own. `force` replaces it
    * regardless (the operator's Reinstall, and `upgrade`'s own repair path).
    */
@@ -366,7 +366,7 @@ export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAge
           return { versionCode: null }
         }
 
-        // version_mismatch or signature_mismatch. Kept unless an upgrade was asked for (0.2.74).
+        // version_mismatch or signature_mismatch. Kept unless an upgrade was asked for (0.2.75).
         if (!opts?.upgrade) {
           deps.onLog?.(
             'info',

@@ -350,7 +350,7 @@ describe('ensureInstalled() — on-device artifact verification (plan 41 §3.2, 
     expect(mismatches).toEqual([{ reason: 'version_mismatch', observed: { versionCode: 2001001 } }])
   })
 
-  test('start() on an older installed build keeps it and runs on it — nothing is uninstalled (0.2.74)', async () => {
+  test('start() on an older installed build keeps it and runs on it — nothing is uninstalled (0.2.75)', async () => {
     const { deps, hostAdbCalls, mismatches, streamCalls } = fakeDeps(
       { expectedArtifact: { versionCode: 2003003 } },
       { dumpsysReply: () => dumpsysOutput({ versionCode: 2001001 }) },
@@ -363,7 +363,7 @@ describe('ensureInstalled() — on-device artifact verification (plan 41 §3.2, 
     expect(mismatches).toEqual([{ reason: 'version_mismatch', observed: { versionCode: 2001001 }, kept: true }])
   })
 
-  test('an older installed build is KEPT by default and reported as kept (0.2.74) — upgrading is the operator\'s call', async () => {
+  test('an older installed build is KEPT by default and reported as kept (0.2.75) — upgrading is the operator\'s call', async () => {
     const { deps, hostAdbCalls, mismatches } = fakeDeps(
       { expectedArtifact: { versionCode: 2003003 } },
       { dumpsysReply: () => dumpsysOutput({ versionCode: 2001001 }) },

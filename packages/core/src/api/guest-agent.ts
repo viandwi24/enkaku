@@ -834,7 +834,7 @@ export function createGuestAgentRoutes(deps: GuestAgentRoutesDeps): GuestAgentRo
   async function installAndProbe(row: DeviceRow): Promise<GuestAgentStatusResult> {
     if (row.apiLevel !== null && row.apiLevel < MIN_SUPPORTED_SDK) return unsupportedResult(row.apiLevel)
     const launcher = makeLauncher(row)
-    // An operator's explicit install: an installed build that differs is replaced (0.2.74).
+    // An operator's explicit install: an installed build that differs is replaced (0.2.75).
     await launcher.ensureInstalled({ upgrade: true })
     return probeReachability(row, INSTALL_HANDSHAKE_RETRIES)
   }

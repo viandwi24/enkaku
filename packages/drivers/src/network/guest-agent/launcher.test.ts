@@ -193,7 +193,7 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
       expect(mismatches).toHaveLength(0) // repaired — never reaches onMismatch
     })
 
-    test('an older installed agent is KEPT by default and reported as kept (0.2.74) — nothing is uninstalled or installed', async () => {
+    test('an older installed agent is KEPT by default and reported as kept (0.2.75) — nothing is uninstalled or installed', async () => {
       const { deps, hostAdbCalls, mismatches } = fakeDeps({ expectedArtifact: { versionCode: 5 } }, { dumpsysReply: () => dumpsysOutput({ versionCode: 3 }) })
       const launcher = createGuestAgentLauncher(deps)
       await expect(launcher.ensureInstalled()).resolves.toEqual({ versionCode: 3 })

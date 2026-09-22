@@ -141,7 +141,7 @@ export interface AgentProvisioner {
    * `reconnect` (the device-online hook): the phone just came back, so an automatic budget exhausted while it was
    * unreachable starts fresh — without it a phone that dropped off adb three times stayed `failed` for good.
    */
-  /** `upgrade` (0.2.74): replace an installed agent that differs from the expectation — the operator's Update. */
+  /** `upgrade` (0.2.75): replace an installed agent that differs from the expectation — the operator's Update. */
   ensure(deviceId: string, opts?: { force?: boolean; reinstall?: boolean; reconnect?: boolean; upgrade?: boolean }): Promise<AgentStatus>
   /** The persisted row, Zod-validated — never issues an adb call of its own. */
   status(deviceId: string): Promise<AgentStatus>
@@ -161,7 +161,7 @@ export interface AgentProvisioner {
    */
   runningSince(deviceId: string): number | null
   /**
-   * The build a pass would install now (0.2.74): the manifest's `versionCode` when one is pinned,
+   * The build a pass would install now (0.2.75): the manifest's `versionCode` when one is pinned,
    * else the local APK's sha256 — what Devices → Update devices compares each phone against.
    */
   latestBuild(): Promise<{ versionCode: number | null; apkSha256: string | null }>
@@ -316,7 +316,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     }
     db.update(devices)
       .set({
-        // `apkSha256` too (0.2.74): it was computed and returned but never written, so `readCached`
+        // `apkSha256` too (0.2.75): it was computed and returned but never written, so `readCached`
         // always read `null` back and a rebuilt local APK was never once noticed.
         agent: { appVersion: status.appVersion, versionCode: status.versionCode, androidSdkInt: status.androidSdkInt, capabilities: status.capabilities, apkSha256: status.apkSha256 ?? null },
         preparation: nextPrep,
@@ -351,7 +351,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     /** The APK hash this device was last installed from — see `AgentStatusSchema.apkSha256`. */
     priorApkSha256: string | null,
     /**
-     * Replace an installed agent that differs from the expectation (0.2.74) — only an operator's
+     * Replace an installed agent that differs from the expectation (0.2.75) — only an operator's
      * Update or Reinstall. Without it a differing build is kept and used, and one too old to answer
      * this core is reported `outdated`, never replaced on its own.
      */
@@ -405,7 +405,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
      */
     const apkSha256 = await apkFingerprint(await deps.apkPath().catch(() => ''))
     // An operator's Update also replaces a build whose hash was never recorded (installed before
-    // 0.2.74 wrote it down) — only the automatic path needs a known prior hash to act on.
+    // 0.2.75 wrote it down) — only the automatic path needs a known prior hash to act on.
     const staleLocalBuild =
       !expectedArtifact && apkSha256 !== null && priorApkSha256 !== apkSha256 && (priorApkSha256 !== null || upgrade)
     if (staleLocalBuild) {
@@ -504,7 +504,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
       if (err instanceof EnkakuError && err.code === 'E_ADB_UNAVAILABLE') throw err
       if (!forceReinstall && err instanceof GuestAgentClientError && GUEST_AGENT_REPAIRABLE_ERROR_CODES.has(err.code)) {
         /*
-          An agent too old to answer this core (0.2.74). It is NOT replaced on its own — the owner's
+          An agent too old to answer this core (0.2.75). It is NOT replaced on its own — the owner's
           rule is that an installed agent is only ever updated by an operator — so it is reported
           `outdated`, with the reason, and Devices → Update devices lists it. Asked to upgrade, R1
           (plan 90 §3.9 rule 1) still applies: exactly one forced repair, then re-`hello()`.

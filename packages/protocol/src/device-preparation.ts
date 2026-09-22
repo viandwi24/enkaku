@@ -80,7 +80,7 @@ export type DevicePreparation = z.infer<typeof DevicePreparationSchema>
 export const DEFAULT_DEVICE_PREPARATION: DevicePreparation = {}
 
 /**
- * Devices → Update devices (0.2.74). A component installed on a phone is never replaced on its own
+ * Devices → Update devices (0.2.75). A component installed on a phone is never replaced on its own
  * any more — only installed when missing — so a phone whose installed build differs from this
  * core's is listed here, with both versions, until an operator updates it.
  */
