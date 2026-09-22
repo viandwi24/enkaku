@@ -4,8 +4,20 @@
     {
       "name": "core",
       "runtimeExecutable": "bun",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "port": 7700
+    },
+    {
+      "name": "studio",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd packages/studio && NEXT_PUBLIC_ENKAKU_CORE_URL=http://localhost:7700 bunx next dev -p 3002"
+      ],
+      "port": 3002
     }
   ]
 }

@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { ReconcileReportSchema, type DeviceInfo, type GroupInfo } from '@enkaku/protocol'
 import {
+  ArrowUpIcon,
   ArrowsClockwiseIcon,
   ArrowsLeftRightIcon,
   CheckIcon,
@@ -84,6 +85,9 @@ export function DevicesToolbar({
   onOpenDiscovery,
   onOpenOtg,
   onOpenScan,
+  updateCount,
+  updating,
+  onOpenUpdates,
 }: {
   groups: GroupInfo[]
   /** The group-scoped device list — what the filter menu's counts describe. */
@@ -116,6 +120,11 @@ export function DevicesToolbar({
   onOpenDiscovery: () => void
   onOpenOtg: () => void
   onOpenScan: () => void
+  /** Devices on an older build than this farm ships (Devices → Update devices). */
+  updateCount: number
+  /** An update is queued or running — the button stays up to show it. */
+  updating: boolean
+  onOpenUpdates: () => void
 }) {
   const [searchOpen, setSearchOpen] = useState(false)
   const [filterOpen, setFilterOpen] = useState(false)
@@ -162,6 +171,17 @@ export function DevicesToolbar({
     <div className="flex h-[58px] flex-none items-center gap-[10px] border-b border-line px-3">
       <GroupTabs groups={groups} devices={allDevices} active={activeGroup} onSelect={onSelectGroup} onMutated={onGroupsMutated} />
       <div className="flex-1" />
+
+      {(updateCount > 0 || updating) && (
+        <button
+          type="button"
+          onClick={onOpenUpdates}
+          className="flex flex-none items-center gap-1.5 rounded-pill border border-border-2 bg-panel-2 px-[13px] py-[7px] text-body text-text-2 hover:bg-muted"
+        >
+          <ArrowUpIcon className="size-4" aria-hidden />
+          {updating ? 'Updating devices…' : `Update devices (${updateCount})`}
+        </button>
+      )}
 
       {pendingCount > 0 && (
         <button

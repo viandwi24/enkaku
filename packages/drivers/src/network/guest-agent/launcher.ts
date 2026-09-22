@@ -118,6 +118,8 @@ export interface GuestAgentAccessibility {
 export interface GuestAgentArtifactMismatch {
   reason: 'not_installed' | 'version_mismatch' | 'signature_mismatch'
   observed?: { versionCode?: number; signature?: string }
+  /** The installed build differs and was KEPT (no `upgrade` asked for) rather than replaced. */
+  kept?: boolean
 }
 
 export interface GuestAgentLauncherDeps {
@@ -196,7 +198,14 @@ export interface GuestAgentLauncher {
    * process answers an old protocol, in principle — R1 exists to repair
    * that case exactly once too, never loop).
    */
-  ensureInstalled(opts?: { force?: boolean }): Promise<{ versionCode: number | null }>
+  /**
+   * Install when missing. An installed build that differs from the expectation is KEPT unless
+   * `upgrade` is set (0.2.74): the owner's rule is that a phone that already has the agent is only
+   * updated when an operator asks — Devices → Update devices — never on its own. `force` replaces it
+   * regardless (the operator's Reinstall, and `upgrade`'s own repair path).
+   */
+  /** `installed` is true when this call put the APK on the phone (a fresh install or a repair), so a caller can record which build it now runs. */
+  ensureInstalled(opts?: { force?: boolean; upgrade?: boolean }): Promise<{ versionCode: number | null; installed?: boolean }>
   /**
    * Grants the VPN app op if this build allows it, and REPORTS rather than
    * throws when it does not — see `GuestAgentVpnConsent`. Still throws for
@@ -347,7 +356,7 @@ export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAge
           // No re-verify here — mirrors `ui-server/launcher.ts`'s identical
           // choice: a blind install's versionCode is reported as the pinned
           // expectation until the NEXT pass confirms it for real.
-          return { versionCode: expected.versionCode ?? null }
+          return { versionCode: expected.versionCode ?? null, installed: true }
         }
         if (result.reason === 'unreadable') {
           deps.onLog?.(
@@ -357,10 +366,19 @@ export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAge
           return { versionCode: null }
         }
 
-        // version_mismatch or signature_mismatch: repair exactly once, below.
+        // version_mismatch or signature_mismatch. Kept unless an upgrade was asked for (0.2.74).
+        if (!opts?.upgrade) {
+          deps.onLog?.(
+            'info',
+            `${GUEST_AGENT_PACKAGE} on ${deps.serial} is ${result.reason} (observed ${JSON.stringify(result.observed ?? {})}) — keeping the installed build until an operator updates it`,
+          )
+          deps.onMismatch?.({ reason: result.reason, ...(result.observed ? { observed: result.observed } : {}), kept: true })
+          return { versionCode: result.observed?.versionCode ?? null }
+        }
+        // Asked to upgrade: repair exactly once, below.
         deps.onLog?.(
           'warn',
-          `${GUEST_AGENT_PACKAGE} on ${deps.serial} is ${result.reason} (observed ${JSON.stringify(result.observed ?? {})}) — reinstalling`,
+          `${GUEST_AGENT_PACKAGE} on ${deps.serial} is ${result.reason} (observed ${JSON.stringify(result.observed ?? {})}) — upgrading`,
         )
       } else {
         deps.onLog?.('info', `forcing a reinstall of ${GUEST_AGENT_PACKAGE} on ${deps.serial} (plan 90 §3.9 rule 1)`)
@@ -376,14 +394,14 @@ export function createGuestAgentLauncher(deps: GuestAgentLauncherDeps): GuestAge
       const reverified = await verifyDeviceArtifact(verifyExec, expected)
       if (reverified.ok) {
         deps.onLog?.('info', `${GUEST_AGENT_PACKAGE} reinstalled and reverified on ${deps.serial}`)
-        return { versionCode: reverified.versionCode }
+        return { versionCode: reverified.versionCode, installed: true }
       }
       if (reverified.reason === 'unreadable') {
         deps.onLog?.(
           'warn',
           `could not re-verify ${GUEST_AGENT_PACKAGE} on ${deps.serial} after reinstalling — skipping artifact verification for this pass`,
         )
-        return { versionCode: null }
+        return { versionCode: null, installed: true }
       }
 
       // Still mismatched after one repair attempt — stop, do not loop.

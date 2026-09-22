@@ -202,6 +202,11 @@ export const BATTERY_POLL_INTERVAL_SEC = num('ENKAKU_BATTERY_POLL_INTERVAL_SEC',
 export const ROTATION_REASSERT_INTERVAL_SEC = num('ENKAKU_ROTATION_REASSERT_INTERVAL_SEC', 300, z.number().int().min(0).max(86_400))
 export const DEVICE_LABEL_SURFACE = pick('ENKAKU_DEVICE_LABEL_SURFACE', 'lock-screen', ['lock-screen', 'wallpaper'] as const)
 export const LABEL_WRITE_CONCURRENCY = num('ENKAKU_LABEL_WRITE_CONCURRENCY', 2, z.number().int().min(1).max(16))
+/**
+ * How many devices Devices → Update devices updates at once (0.2.74). An update reinstalls APKs over
+ * the shared adb server and USB, so a fleet is walked a few phones at a time, never all together.
+ */
+export const DEVICE_UPDATE_CONCURRENCY = num('ENKAKU_DEVICE_UPDATE_CONCURRENCY', 2, z.number().int().min(1).max(16))
 export const CONTROL_IDLE_SEC = num('ENKAKU_CONTROL_IDLE_SEC', 30, z.number().int().min(5).max(600))
 /**
  * How many saved adb shortcuts one farm may hold (`registry/adb-shortcuts.ts`).

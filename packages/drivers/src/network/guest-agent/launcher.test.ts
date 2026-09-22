@@ -161,7 +161,7 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
         { dumpsysReply: () => dumpsysOutput({ installed: false }) },
       )
       const launcher = createGuestAgentLauncher(deps)
-      await expect(launcher.ensureInstalled()).resolves.toEqual({ versionCode: 5 })
+      await expect(launcher.ensureInstalled()).resolves.toEqual({ versionCode: 5, installed: true })
       expect(argLists(hostAdbCalls).filter((a) => a.includes('uninstall'))).toHaveLength(0)
       const installCall = hostAdbCalls.find((c) => c.args.includes('install'))
       expect(installCall?.args).toEqual(['-s', 'serial-1', 'install', '-r', '-g', '/tools/guest-agent.apk'])
@@ -185,12 +185,20 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
         },
       )
       const launcher = createGuestAgentLauncher(deps)
-      await expect(launcher.ensureInstalled()).resolves.toEqual({ versionCode: 5 })
+      await expect(launcher.ensureInstalled({ upgrade: true })).resolves.toEqual({ versionCode: 5, installed: true })
 
       expect(dumpsysCalls).toBe(2) // verify → mismatch → reinstall → re-verify, no more
       expect(argLists(hostAdbCalls).filter((a) => a.includes('uninstall'))).toHaveLength(1)
       expect(argLists(hostAdbCalls).filter((a) => a.includes('install'))).toHaveLength(1)
       expect(mismatches).toHaveLength(0) // repaired — never reaches onMismatch
+    })
+
+    test('an older installed agent is KEPT by default and reported as kept (0.2.74) — nothing is uninstalled or installed', async () => {
+      const { deps, hostAdbCalls, mismatches } = fakeDeps({ expectedArtifact: { versionCode: 5 } }, { dumpsysReply: () => dumpsysOutput({ versionCode: 3 }) })
+      const launcher = createGuestAgentLauncher(deps)
+      await expect(launcher.ensureInstalled()).resolves.toEqual({ versionCode: 3 })
+      expect(argLists(hostAdbCalls).filter((a) => a.includes('uninstall') || a.includes('install'))).toHaveLength(0)
+      expect(mismatches).toEqual([{ reason: 'version_mismatch', observed: { versionCode: 3 }, kept: true }])
     })
 
     test('a repair that fails a second time reports the mismatch once, throws, and does not loop', async () => {
@@ -202,7 +210,7 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
       )
       const launcher = createGuestAgentLauncher(deps)
 
-      await expect(launcher.ensureInstalled()).rejects.toThrow(/version_mismatch/)
+      await expect(launcher.ensureInstalled({ upgrade: true })).rejects.toThrow(/version_mismatch/)
 
       // Exactly ONE uninstall/reinstall cycle — not a retry loop (plan 41 §3.3, reused as-is).
       expect(argLists(hostAdbCalls).filter((a) => a.includes('uninstall'))).toHaveLength(1)
@@ -220,7 +228,7 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
         { dumpsysReply: () => (++dumpsysCalls === 1 ? wrongSigOutput : okOutput) },
       )
       const launcher = createGuestAgentLauncher(deps)
-      await launcher.ensureInstalled()
+      await launcher.ensureInstalled({ upgrade: true })
 
       expect(argLists(hostAdbCalls).filter((a) => a.includes('uninstall'))).toHaveLength(1)
       expect(mismatches).toHaveLength(0)
@@ -254,7 +262,7 @@ describe('createGuestAgentLauncher (plan 44 §4.4, §5.5)', () => {
       const { deps, hostAdbCalls, execCalls } = fakeDeps({ expectedArtifact: { versionCode: 5 } }, { dumpsysReply: () => dumpsysOutput({ versionCode: 5 }) })
       const launcher = createGuestAgentLauncher(deps)
       execCalls.length = 0
-      await expect(launcher.ensureInstalled({ force: true })).resolves.toEqual({ versionCode: 5 })
+      await expect(launcher.ensureInstalled({ force: true })).resolves.toEqual({ versionCode: 5, installed: true })
 
       expect(argLists(hostAdbCalls).filter((a) => a.includes('uninstall'))).toHaveLength(1)
       expect(argLists(hostAdbCalls).filter((a) => a.includes('install'))).toHaveLength(1)

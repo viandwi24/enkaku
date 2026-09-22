@@ -477,10 +477,30 @@ describe('createAgentProvisioner (plan 90 §3.8, §4.3, fixes F7, F9, F10)', () 
         },
       })
       seedDevice(db)
-      const status = await createAgentProvisioner(deps).ensure('dev-1')
+      const status = await createAgentProvisioner(deps).ensure('dev-1', { upgrade: true })
       expect(status.state).toBe('ready')
       expect(ensureInstalledCalls).toBe(2) // the ordinary pass, then R1's one forced repair
       expect(helloCalls).toBe(2)
+    })
+
+    test('without an upgrade, an agent too old to answer is reported outdated and NOT reinstalled (0.2.74)', async () => {
+      let ensureInstalledCalls = 0
+      const { deps, db } = fakeDeps({
+        makeLauncher: fakeMakeLauncher({
+          ensureInstalled: async () => {
+            ensureInstalledCalls++
+            return { versionCode: 3 }
+          },
+        }),
+        hello: async () => {
+          throw new GuestAgentClientError('E_PROTOCOL_MISMATCH', 'guest agent speaks protocol 0, this host expects 1')
+        },
+      })
+      seedDevice(db)
+      const status = await createAgentProvisioner(deps).ensure('dev-1')
+      expect(status.state).toBe('outdated')
+      expect(status.reason).toContain('Update devices')
+      expect(ensureInstalledCalls).toBe(1)
     })
 
     test('R1 still degrades to failed when the forced repair does not fix the handshake', async () => {
@@ -490,7 +510,7 @@ describe('createAgentProvisioner (plan 90 §3.8, §4.3, fixes F7, F9, F10)', () 
         },
       })
       seedDevice(db)
-      const status = await createAgentProvisioner(deps).ensure('dev-1')
+      const status = await createAgentProvisioner(deps).ensure('dev-1', { upgrade: true })
       expect(status.state).toBe('failed')
       expect(status.reason).toContain('still stale')
     })
@@ -822,5 +842,65 @@ describe('createAgentProvisionerRoutes (plan 90 §4.7)', () => {
     const body = (await res.json()) as { total: number; results: Array<{ deviceId: string; state: string }> }
     expect(body.total).toBe(1)
     expect(body.results[0]).toMatchObject({ deviceId: 'dev-1', state: 'ready' })
+  })
+})
+
+describe('the local build\'s hash (0.2.74)', () => {
+  async function withApk(content: string): Promise<string> {
+    const dir = `${import.meta.dir}/.test-fixtures-apk`
+    const path = `${dir}/guest-agent-${Math.random().toString(36).slice(2)}.apk`
+    await Bun.write(path, content)
+    return path
+  }
+
+  test('an install records it, a rebuilt APK is kept until an upgrade, and the upgrade replaces it', async () => {
+    let apk = await withApk('build-1')
+    const calls: Array<{ force?: boolean; upgrade?: boolean } | undefined> = []
+    const { deps, db } = fakeDeps({
+      apkPath: async () => apk,
+      expectedArtifact: async () => null,
+      makeLauncher: fakeMakeLauncher({
+        ensureInstalled: async (o) => {
+          calls.push(o)
+          return { versionCode: 1, installed: calls.length === 1 || o?.force === true }
+        },
+      }),
+    })
+    seedDevice(db)
+    const provisioner = createAgentProvisioner(deps)
+    const first = await provisioner.ensure('dev-1')
+    const built1 = (await provisioner.latestBuild()).apkSha256
+    expect(built1).not.toBeNull()
+    expect(first.apkSha256).toBe(built1)
+    expect((await provisioner.status('dev-1')).apkSha256).toBe(built1)
+
+    apk = await withApk('build-2')
+    const kept = await provisioner.ensure('dev-1', { force: true })
+    expect(calls.at(-1)?.force).toBeUndefined()
+    expect(kept.apkSha256).toBe(built1)
+
+    const upgraded = await provisioner.ensure('dev-1', { force: true, upgrade: true })
+    expect(calls.at(-1)).toMatchObject({ force: true, upgrade: true })
+    expect(upgraded.apkSha256).toBe((await provisioner.latestBuild()).apkSha256)
+    expect(upgraded.apkSha256).not.toBe(built1)
+    await Bun.$`rm -rf ${import.meta.dir}/.test-fixtures-apk`.quiet()
+  })
+
+  test('an upgrade replaces a build whose hash was never recorded', async () => {
+    const apk = await withApk('build-x')
+    const calls: Array<{ force?: boolean; upgrade?: boolean } | undefined> = []
+    const { deps, db } = fakeDeps({
+      apkPath: async () => apk,
+      expectedArtifact: async () => null,
+      makeLauncher: fakeMakeLauncher({ ensureInstalled: async (o) => (calls.push(o), { versionCode: 1, installed: o?.force === true }) }),
+    })
+    seedDevice(db, { agent: { appVersion: 'dev', versionCode: 1, androidSdkInt: 34, capabilities: [] } })
+    const provisioner = createAgentProvisioner(deps)
+    await provisioner.ensure('dev-1', { force: true })
+    expect(calls.at(-1)?.force).toBeUndefined()
+    const upgraded = await provisioner.ensure('dev-1', { force: true, upgrade: true })
+    expect(calls.at(-1)?.force).toBe(true)
+    expect(upgraded.apkSha256).not.toBeNull()
+    await Bun.$`rm -rf ${import.meta.dir}/.test-fixtures-apk`.quiet()
   })
 })

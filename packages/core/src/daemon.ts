@@ -51,6 +51,7 @@ import {
   DEVICE_ENDPOINT_RETIRE_AFTER,
   DEVICE_LABEL_SURFACE,
   DEVICE_OFFLINE_GRACE_SEC,
+  DEVICE_UPDATE_CONCURRENCY,
   DEVICE_RECOVERY_COOLDOWN_SEC,
   DEVICE_RECOVERY_PROBE_INTERVAL_SEC,
   DEVICE_RESCAN_INTERVAL_SEC,
@@ -172,6 +173,8 @@ import { createAgentProvisioner, createAgentProvisionerRoutes, type AgentProvisi
 import { createPreparationRunner, type PreparationRunner } from './device/preparation/runner'
 import { createPreparationRegistry } from './device/preparation/registry'
 import { createDevicePreparationRoutes } from './api/device-preparation'
+import { createDeviceUpdateRoutes } from './api/device-updates'
+import { createDeviceUpdates } from './device/device-updates'
 import { createLabellingService, type LabellingService } from './device/labelling'
 import { createAdbStatsRoutes } from './api/adb-stats'
 import { createVideoRoutes } from './api/video'
@@ -2866,6 +2869,20 @@ let blobGc: BlobGc | null = null
         log: log.child('preparation'),
       })
       preparationRunnerRef = preparationRunner
+      // Devices → Update devices (0.2.74): preparation keeps a differing build, this replaces it
+      // when an operator asks, DEVICE_UPDATE_CONCURRENCY phones at a time, never mid-job.
+      const deviceUpdates = createDeviceUpdates({
+        db,
+        log: log.child('device-updates'),
+        concurrency: DEVICE_UPDATE_CONCURRENCY,
+        latest: async () => ({
+          uiServer: (await toolchain.deviceArtifactExpectation('ui-server').catch(() => null))?.versionCode ?? null,
+          guestAgent: await agentProvisioner.latestBuild(),
+        }),
+        agent: agentProvisioner,
+        runner: preparationRunner,
+        activities: (deviceId) => activities.list(deviceId),
+      })
       // Same boot-ordering rule as `agentProvisioner` just above (§96.25 fix
       // 1): the boot-time `ensureAll()` sweep runs later, right after
       // `adbState = 'ready'` is logged, never here.
@@ -3519,6 +3536,7 @@ let blobGc: BlobGc | null = null
         // (plan 106 §5 step 106.5 — see `DevicePreparationRoutesDeps.agentProvisioner`'s
         // own doc comment for why it is bridged rather than registered).
         devicePreparationRoutes: createDevicePreparationRoutes({ db, runner: preparationRunner, agentProvisioner }).routes,
+        deviceUpdateRoutes: createDeviceUpdateRoutes({ updates: deviceUpdates }).routes,
         // Label CRUD (plan 225 §4.4). `broadcast`/`listDevices` are the same
         // pair `actionRoutes` gets: a rename, a recolour or a delete changes
         // the chips on every device carrying the label, and a write that

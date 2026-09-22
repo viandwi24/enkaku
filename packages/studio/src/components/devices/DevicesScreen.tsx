@@ -15,6 +15,7 @@ import { DeviceTable } from './DeviceTable'
 import { DiscoverySheet } from './DiscoverySheet'
 import { OtgSwitchDialog } from './OtgSwitchDialog'
 import { ScanNetworkDialog } from './ScanNetworkDialog'
+import { DeviceUpdatesDialog, useDeviceUpdates } from './DeviceUpdatesDialog'
 import { CARD_WIDTH_PX, DevicesToolbar, matchesDevice, type DevicesFilter, type DevicesView } from './DevicesToolbar'
 import { isDeviceState, reconnectingAttempt } from './device-state'
 import { ScreensGrid } from './ScreensGrid'
@@ -70,6 +71,8 @@ export function DevicesScreen() {
   // watching the moment the menu closes.
   const [otgOpen, setOtgOpen] = useState(false)
   const [scanOpen, setScanOpen] = useState(false)
+  const [updatesOpen, setUpdatesOpen] = useState(false)
+  const deviceUpdates = useDeviceUpdates(updatesOpen)
   const [spinning, setSpinning] = useState(false)
   const [contextMenu, setContextMenu] = useState<DeviceContextMenuRequest | null>(null)
   /**
@@ -291,6 +294,9 @@ export function DevicesScreen() {
         onOpenDiscovery={() => setDiscoveryOpen(true)}
         onOpenOtg={() => setOtgOpen(true)}
         onOpenScan={() => setScanOpen(true)}
+        updateCount={deviceUpdates.outstanding}
+        updating={deviceUpdates.busy}
+        onOpenUpdates={() => setUpdatesOpen(true)}
       />
 
       {view === 'table' ? (
@@ -336,6 +342,8 @@ export function DevicesScreen() {
       <OtgSwitchDialog open={otgOpen} onOpenChange={setOtgOpen} devices={devices} onDone={reload} />
 
       <ScanNetworkDialog open={scanOpen} onOpenChange={setScanOpen} onScanned={reload} />
+
+      <DeviceUpdatesDialog open={updatesOpen} onOpenChange={setUpdatesOpen} updates={deviceUpdates} />
 
       <DiscoverySheet
         open={discoveryOpen}

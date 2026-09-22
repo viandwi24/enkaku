@@ -62,7 +62,7 @@ export function createUiServerComponent(deps: UiServerComponentDeps): Preparatio
       return 'ui-server has no minimum Android version'
     },
 
-    async run(row: DeviceRow): Promise<PreparationRunResult> {
+    async run(row: DeviceRow, opts?: { upgrade?: boolean }): Promise<PreparationRunResult> {
       const serial = row.serial
       const execFor = (cmd: string): Promise<string> => deps.exec(serial, cmd).then((r) => r.stdout)
 
@@ -113,7 +113,7 @@ export function createUiServerComponent(deps: UiServerComponentDeps): Preparatio
       })
 
       try {
-        await launcher.ensureInstalled()
+        await launcher.ensureInstalled({ upgrade: opts?.upgrade === true })
       } catch (err) {
         // §96.25 fix 2's rule, generalised (plan 106 §3.3): a core-side
         // `E_ADB_UNAVAILABLE` is rethrown UNCHANGED so the runner defers the
@@ -125,6 +125,14 @@ export function createUiServerComponent(deps: UiServerComponentDeps): Preparatio
           return { state: 'outdated', version: seen.observed?.versionCode != null ? String(seen.observed.versionCode) : null, reason }
         }
         return { state: 'failed', version: null, reason }
+      }
+
+      // An older build, kept (0.2.74): usable, recorded with its OWN version so the Update list can
+      // see it differs, and replaced only by an operator's Update.
+      const kept = mismatch.current
+      if (kept?.kept === true) {
+        const installed = kept.observed?.versionCode != null ? String(kept.observed.versionCode) : null
+        return { state: 'ready', version: installed, reason: `An older build is installed${installed !== null ? ` (${installed})` : ''} and kept until it is updated from Devices → Update devices.` }
       }
 
       // Installed and matching (or verification was skipped as unreadable —

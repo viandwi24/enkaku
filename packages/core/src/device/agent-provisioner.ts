@@ -141,7 +141,8 @@ export interface AgentProvisioner {
    * `reconnect` (the device-online hook): the phone just came back, so an automatic budget exhausted while it was
    * unreachable starts fresh — without it a phone that dropped off adb three times stayed `failed` for good.
    */
-  ensure(deviceId: string, opts?: { force?: boolean; reinstall?: boolean; reconnect?: boolean }): Promise<AgentStatus>
+  /** `upgrade` (0.2.74): replace an installed agent that differs from the expectation — the operator's Update. */
+  ensure(deviceId: string, opts?: { force?: boolean; reinstall?: boolean; reconnect?: boolean; upgrade?: boolean }): Promise<AgentStatus>
   /** The persisted row, Zod-validated — never issues an adb call of its own. */
   status(deviceId: string): Promise<AgentStatus>
   /** Every device currently online (offline devices are unreachable by construction — nothing to verify), bounded by the install lane. Returns a per-device report. */
@@ -159,6 +160,11 @@ export interface AgentProvisioner {
    * one in the first place).
    */
   runningSince(deviceId: string): number | null
+  /**
+   * The build a pass would install now (0.2.74): the manifest's `versionCode` when one is pinned,
+   * else the local APK's sha256 — what Devices → Update devices compares each phone against.
+   */
+  latestBuild(): Promise<{ versionCode: number | null; apkSha256: string | null }>
 }
 
 /**
@@ -310,7 +316,9 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     }
     db.update(devices)
       .set({
-        agent: { appVersion: status.appVersion, versionCode: status.versionCode, androidSdkInt: status.androidSdkInt, capabilities: status.capabilities },
+        // `apkSha256` too (0.2.74): it was computed and returned but never written, so `readCached`
+        // always read `null` back and a rebuilt local APK was never once noticed.
+        agent: { appVersion: status.appVersion, versionCode: status.versionCode, androidSdkInt: status.androidSdkInt, capabilities: status.capabilities, apkSha256: status.apkSha256 ?? null },
         preparation: nextPrep,
       })
       .where(eq(devices.id, deviceId))
@@ -342,6 +350,12 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
     forceReinstall: boolean,
     /** The APK hash this device was last installed from — see `AgentStatusSchema.apkSha256`. */
     priorApkSha256: string | null,
+    /**
+     * Replace an installed agent that differs from the expectation (0.2.74) — only an operator's
+     * Update or Reinstall. Without it a differing build is kept and used, and one too old to answer
+     * this core is reported `outdated`, never replaced on its own.
+     */
+    upgrade: boolean,
   ): Promise<{ state: AgentState; appVersion: string | null; versionCode: number | null; androidSdkInt: number | null; capabilities: GuestAgentCapability[]; reason: string | null; /** Set only where an install actually ran; every other exit keeps the stored value. */ apkSha256?: string | null }> {
     // A mutable holder, not a bare `let` (TS's control-flow narrowing treats
     // a `let` written only from inside a callback as staying at its
@@ -390,16 +404,20 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
      * versionCode is the better check and this must not second-guess it.
      */
     const apkSha256 = await apkFingerprint(await deps.apkPath().catch(() => ''))
+    // An operator's Update also replaces a build whose hash was never recorded (installed before
+    // 0.2.74 wrote it down) — only the automatic path needs a known prior hash to act on.
     const staleLocalBuild =
-      !expectedArtifact && apkSha256 !== null && priorApkSha256 !== null && priorApkSha256 !== apkSha256
+      !expectedArtifact && apkSha256 !== null && priorApkSha256 !== apkSha256 && (priorApkSha256 !== null || upgrade)
     if (staleLocalBuild) {
-      deps.log.info(`the local guest agent build changed since ${row.id} was installed from it — reinstalling`)
+      deps.log.info(upgrade ? `the local guest agent build changed since ${row.id} was installed from it — reinstalling` : `the local guest agent build changed since ${row.id} was installed from it — keeping the installed one until it is updated`)
     }
 
     let versionCode: number | null = null
+    let installed = false
     try {
-      const result = await launcher.ensureInstalled(forceReinstall || staleLocalBuild ? { force: true } : undefined)
+      const result = await launcher.ensureInstalled(forceReinstall || (staleLocalBuild && upgrade) ? { force: true, upgrade } : { upgrade })
       versionCode = result.versionCode
+      installed = result.installed === true
     } catch (err) {
       // 96.25 fix 2 (docs/plans/96-m61-hotfixes.md §96.25): `E_ADB_UNAVAILABLE`
       // says something about US (the adb subsystem is not up yet), not about
@@ -424,6 +442,9 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
       if (isDeviceUnreachableReason(reason)) throw new EnkakuError('E_DEVICE_UNREACHABLE', reason)
       return { state: 'failed', appVersion: priorAppVersion, versionCode: null, androidSdkInt: row.apiLevel, capabilities: [], reason }
     }
+
+    /** The build this phone now runs, when THIS pass installed it. A kept build keeps the stored hash. */
+    const installedHash = (): { apkSha256?: string | null } => (installed && apkSha256 !== null ? { apkSha256 } : {})
 
     // The artifact matches (or verification was skipped as unreadable —
     // F8's rule: unreadable never counts as a mismatch). Confirm the agent
@@ -472,20 +493,35 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
           androidSdkInt: hello.androidSdkInt,
           capabilities: hello.capabilities,
           reason: consent.reason,
+          ...installedHash(),
         }
       }
-      return { state: 'ready', appVersion: hello.appVersion, versionCode, androidSdkInt: hello.androidSdkInt, capabilities: hello.capabilities, reason: null }
+      return { state: 'ready', appVersion: hello.appVersion, versionCode, androidSdkInt: hello.androidSdkInt, capabilities: hello.capabilities, reason: null, ...installedHash() }
     } catch (err) {
       // Same reasoning as the `ensureInstalled` catch above: a core-side
       // "adb isn't ready" here means this pass never got a real answer from
       // the device at all, so it must not be scored as a device failure.
       if (err instanceof EnkakuError && err.code === 'E_ADB_UNAVAILABLE') throw err
       if (!forceReinstall && err instanceof GuestAgentClientError && GUEST_AGENT_REPAIRABLE_ERROR_CODES.has(err.code)) {
-        // R1 (plan 90 §3.9 rule 1): a protocol mismatch `hello()` itself
-        // caught, that the on-device artifact check alone cannot see —
-        // exactly one forced repair, then re-`hello()`, never a loop.
+        /*
+          An agent too old to answer this core (0.2.74). It is NOT replaced on its own — the owner's
+          rule is that an installed agent is only ever updated by an operator — so it is reported
+          `outdated`, with the reason, and Devices → Update devices lists it. Asked to upgrade, R1
+          (plan 90 §3.9 rule 1) still applies: exactly one forced repair, then re-`hello()`.
+        */
+        if (!upgrade) {
+          deps.log.info(`guest agent on device ${row.id} answered ${err.code} on hello() — it is too old for this core; keeping it until an operator updates it`)
+          return {
+            state: 'outdated',
+            appVersion: priorAppVersion,
+            versionCode,
+            androidSdkInt: row.apiLevel,
+            capabilities: [],
+            reason: `The installed guest agent is too old for this core (it answered ${err.code}). Update it from Devices → Update devices.`,
+          }
+        }
         deps.log.warn(`guest agent on device ${row.id} answered ${err.code} on hello() — forcing one reinstall + re-hello (plan 90 §3.9 rule 1)`)
-        return runOnePass(row, priorAppVersion, true, priorApkSha256)
+        return runOnePass(row, priorAppVersion, true, priorApkSha256, upgrade)
       }
       const reason = err instanceof Error ? err.message : String(err)
       // Installed (verify says so) but not answering `hello()` — a genuine
@@ -498,7 +534,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
 
   const inFlight = new Map<string, Promise<AgentStatus>>()
 
-  async function ensureImpl(deviceId: string, opts?: { force?: boolean; reinstall?: boolean; reconnect?: boolean }): Promise<AgentStatus> {
+  async function ensureImpl(deviceId: string, opts?: { force?: boolean; reinstall?: boolean; reconnect?: boolean; upgrade?: boolean }): Promise<AgentStatus> {
     const row = mustGet(deviceId)
     const prior = readCached(row, deps.log)
     const checkedAt = nowSeconds(now)
@@ -584,7 +620,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
       // this: uninstall+reinstall across a hundred phones is not what
       // "provision all" means, and it would drop every accessibility grant
       // on the farm to fix a problem most of them do not have.
-      result = await runOnePass(row, prior.appVersion, opts?.reinstall === true, prior.apkSha256)
+      result = await runOnePass(row, prior.appVersion, opts?.reinstall === true, prior.apkSha256, opts?.upgrade === true || opts?.reinstall === true)
     } catch (err) {
       // 96.25 fix 2: a core-side `E_ADB_UNAVAILABLE` (rethrown by
       // `runOnePass` above) means this pass never reached the device at
@@ -644,7 +680,7 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
       // flight must not satisfy an operator who asked for a reinstall, or
       // the button would silently return the very result it was pressed to
       // change.
-      const key = opts?.reinstall ? `${deviceId}:reinstall` : opts?.force ? `${deviceId}:force` : deviceId
+      const key = opts?.reinstall ? `${deviceId}:reinstall` : opts?.upgrade ? `${deviceId}:upgrade` : opts?.force ? `${deviceId}:force` : deviceId
       const existing = inFlight.get(key)
       if (existing) return existing
       const p = ensureImpl(deviceId, opts).finally(() => {
@@ -661,6 +697,12 @@ export function createAgentProvisioner(deps: AgentProvisionerDeps): AgentProvisi
 
     runningSince(deviceId) {
       return runningSinceMap.get(deviceId) ?? null
+    },
+
+    async latestBuild() {
+      const expected = await deps.expectedArtifact().catch(() => null)
+      if (expected?.versionCode !== undefined) return { versionCode: expected.versionCode, apkSha256: null }
+      return { versionCode: null, apkSha256: await apkFingerprint(await deps.apkPath().catch(() => '')) }
     },
 
     async ensureAll(opts) {

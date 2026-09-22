@@ -78,3 +78,44 @@ export type DevicePreparation = z.infer<typeof DevicePreparationSchema>
 
 /** No component has ever had a pass run for this device — the default for a brand-new row. */
 export const DEFAULT_DEVICE_PREPARATION: DevicePreparation = {}
+
+/**
+ * Devices → Update devices (0.2.74). A component installed on a phone is never replaced on its own
+ * any more — only installed when missing — so a phone whose installed build differs from this
+ * core's is listed here, with both versions, until an operator updates it.
+ */
+export const DEVICE_UPDATE_COMPONENTS = ['ui-server', 'guest-agent'] as const
+export const DeviceUpdateComponentSchema = z.object({
+  id: z.enum(DEVICE_UPDATE_COMPONENTS),
+  label: z.string(),
+  /** The installed build's version, as the device reports it; `null` when it could not be read. */
+  installed: z.string().nullable(),
+  /** The build this core ships. */
+  latest: z.string().nullable(),
+})
+export type DeviceUpdateComponent = z.infer<typeof DeviceUpdateComponentSchema>
+
+export const DEVICE_UPDATE_STATES = ['idle', 'queued', 'running', 'done', 'failed'] as const
+export const DeviceUpdateRowSchema = z.object({
+  deviceId: z.string(),
+  label: z.string(),
+  number: z.number().int().nullable(),
+  /** What differs. Empty on a row kept only to show a finished or failed update. */
+  components: z.array(DeviceUpdateComponentSchema),
+  state: z.enum(DEVICE_UPDATE_STATES),
+  /** Why an update failed, or what a queued one waits for. */
+  message: z.string().nullable(),
+})
+export type DeviceUpdateRow = z.infer<typeof DeviceUpdateRowSchema>
+
+export const DeviceUpdatesResponseSchema = z.object({
+  devices: z.array(DeviceUpdateRowSchema),
+  /** How many devices are updated at once (`ENKAKU_DEVICE_UPDATE_CONCURRENCY`). */
+  concurrency: z.number().int().positive(),
+  running: z.number().int().nonnegative(),
+  queued: z.number().int().nonnegative(),
+})
+export type DeviceUpdatesResponse = z.infer<typeof DeviceUpdatesResponseSchema>
+
+/** `POST /api/devices/updates`: the devices to update, or every device that needs it when absent. */
+export const DeviceUpdatesStartBodySchema = z.object({ deviceIds: z.array(z.string().min(1)).optional() })

@@ -309,7 +309,7 @@ describe('ensureInstalled() — on-device artifact verification (plan 41 §3.2, 
       },
     )
     const launcher = createUiServerLauncher(deps)
-    await launcher.ensureInstalled()
+    await launcher.ensureInstalled({ upgrade: true })
 
     expect(dumpsysCalls).toBe(2) // verify → mismatch → reinstall → re-verify, no more
     expect(hostAdbCalls.filter((a) => a.includes('uninstall'))).toHaveLength(1)
@@ -327,7 +327,7 @@ describe('ensureInstalled() — on-device artifact verification (plan 41 §3.2, 
       { dumpsysReply: () => (++dumpsysCalls === 1 ? wrongSigOutput : okOutput) },
     )
     const launcher = createUiServerLauncher(deps)
-    await launcher.ensureInstalled()
+    await launcher.ensureInstalled({ upgrade: true })
 
     expect(hostAdbCalls.filter((a) => a.includes('uninstall'))).toHaveLength(1)
     expect(mismatches).toHaveLength(0)
@@ -342,7 +342,7 @@ describe('ensureInstalled() — on-device artifact verification (plan 41 §3.2, 
     )
     const launcher = createUiServerLauncher(deps)
 
-    await expect(launcher.ensureInstalled()).rejects.toThrow(/version_mismatch/)
+    await expect(launcher.ensureInstalled({ upgrade: true })).rejects.toThrow(/version_mismatch/)
 
     // Exactly ONE uninstall/reinstall cycle — not a retry loop (§3.3).
     expect(hostAdbCalls.filter((a) => a.includes('uninstall'))).toHaveLength(1)
@@ -350,15 +350,28 @@ describe('ensureInstalled() — on-device artifact verification (plan 41 §3.2, 
     expect(mismatches).toEqual([{ reason: 'version_mismatch', observed: { versionCode: 2001001 } }])
   })
 
-  test('AC3 (integration): start() falls through the same failed-repair path and still tears the stream down', async () => {
-    const { deps, streamCalls } = fakeDeps(
+  test('start() on an older installed build keeps it and runs on it — nothing is uninstalled (0.2.74)', async () => {
+    const { deps, hostAdbCalls, mismatches, streamCalls } = fakeDeps(
       { expectedArtifact: { versionCode: 2003003 } },
       { dumpsysReply: () => dumpsysOutput({ versionCode: 2001001 }) },
     )
     const launcher = createUiServerLauncher(deps)
-    await expect(launcher.start(9123)).rejects.toThrow(/version_mismatch/)
-    // ensureInstalled() throws before execStream is ever reached.
-    expect(streamCalls).toHaveLength(0)
+    void launcher.start(9123).catch(() => {})
+    await waitForStream(streamCalls)
+    expect(streamCalls).toHaveLength(1)
+    expect(hostAdbCalls.filter((a) => a.includes('uninstall'))).toHaveLength(0)
+    expect(mismatches).toEqual([{ reason: 'version_mismatch', observed: { versionCode: 2001001 }, kept: true }])
+  })
+
+  test('an older installed build is KEPT by default and reported as kept (0.2.74) — upgrading is the operator\'s call', async () => {
+    const { deps, hostAdbCalls, mismatches } = fakeDeps(
+      { expectedArtifact: { versionCode: 2003003 } },
+      { dumpsysReply: () => dumpsysOutput({ versionCode: 2001001 }) },
+    )
+    const launcher = createUiServerLauncher(deps)
+    await launcher.ensureInstalled()
+    expect(hostAdbCalls.filter((a) => a.includes('uninstall') || a.includes('install'))).toHaveLength(0)
+    expect(mismatches).toEqual([{ reason: 'version_mismatch', observed: { versionCode: 2001001 }, kept: true }])
   })
 
   test('AC4: a manifest with no recorded expectation never blocks the inspector, and logs a notice', async () => {
@@ -501,7 +514,7 @@ describe('ensureInstalled() — the instrumentation package is verified too, not
     )
     const launcher = createUiServerLauncher(deps)
 
-    await expect(launcher.ensureInstalled()).rejects.toThrow(
+    await expect(launcher.ensureInstalled({ upgrade: true })).rejects.toThrow(
       `${UI_SERVER_TEST_PACKAGE} is not installed on serial-1 after reinstalling both APKs`,
     )
     expect(hostAdbCalls.filter((a) => a.includes('install'))).toHaveLength(2) // the mismatch repair's, and no more

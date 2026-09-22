@@ -313,6 +313,15 @@ export {
   type PreparationState,
   type PreparationComponentStatus,
   type DevicePreparation,
+  DEVICE_UPDATE_COMPONENTS,
+  DEVICE_UPDATE_STATES,
+  DeviceUpdateComponentSchema,
+  DeviceUpdateRowSchema,
+  DeviceUpdatesResponseSchema,
+  DeviceUpdatesStartBodySchema,
+  type DeviceUpdateComponent,
+  type DeviceUpdateRow,
+  type DeviceUpdatesResponse,
 } from './device-preparation'
 export {
   DeviceFsKindSchema,

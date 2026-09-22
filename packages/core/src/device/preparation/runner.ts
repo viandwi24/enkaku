@@ -60,7 +60,8 @@ export interface PreparationRunner {
   /** One pass across every registered component for this device, in registry order. Idempotent; safe to call on every hook. */
   ensure(deviceId: string, opts?: { force?: boolean }): Promise<DevicePreparation>
   /** One pass for exactly one component — the operator-facing "Retry" (plan 106 §3.3): passing `{ force: true }` clears that component's exhausted bound. */
-  ensureComponent(deviceId: string, componentId: string, opts?: { force?: boolean }): Promise<PreparationComponentStatus>
+  /** `upgrade` (0.2.74): replace an installed build that differs from the expectation — the operator's Update. */
+  ensureComponent(deviceId: string, componentId: string, opts?: { force?: boolean; upgrade?: boolean }): Promise<PreparationComponentStatus>
   /** The persisted row, Zod-validated — never issues an adb call of its own. */
   status(deviceId: string): Promise<DevicePreparation>
   /** Every device currently online, bounded by the shared install lane (same reasoning as `agent-provisioner.ts`'s own `ensureAll` — no second concurrency mechanism). */
@@ -177,7 +178,7 @@ export function createPreparationRunner(deps: PreparationRunnerDeps): Preparatio
     })
   }
 
-  async function ensureComponentImpl(deviceId: string, componentId: string, opts?: { force?: boolean }): Promise<PreparationComponentStatus> {
+  async function ensureComponentImpl(deviceId: string, componentId: string, opts?: { force?: boolean; upgrade?: boolean }): Promise<PreparationComponentStatus> {
     const component = registryById.get(componentId)
     if (!component) throw new EnkakuError('preparation_component_not_found', `no such preparation component: ${componentId}`)
 
@@ -225,7 +226,7 @@ export function createPreparationRunner(deps: PreparationRunnerDeps): Preparatio
     announce(deviceId)
     try {
       try {
-        result = await component.run(row)
+        result = await component.run(row, { upgrade: opts?.upgrade === true })
       } catch (err) {
         // Plan 106 §3.3 / hotfix §96.25 fix 2, generalised: a core-side
         // `E_ADB_UNAVAILABLE` means this pass never reached the device at
@@ -293,7 +294,7 @@ export function createPreparationRunner(deps: PreparationRunnerDeps): Preparatio
     },
 
     ensureComponent(deviceId, componentId, opts) {
-      const key = opts?.force ? `${deviceId}:${componentId}:force` : `${deviceId}:${componentId}`
+      const key = opts?.upgrade ? `${deviceId}:${componentId}:upgrade` : opts?.force ? `${deviceId}:${componentId}:force` : `${deviceId}:${componentId}`
       return dedup(key, () => ensureComponentImpl(deviceId, componentId, opts))
     },
 

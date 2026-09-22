@@ -150,6 +150,8 @@ export interface HttpDeps {
   devicePreparationRoutes: Hono<AuthEnv>
   /** `GET/POST /api/labels`, `PATCH/DELETE /api/labels/:id` (plan 225 §4.4). Membership is the `set-labels` actions verb, never a route on this router. */
   labelRoutes: Hono<AuthEnv>
+  /** Devices → Update devices (0.2.74). Optional so a test that builds this app without one keeps working. */
+  deviceUpdateRoutes?: Hono<AuthEnv>
   /** `GET/POST /api/groups`, `PATCH/DELETE /api/groups/:id`, `GET /api/groups/:id/devices` (plan 22.0 §4.4, renamed by plan 207 §4.6 — MVP 15 §0.1 item 3). Membership is now the `set-group` actions verb, never a route on this router. */
   groupRoutes: Hono<AuthEnv>
   batchRoutes: Hono<AuthEnv>
@@ -414,6 +416,7 @@ export function createApp(deps: HttpDeps): Hono<AuthEnv> {
   app.route('/api/transfers', deps.transferRegistryRoutes)
 
   app.route('/api/labels', deps.labelRoutes)
+  if (deps.deviceUpdateRoutes) app.route('/api/device-updates', deps.deviceUpdateRoutes)
 
   app.route('/api/groups', deps.groupRoutes)
 

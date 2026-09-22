@@ -39,6 +39,8 @@ export interface UiServerExpectedArtifact {
 export interface UiServerArtifactMismatch {
   reason: 'not_installed' | 'version_mismatch' | 'signature_mismatch'
   observed?: { versionCode?: number; signature?: string }
+  /** The installed build differs and was KEPT (no `upgrade` asked for) rather than replaced. */
+  kept?: boolean
 }
 
 export interface UiServerLauncherDeps {
@@ -125,7 +127,11 @@ export interface UiServerStartHooks {
 }
 
 export interface UiServerLauncher {
-  ensureInstalled(): Promise<void>
+  /**
+   * Install when missing. An installed build that differs from the expectation is KEPT unless
+   * `upgrade` is set (0.2.74) — see the guest agent launcher's `ensureInstalled` for the rule.
+   */
+  ensureInstalled(opts?: { upgrade?: boolean }): Promise<void>
   start(localPort: number, hooks?: UiServerStartHooks): Promise<void>
   stop(localPort: number): Promise<void>
   isInstalled(): Promise<boolean>
@@ -327,7 +333,7 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
      * observed state (see `ensureTestPackage()`), and before this check it
      * was reported as ready and then failed every job.
      */
-    async ensureInstalled() {
+    async ensureInstalled(opts) {
       const expected = expectation()
       if (expected.versionCode === undefined && expected.signatureSha256 === undefined) {
         deps.onLog?.(
@@ -360,10 +366,21 @@ export function createUiServerLauncher(deps: UiServerLauncherDeps): UiServerLaun
         return
       }
 
-      // version_mismatch or signature_mismatch: repair exactly once (§3.3).
+      // version_mismatch or signature_mismatch. Kept unless an upgrade was asked for (0.2.74): the
+      // session runs on the installed build, and Devices → Update devices is where it is replaced.
+      if (!opts?.upgrade) {
+        deps.onLog?.(
+          'info',
+          `${UI_SERVER_PACKAGE} on ${deps.serial} is ${result.reason} (observed ${JSON.stringify(result.observed ?? {})}) — keeping the installed build until an operator updates it`,
+        )
+        deps.onMismatch?.({ reason: result.reason, ...(result.observed ? { observed: result.observed } : {}), kept: true })
+        await ensureTestPackage({ repair: true })
+        return
+      }
+      // Asked to upgrade: repair exactly once (§3.3).
       deps.onLog?.(
         'warn',
-        `${UI_SERVER_PACKAGE} on ${deps.serial} is ${result.reason} (observed ${JSON.stringify(result.observed ?? {})}) — reinstalling`,
+        `${UI_SERVER_PACKAGE} on ${deps.serial} is ${result.reason} (observed ${JSON.stringify(result.observed ?? {})}) — upgrading`,
       )
       await deps.hostAdb(['-s', deps.serial, 'uninstall', UI_SERVER_PACKAGE]).catch(() => undefined)
       await installBoth()
