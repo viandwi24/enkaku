@@ -106,6 +106,16 @@ import {
 // reference it (the same split `messages/recording`'s own import block
 // above already uses).
 import { JobProgressEventMessage } from './messages/job'
+// Plan 1000 (physical touch capture), step 1000.1 — imported here, separately
+// from the re-export block further down, purely so the two union arrays below
+// can reference them (the same split `messages/recording`'s block above uses).
+import {
+  TouchCaptureStartMessage,
+  TouchCaptureStopMessage,
+  TouchCaptureClearMessage,
+  TouchCaptureStatusMessage,
+  TouchCaptureStrokeMessage,
+} from './messages/touch-capture'
 // Plan 205 (MVP 04) — the device activity model's two broadcasts, imported
 // here for the same reason the blocks above are: the union arrays below need
 // to reference them.
@@ -1203,6 +1213,11 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   // last for the same "never interleave, this file is contested" reason.
   DeviceActivityMessage,
   DeviceActivityWarningMessage,
+  // Plan 1000 (physical touch capture), §4.6 — the capture's own two
+  // server→client messages. Appended last for the same "never interleave,
+  // this file is contested" reason noted on every entry above it.
+  TouchCaptureStatusMessage,
+  TouchCaptureStrokeMessage,
 ])
 export type ServerMessage = z.infer<typeof ServerMessageSchema>
 
@@ -1313,6 +1328,10 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
   RecordingStartMessage,
   RecordingStopMessage,
   RecordingCancelMessage,
+  // Plan 1000 (physical touch capture), §4.6 — appended last, same reason.
+  TouchCaptureStartMessage,
+  TouchCaptureStopMessage,
+  TouchCaptureClearMessage,
 ])
 export type ClientMessage = z.infer<typeof ClientMessageSchema>
 
@@ -1663,3 +1682,28 @@ export {
   type JobTraceEvent,
   type JobTraceTouch,
 } from './messages/job'
+
+// Plan 1000 (physical touch capture), step 1000.1. The evdev-side mirror of
+// `input.*`: what a real finger did on the glass, read back off `getevent`.
+// Appended here, as its own statement, rather than folded into any block
+// above — this file is contested and the rule is append-only, never reorder
+// or tidy an existing block.
+export {
+  TouchProtocolSchema,
+  TouchCaptureSourceSchema,
+  TouchCaptureSampleSchema,
+  TouchStrokeKindSchema,
+  TouchStrokeSchema,
+  TouchCaptureStateSchema,
+  TouchCaptureStartMessage,
+  TouchCaptureStopMessage,
+  TouchCaptureClearMessage,
+  TouchCaptureStatusMessage,
+  TouchCaptureStrokeMessage,
+  type TouchProtocol,
+  type TouchCaptureSource,
+  type TouchCaptureSample,
+  type TouchStrokeKind,
+  type TouchStroke,
+  type TouchCaptureState,
+} from './messages/touch-capture'

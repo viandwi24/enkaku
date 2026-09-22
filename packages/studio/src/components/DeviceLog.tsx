@@ -48,6 +48,10 @@ const KIND_LABEL: Record<string, string> = {
   'input.swipe': 'Swipe',
   'input.key': 'Key',
   'input.text': 'Typed text',
+  // Plan 1000 — the operator opened a physical touch capture on this
+  // device. The strokes themselves are never recorded here: they are
+  // millisecond-resolution and this log's `at` is a unix SECOND.
+  'touch.capture.started': 'Touch capture started',
   'adb.endpoint.opened': 'adb endpoint opened',
   'adb.endpoint.closed': 'adb endpoint closed',
   'adb.open': 'adb stream',
@@ -152,6 +156,10 @@ function summarize(ev: DeviceEvent): string {
       const from = meta.from as { x?: number; y?: number } | undefined
       const to = meta.to as { x?: number; y?: number } | undefined
       return `(${from?.x ?? '?'}, ${from?.y ?? '?'}) → (${to?.x ?? '?'}, ${to?.y ?? '?'})`
+    }
+    case 'touch.capture.started': {
+      const sources = Array.isArray(meta.sources) ? meta.sources : []
+      return sources.length > 0 ? `reading ${sources.map((s) => String(s)).join(', ')}` : 'reading the phone\u2019s input devices'
     }
     case 'input.key':
       return meta.name ? `${String(meta.name)} (${String(meta.keycode)})` : `keycode ${String(meta.keycode ?? '?')}`

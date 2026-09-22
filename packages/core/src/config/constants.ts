@@ -446,3 +446,33 @@ export const ACTION_SYNC_FANOUT_MAX = num('ENKAKU_ACTION_SYNC_FANOUT_MAX', 32, z
  * here to be a number rather than `Infinity`.
  */
 export const ACTION_SOCKET_FANOUT = num('ENKAKU_ACTION_SOCKET_FANOUT', 64, z.number().int().min(1).max(256))
+
+// ── Physical touch capture (plan 1000) ──
+/**
+ * How many strokes one device's capture buffer holds. It is a debugging
+ * window, not a log: the buffer lives in memory, dies with the capture, and
+ * is never written to the database — a finger dragging for a minute is
+ * thousands of evdev frames, and persisting that per device is a cost
+ * nobody asked for. 500 strokes is several minutes of deliberate tapping.
+ */
+export const TOUCH_CAPTURE_MAX_STROKES = num('ENKAKU_TOUCH_CAPTURE_MAX_STROKES', 500, z.number().int().min(10).max(10_000))
+/** Per stroke. A 60 Hz panel fills this in ten seconds of dragging; past it the middle of the path is thinned, never an end (`strokes.ts`). */
+export const TOUCH_CAPTURE_MAX_SAMPLES = num('ENKAKU_TOUCH_CAPTURE_MAX_SAMPLES', 600, z.number().int().min(50).max(5_000))
+/** Travel under this fraction of the panel is a tap, not a swipe — the same 1% test `observeStream` applies to browser input, so the two paths use one vocabulary. */
+export const TOUCH_CAPTURE_TAP_TRAVEL = num('ENKAKU_TOUCH_CAPTURE_TAP_TRAVEL', 0.01, z.number().min(0.001).max(0.5))
+/** A tap held past this is a long press — the recorder's own default (`RecordingSettings.longPressMs`), repeated here because a capture runs with no recording open. */
+export const TOUCH_CAPTURE_LONG_PRESS_MS = num('ENKAKU_TOUCH_CAPTURE_LONG_PRESS_MS', 400, z.number().int().min(100).max(5_000))
+/**
+ * The byte ceiling on one device's `getevent` stream.
+ *
+ * Both of the lane's clocks are OFF for this stream and that is the point:
+ * an idle timeout would kill the capture of a phone nobody has touched for
+ * two minutes, which is exactly the phone an operator is waiting to touch.
+ * The byte cap is what remains, and it is generous — a labelled evdev line
+ * is about 70 bytes and a hard drag emits a few hundred a second.
+ */
+export const TOUCH_CAPTURE_MAX_BYTES = num('ENKAKU_TOUCH_CAPTURE_MAX_BYTES', 64 * 1024 * 1024, z.number().int().min(1024 * 1024))
+/** How long a capture may run before it stops on its own. An operator who walks away does not hold an adb stream all night. */
+export const TOUCH_CAPTURE_MAX_DURATION_MS = num('ENKAKU_TOUCH_CAPTURE_MAX_DURATION_MS', 2 * 3_600_000, z.number().int().min(60_000))
+/** The shortest gap between two `getevent -pl` re-probes when an unknown touch path appears mid-capture (a session opening its UHID pointer). */
+export const TOUCH_CAPTURE_REPROBE_MIN_MS = num('ENKAKU_TOUCH_CAPTURE_REPROBE_MIN_MS', 10_000, z.number().int().min(1_000))

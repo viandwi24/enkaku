@@ -6,6 +6,7 @@ import type { ActionDialogVerb } from '@/components/actions/ActionDialogHost'
 import { DeviceJobs } from './DeviceJobs'
 import { DeviceFiles } from './DeviceFiles'
 import { NetworkPanel } from '@/components/guest-agent/NetworkPanel'
+import { TouchCapture } from './TouchCapture'
 
 /**
  * The Device tab (design handoff README.md:279-280; plan 215 §4.12): "a
@@ -20,9 +21,12 @@ import { NetworkPanel } from '@/components/guest-agent/NetworkPanel'
  * scrolling tab row, an overflow menu) the design has no precedent for.
  * `NetworkPanel` renders its own padding (`@container` + `py-4`), so it sits
  * outside the chip row's `p-3` wrapper to avoid doubling it.
+ *
+ * Touch (plan 1000) joined for the same reason Network did: it is a section,
+ * not a fifth top-level tab the 274px column cannot hold.
  */
 export function DeviceTab({ deviceId, onAction, nodeOwned }: { deviceId: string; onAction: (id: ActionDialogVerb, params?: Record<string, unknown>) => void; nodeOwned: boolean }) {
-  const [section, setSection] = useState<'jobs' | 'files' | 'network'>('jobs')
+  const [section, setSection] = useState<'jobs' | 'files' | 'network' | 'touch'>('jobs')
 
   return (
     <div className="flex flex-col gap-2">
@@ -35,6 +39,9 @@ export function DeviceTab({ deviceId, onAction, nodeOwned }: { deviceId: string;
         </Chip>
         <Chip active={section === 'network'} onClick={() => setSection('network')}>
           Network
+        </Chip>
+        <Chip active={section === 'touch'} onClick={() => setSection('touch')}>
+          Touch
         </Chip>
       </div>
       {section === 'jobs' && (
@@ -53,6 +60,17 @@ export function DeviceTab({ deviceId, onAction, nodeOwned }: { deviceId: string;
         // note). This window IS the control surface, so it passes true
         // rather than inventing a second gate.
         <NetworkPanel deviceId={deviceId} canUse />
+      )}
+      {/*
+        Mounted only while its chip is selected, which is exactly the
+        attach/detach lifecycle the panel wants (plan 1000 §4.8): selecting
+        it opens the `getevent` stream, leaving closes it, and no phone
+        carries one for a tab nobody is looking at.
+      */}
+      {section === 'touch' && (
+        <div className="p-3 pt-0">
+          <TouchCapture deviceId={deviceId} nodeOwned={nodeOwned} />
+        </div>
       )}
     </div>
   )
